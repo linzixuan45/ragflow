@@ -1,0 +1,55 @@
+# -----------------------------------------------------------------------------
+# Knowledge-base development overlay for the 企业知识库 v3.0 project.
+#
+# This file is consumed in addition to the official RAGFlow compose:
+#
+#   cd /home/speedbot/Project/ragflow/docker
+#   docker compose \
+#     --env-file .env.knowledge-dev \
+#     -f docker-compose.yml \
+#     -f docker-compose.knowledge-dev.yml \
+#     --profile elasticsearch \
+#     --profile gpu \
+#     up -d
+#
+# The overlay is intentionally thin and only changes:
+#   1. Forces the GPU server and removes CPU server from the default flow.
+#   2. Publishes the RAGFlow Web UI and API only on loopback addresses.
+#   3. Clears host port mappings for MySQL / MinIO / Redis / Elasticsearch so
+#      those services stay reachable only through the Docker network.
+#   4. Drops the AdMindev-only flag from the GPU server command.
+#   5. Adds an explicit depends_on for `ragflow-gpu` so it waits for the
+#      Elasticsearch container to be healthy (not just started) before
+#      running the embedded dev retriever work.
+# -----------------------------------------------------------------------------
+
+services:
+  ragflow-gpu:
+    # Strip the base command so the Server starts without the admin helper.
+    # This keeps :9381/9382/9383/9384 quiet even if a future base file adds
+    # them back. The standard entrypoint still runs task executor and API.
+    command: []
+    ports: !override
+      - "127.0.0.1:80:80"
+      - "127.0.0.1:9380:9380"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      es01:
+        condition: service_healthy
+
+  es01:
+    # Keep ES reachable on the Docker network only; the host never needs
+    # 9200. The base compose reads ${ES_PORT} which the dev env file sets
+    # to empty, but we also reset the ports list defensively so an
+    # accidental override cannot leak the cluster.
+    ports: !reset []
+
+  mysql:
+    ports: !reset []
+
+  minio:
+    ports: !reset []
+
+  redis:
+    ports: !reset []
