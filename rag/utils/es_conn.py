@@ -236,7 +236,11 @@ class ESConnection(ESConnectionBase):
             orders = list()
             for field, order in order_by.fields:
                 order = "asc" if order == 0 else "desc"
-                if field in ["page_num_int", "top_int"]:
+                if field == "_score":
+                    # Elasticsearch treats _score as a special sort key and
+                    # rejects field-only options such as unmapped_type.
+                    order_info = {"order": order}
+                elif field in ["page_num_int", "top_int"]:
                     order_info = {"order": order, "unmapped_type": "float", "mode": "avg", "numeric_type": "double"}
                 elif field.endswith("_int") or field.endswith("_flt"):
                     order_info = {"order": order, "unmapped_type": "float"}

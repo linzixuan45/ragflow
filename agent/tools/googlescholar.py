@@ -18,7 +18,15 @@ import logging
 import os
 import time
 from abc import ABC
-from scholarly import scholarly
+
+try:
+    from scholarly import scholarly
+except (ImportError, SyntaxError) as error:
+    scholarly = None
+    _SCHOLARLY_IMPORT_ERROR = error
+else:
+    _SCHOLARLY_IMPORT_ERROR = None
+
 from agent.tools.base import ToolMeta, ToolParamBase, ToolBase
 from common.connection_utils import timeout
 
@@ -64,6 +72,12 @@ class GoogleScholar(ToolBase, ABC):
     def _invoke(self, **kwargs):
         if self.check_if_canceled("GoogleScholar processing"):
             return
+
+        if scholarly is None:
+            message = f"GoogleScholar is unavailable: {_SCHOLARLY_IMPORT_ERROR}"
+            self.set_output("_ERROR", message)
+            self.set_output("json", [])
+            return message
 
         if not kwargs.get("query"):
             self.set_output("formalized_content", "")

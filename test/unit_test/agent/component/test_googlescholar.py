@@ -16,11 +16,12 @@
 
 import pytest
 
-# GoogleScholar imports the `scholarly` SDK at module load; skip where absent.
-pytest.importorskip("scholarly")
+import agent.tools.googlescholar as gs_module
+from agent.tools.googlescholar import GoogleScholar, GoogleScholarParam
 
-import agent.tools.googlescholar as gs_module  # noqa: E402
-from agent.tools.googlescholar import GoogleScholar, GoogleScholarParam  # noqa: E402
+
+if gs_module.scholarly is None:
+    pytest.skip(f"scholarly SDK is unavailable: {gs_module._SCHOLARLY_IMPORT_ERROR}", allow_module_level=True)
 
 
 def _fake_pubs(n, consumed=None):

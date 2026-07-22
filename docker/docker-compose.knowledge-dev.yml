@@ -15,8 +15,8 @@
 # The overlay is intentionally thin and only changes:
 #   1. Forces the GPU server and removes CPU server from the default flow.
 #   2. Publishes the RAGFlow Web UI and API only on loopback addresses.
-#   3. Clears host port mappings for MySQL / MinIO / Redis / Elasticsearch so
-#      those services stay reachable only through the Docker network.
+#   3. Clears host port mappings for MySQL / MinIO. Elasticsearch and Redis
+#      are additionally published on loopback for host-side Python tests.
 #   4. Drops the AdMindev-only flag from the GPU server command.
 #   5. Adds an explicit depends_on for `ragflow-gpu` so it waits for the
 #      Elasticsearch container to be healthy (not just started) before
@@ -32,6 +32,21 @@ services:
     ports: !override
       - "127.0.0.1:80:80"
       - "127.0.0.1:9380:9380"
+    volumes:
+      # Keep the development container on the published runtime image while
+      # loading the local Corpus FS implementation for restart-safe testing.
+      - ../api/apps/restful_apis/corpus_fs_api.py:/ragflow/api/apps/restful_apis/corpus_fs_api.py:ro
+      - ../api/apps/restful_apis/keyword_search_api.py:/ragflow/api/apps/restful_apis/keyword_search_api.py:ro
+      - ../agent/tools/googlescholar.py:/ragflow/agent/tools/googlescholar.py:ro
+      - ../api/apps/services/corpus_cursor_service.py:/ragflow/api/apps/services/corpus_cursor_service.py:ro
+      - ../api/apps/services/corpus_delegation_service.py:/ragflow/api/apps/services/corpus_delegation_service.py:ro
+      - ../api/apps/services/corpus_fs_service.py:/ragflow/api/apps/services/corpus_fs_service.py:ro
+      - ../api/apps/services/corpus_path_service.py:/ragflow/api/apps/services/corpus_path_service.py:ro
+      - ../api/apps/services/corpus_revision_service.py:/ragflow/api/apps/services/corpus_revision_service.py:ro
+      - ../api/apps/services/keyword_search_service.py:/ragflow/api/apps/services/keyword_search_service.py:ro
+      - ../api/apps/services/document_api_service.py:/ragflow/api/apps/services/document_api_service.py:ro
+      - ../api/db/db_models.py:/ragflow/api/db/db_models.py:ro
+      - ../rag/utils/es_conn.py:/ragflow/rag/utils/es_conn.py:ro
     depends_on:
       mysql:
         condition: service_healthy
@@ -39,11 +54,10 @@ services:
         condition: service_healthy
 
   es01:
-    # Keep ES reachable on the Docker network only; the host never needs
-    # 9200. The base compose reads ${ES_PORT} which the dev env file sets
-    # to empty, but we also reset the ports list defensively so an
-    # accidental override cannot leak the cluster.
-    ports: !reset []
+    # Host-side unit tests load conf/service_conf.yaml and use localhost:1200.
+    # Bind loopback only so Elasticsearch remains private to this machine.
+    ports: !override
+      - "127.0.0.1:1200:9200"
 
   mysql:
     ports: !reset []
@@ -52,4 +66,7 @@ services:
     ports: !reset []
 
   redis:
-    ports: !reset []
+    # SpeedML no longer owns 6379; publish RAGFlow's password-protected Redis
+    # only on loopback so conf/service_conf.yaml resolves to this instance.
+    ports: !override
+      - "127.0.0.1:6379:6379"

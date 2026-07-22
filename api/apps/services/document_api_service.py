@@ -18,6 +18,7 @@ import logging
 from api.db.services.document_service import DocumentService
 from api.db.services.file2document_service import File2DocumentService
 from api.db.services.file_service import FileService
+from api.apps.services.corpus_revision_service import CorpusRevisionService
 from api.utils import validation_utils
 from common import settings
 from common.constants import TaskStatus
@@ -59,6 +60,7 @@ def update_document_name_only(document_id, req_doc_name):
             search.index_name(tenant_id),
             doc.kb_id,
         )
+    CorpusRevisionService.bump_content(doc.kb_id)
     return None
 
 
@@ -144,6 +146,8 @@ def reset_document_for_reparse(doc, tenant_id, parser_id=None, pipeline_id=None)
     except Exception as e:
         logging.error(f"error when delete chunk images:{e}")
 
+    CorpusRevisionService.bump_content(doc.kb_id)
+
     return None
 
 
@@ -172,6 +176,7 @@ def update_document_status_only(status: int, doc, kb):
                 search.index_name(kb.tenant_id),
                 doc.kb_id,
             )
+            CorpusRevisionService.bump_content(doc.kb_id)
         except Exception as e:
             return server_error_response(e)
     return None
