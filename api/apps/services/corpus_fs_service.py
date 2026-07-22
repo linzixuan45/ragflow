@@ -209,46 +209,68 @@ class CorpusFsService:
 
     def _chunk_fields(self, document_id: str) -> dict[str, dict]:
         rows = settings.docStoreConn.search(
-            ["content_with_weight", "chunk_order_int", "img_id"],
+            ["content_with_weight", "chunk_order_int", "page_num_int", "position_int", "top_int", "img_id"],
             [],
             {"doc_id": document_id},
             [],
-            OrderByExpr().asc("chunk_order_int"),
+            OrderByExpr(),
             0,
             10000,
             search.index_name(self.tenant_id),
             [self.dataset_id],
         )
-        return settings.docStoreConn.get_fields(rows, ["content_with_weight", "img_id"])
+        return settings.docStoreConn.get_fields(rows, ["content_with_weight", "chunk_order_int", "page_num_int", "position_int", "top_int", "img_id"])
 
-    def content_text(self, document: dict) -> tuple[str, str, list[dict]]:
+    @staticmethod
+    def _chunk_position_key(chunk_id: str, chunk: dict) -> tuple:
+        positions = chunk.get("position_int") or []
+        valid_positions = [position for position in positions if isinstance(position, (list, tuple)) and len(position) >= 5]
+        if valid_positions:
+            page, left, _, top, _ = min(valid_positions, key=lambda position: (position[0], position[3], position[1]))
+            return (0, page, top, left, chunk_id)
+
+        pages = chunk.get("page_num_int") or []
+        tops = chunk.get("top_int") or []
+        if pages:
+            return (1, pages[0], tops[0] if tops else 0, 0, chunk_id)
+
+        order = chunk.get("chunk_order_int")
+        if order is not None:
+            return (2, order, 0, 0, chunk_id)
+        return (3, 0, 0, 0, chunk_id)
+
+    def content_text(self, document: dict) -> tuple[str, str, list[dict], list[dict]]:
         if document.get("run") != TaskStatus.DONE.value:
             raise DocumentNotReadyError("document is not ready")
         if document.get("type", "").lower() in {"txt", "md", "markdown"}:
             try:
-                raw = settings.STORAGE_IMPL.get(document["id"], document["location"])
-                return raw.read().decode("utf-8"), "raw_text", []
+                text = settings.STORAGE_IMPL.get(document["id"], document["location"]).read().decode("utf-8")
+                return text, "raw_text", [], [{"content": text, "start": 0, "end": len(text.encode("utf-8"))}]
             except (UnicodeDecodeError, OSError, AttributeError):
                 pass
         fields = self._chunk_fields(document["id"])
-        chunks = list(fields.values())
+        chunks = sorted(fields.items(), key=lambda item: self._chunk_position_key(*item))
         content_parts: list[str] = []
         images: list[dict] = []
+        blocks: list[dict] = []
         offset = 0
-        for index, chunk in enumerate(chunks):
-            if index:
-                content_parts.append("\n\n")
-                offset += 2
-            chunk_content = chunk.get("content_with_weight") or ""
+        for index, (_, chunk) in enumerate(chunks):
+            prefix = "\n\n" if index else ""
+            start = offset
+            chunk_content = prefix + (chunk.get("content_with_weight") or "")
             content_parts.append(chunk_content)
             offset += len(chunk_content.encode("utf-8"))
             image_id = chunk.get("img_id") or ""
+            block = {"content": chunk_content, "start": start, "end": offset}
             if image_id:
-                images.append({"image_ref": self._image_ref(document["id"], image_id), "offset": offset})
+                image_ref = self._image_ref(document["id"], image_id)
+                block["image_ref"] = image_ref
+                images.append({"image_ref": image_ref, "offset": offset})
+            blocks.append(block)
         content = "".join(content_parts)
         if not content:
             raise UnsupportedContentError("document has no readable text projection")
-        return content, "parsed_chunks", images
+        return content, "parsed_chunks", images, blocks
 
     def image_data(self, document: dict, image_ref: str) -> tuple[bytes, str]:
         for chunk in self._chunk_fields(document["id"]).values():

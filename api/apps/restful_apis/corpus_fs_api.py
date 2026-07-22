@@ -186,7 +186,7 @@ def content(tenant_id: str, dataset_id: str):
         maximum = int(request.args.get("max_bytes", 32768))
         if maximum < 1 or maximum > 262144:
             raise CorpusFsError("max_bytes must be between 1 and 262144")
-        text, source, images = service.content_text(document)
+        text, source, images, blocks = service.content_text(document)
         cursor_service = CorpusCursorService(os.environ.get("RAGFLOW_CORPUS_CURSOR_SECRET", "ragflow-corpus-fs-development-secret").encode())
         cursor = request.args.get("cursor")
         offset = cursor_service.parse(cursor, tenant_id, dataset_id, document["id"], entry["_content_hash"]) ["offset"] if cursor else 0
@@ -195,7 +195,18 @@ def content(tenant_id: str, dataset_id: str):
         next_offset = offset + len(segment.encode("utf-8"))
         next_cursor = cursor_service.issue(tenant_id, dataset_id, document["id"], entry["_content_hash"], next_offset) if next_offset < len(encoded) else None
         visible_images = [image for image in images if offset <= image["offset"] <= next_offset]
-        return _success(service, {"path": entry["path"], "content": segment, "content_source": source, "ranges": [{"start": offset, "end": next_offset}], "images": visible_images, "citation_ref": cursor_service.issue(tenant_id, dataset_id, document["id"], entry["_content_hash"], offset), "next_cursor": next_cursor})
+        visible_blocks = []
+        for block in blocks:
+            if block["end"] <= offset or block["start"] >= next_offset:
+                continue
+            block_bytes = block["content"].encode("utf-8")
+            start = max(offset - block["start"], 0)
+            end = min(next_offset - block["start"], len(block_bytes))
+            item = {"content": block_bytes[start:end].decode("utf-8", errors="ignore")}
+            if block.get("image_ref") and block["end"] <= next_offset:
+                item["image_ref"] = block["image_ref"]
+            visible_blocks.append(item)
+        return _success(service, {"path": entry["path"], "content": segment, "content_source": source, "ranges": [{"start": offset, "end": next_offset}], "blocks": visible_blocks, "images": visible_images, "citation_ref": cursor_service.issue(tenant_id, dataset_id, document["id"], entry["_content_hash"], offset), "next_cursor": next_cursor})
     except CorpusCursorError:
         return _error(CorpusFsError("invalid cursor"))
     except (ValueError, CorpusFsError, CorpusPathError) as error:

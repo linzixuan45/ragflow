@@ -56,11 +56,35 @@ def test_parsed_content_projects_opaque_image_reference_without_image_id(monkeyp
     monkeypatch.setattr(settings, "docStoreConn", DocStore())
     service = CorpusFsService("tenant-1", "dataset-1", "actor")
 
-    content, source, images = service.content_text({"id": "document-1", "run": TaskStatus.DONE.value, "type": "pdf"})
+    content, source, images, blocks = service.content_text({"id": "document-1", "run": TaskStatus.DONE.value, "type": "pdf"})
 
     assert (content, source) == ("before\n\nafter", "parsed_chunks")
     assert images == [{"image_ref": service._image_ref("document-1", "dataset-1-chunk-1"), "offset": 6}]
+    assert blocks[0] == {"content": "before", "start": 0, "end": 6, "image_ref": images[0]["image_ref"]}
     assert "dataset-1-chunk-1" not in str(images)
+
+
+def test_parsed_content_sorts_by_first_pdf_position_not_doc_store_order(monkeypatch):
+    class DocStore:
+        @staticmethod
+        def search(*_args, **_kwargs):
+            return object()
+
+        @staticmethod
+        def get_fields(*_args, **_kwargs):
+            return {
+                "late": {"content_with_weight": "second", "position_int": [[1, 20, 100, 300, 340]], "page_num_int": [1], "top_int": [300]},
+                "early": {"content_with_weight": "first", "position_int": [[1, 20, 100, 120, 160]], "page_num_int": [1], "top_int": [120]},
+                "next-page": {"content_with_weight": "third", "position_int": [[2, 20, 100, 20, 60]], "page_num_int": [2], "top_int": [20]},
+            }
+
+    monkeypatch.setattr(settings, "docStoreConn", DocStore())
+    service = CorpusFsService("tenant-1", "dataset-1", "actor")
+
+    content, _, _, blocks = service.content_text({"id": "document-1", "run": TaskStatus.DONE.value, "type": "pdf"})
+
+    assert content == "first\n\nsecond\n\nthird"
+    assert [block["content"].lstrip() for block in blocks] == ["first", "second", "third"]
 
 
 def test_image_data_requires_a_reference_for_an_image_in_the_document(monkeypatch):
