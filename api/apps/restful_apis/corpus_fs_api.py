@@ -186,14 +186,23 @@ def content(tenant_id: str, dataset_id: str):
         maximum = int(request.args.get("max_bytes", 32768))
         if maximum < 1 or maximum > 262144:
             raise CorpusFsError("max_bytes must be between 1 and 262144")
-        text, source, images, blocks = service.content_text(document)
+        page_value = request.args.get("page")
+        page = int(page_value) if page_value is not None else None
+        if page is not None and page < 1:
+            raise CorpusFsError("page must be positive")
+        type_value = request.args.get("type")
+        kinds = {value.strip() for value in type_value.split(",") if value.strip()} if type_value else None
+        if kinds and not kinds <= {"heading", "paragraph", "table", "image", "image_ocr", "image_caption", "header_footer", "other"}:
+            raise CorpusFsError("type is invalid")
+        text, source, images, blocks = service.content_text(document, page, kinds)
         cursor_service = CorpusCursorService(os.environ.get("RAGFLOW_CORPUS_CURSOR_SECRET", "ragflow-corpus-fs-development-secret").encode())
         cursor = request.args.get("cursor")
-        offset = cursor_service.parse(cursor, tenant_id, dataset_id, document["id"], entry["_content_hash"]) ["offset"] if cursor else 0
+        cursor_scope = hashlib.sha256(f"{entry['_content_hash']}:{source}:{page}:{','.join(sorted(kinds or []))}".encode()).hexdigest()
+        offset = cursor_service.parse(cursor, tenant_id, dataset_id, document["id"], cursor_scope)["offset"] if cursor else 0
         encoded = text.encode("utf-8")
         segment = encoded[offset : offset + maximum].decode("utf-8", errors="ignore")
         next_offset = offset + len(segment.encode("utf-8"))
-        next_cursor = cursor_service.issue(tenant_id, dataset_id, document["id"], entry["_content_hash"], next_offset) if next_offset < len(encoded) else None
+        next_cursor = cursor_service.issue(tenant_id, dataset_id, document["id"], cursor_scope, next_offset) if next_offset < len(encoded) else None
         visible_images = [image for image in images if offset <= image["offset"] <= next_offset]
         visible_blocks = []
         for block in blocks:
@@ -202,11 +211,12 @@ def content(tenant_id: str, dataset_id: str):
             block_bytes = block["content"].encode("utf-8")
             start = max(offset - block["start"], 0)
             end = min(next_offset - block["start"], len(block_bytes))
-            item = {"content": block_bytes[start:end].decode("utf-8", errors="ignore")}
+            item = {key: block[key] for key in ("block_ref", "ordinal", "kind", "page", "positions", "parent_block_ref") if key in block}
+            item["content"] = block_bytes[start:end].decode("utf-8", errors="ignore")
             if block.get("image_ref") and block["end"] <= next_offset:
                 item["image_ref"] = block["image_ref"]
             visible_blocks.append(item)
-        return _success(service, {"path": entry["path"], "content": segment, "content_source": source, "ranges": [{"start": offset, "end": next_offset}], "blocks": visible_blocks, "images": visible_images, "citation_ref": cursor_service.issue(tenant_id, dataset_id, document["id"], entry["_content_hash"], offset), "next_cursor": next_cursor})
+        return _success(service, {"path": entry["path"], "content": segment, "content_source": source, "ranges": [{"start": offset, "end": next_offset}], "blocks": visible_blocks, "images": visible_images, "citation_ref": cursor_service.issue(tenant_id, dataset_id, document["id"], cursor_scope, offset), "next_cursor": next_cursor})
     except CorpusCursorError:
         return _error(CorpusFsError("invalid cursor"))
     except (ValueError, CorpusFsError, CorpusPathError) as error:

@@ -8,14 +8,13 @@ import mimetypes
 import os
 import re
 from collections import defaultdict
-from datetime import UTC, datetime
 from typing import Any
 
-from peewee import JOIN
+from peewee import OperationalError, ProgrammingError
 
 from api.apps.services.corpus_path_service import AmbiguousPathError, CorpusPathRegistry, CorpusPathResolver
+from api.apps.services.source_projection_service import SourceProjectionService
 from api.common.check_team_permission import check_file_team_permission, check_kb_team_permission
-from api.db import FileType
 from api.db.db_models import Document, File, File2Document
 from api.db.services.knowledgebase_service import KnowledgebaseService
 from common import settings
@@ -239,9 +238,43 @@ class CorpusFsService:
             return (2, order, 0, 0, chunk_id)
         return (3, 0, 0, 0, chunk_id)
 
-    def content_text(self, document: dict) -> tuple[str, str, list[dict], list[dict]]:
+    def content_text(self, document: dict, page: int | None = None, kinds: set[str] | None = None) -> tuple[str, str, list[dict], list[dict]]:
         if document.get("run") != TaskStatus.DONE.value:
             raise DocumentNotReadyError("document is not ready")
+        if document.get("type", "").lower() == "pdf":
+            try:
+                projection = SourceProjectionService.active(document)
+            except (OperationalError, ProgrammingError):
+                projection = None
+            if projection:
+                manifest, projection_blocks = projection
+                selected = [
+                    block
+                    for block in projection_blocks
+                    if (page is None or block.get("page") == page) and (not kinds or block.get("kind") in kinds)
+                ]
+                blocks: list[dict] = []
+                images: list[dict] = []
+                content_parts: list[str] = []
+                offset = 0
+                for index, block in enumerate(selected):
+                    prefix = "\n\n" if index else ""
+                    content = prefix + block.get("text", "")
+                    start = offset
+                    offset += len(content.encode("utf-8"))
+                    public_block = {key: block.get(key) for key in ("block_ref", "ordinal", "kind", "page", "positions", "parent_block_ref")}
+                    public_block.update({"content": content, "start": start, "end": offset})
+                    image_id = block.get("image_id")
+                    if image_id:
+                        image_ref = self._image_ref(document["id"], image_id)
+                        public_block["image_ref"] = image_ref
+                        images.append({"image_ref": image_ref, "offset": offset})
+                    blocks.append(public_block)
+                    content_parts.append(content)
+                content = "".join(content_parts)
+                if content:
+                    return content, f"source_projection:{manifest['projection_revision']}", images, blocks
+                raise UnsupportedContentError("projection has no readable text for the selected filter")
         if document.get("type", "").lower() in {"txt", "md", "markdown"}:
             try:
                 text = settings.STORAGE_IMPL.get(document["id"], document["location"]).read().decode("utf-8")
@@ -273,6 +306,22 @@ class CorpusFsService:
         return content, "parsed_chunks", images, blocks
 
     def image_data(self, document: dict, image_ref: str) -> tuple[bytes, str]:
+        try:
+            projection = SourceProjectionService.active(document) if document.get("type", "").lower() == "pdf" else None
+        except (OperationalError, ProgrammingError):
+            projection = None
+        if projection:
+            _, blocks = projection
+            for block in blocks:
+                image_id = block.get("image_id") or ""
+                if image_id and hmac.compare_digest(image_ref, self._image_ref(document["id"], image_id)):
+                    prefix = f"{self.dataset_id}-"
+                    if image_id.startswith(prefix):
+                        object_name = image_id[len(prefix) :]
+                        data = settings.STORAGE_IMPL.get(self.dataset_id, object_name)
+                        if data:
+                            return data, object_name
+                    break
         for chunk in self._chunk_fields(document["id"]).values():
             image_id = chunk.get("img_id") or ""
             if image_id and hmac.compare_digest(image_ref, self._image_ref(document["id"], image_id)):

@@ -2,6 +2,7 @@ from common import settings
 from common.constants import TaskStatus
 
 from api.apps.services.corpus_fs_service import CorpusFsService
+from api.apps.services.source_projection_service import SourceProjectionService
 
 
 def test_public_entry_never_exposes_internal_identifiers_or_storage_fields():
@@ -109,3 +110,27 @@ def test_image_data_requires_a_reference_for_an_image_in_the_document(monkeypatc
     document = {"id": "document-1"}
 
     assert service.image_data(document, service._image_ref("document-1", "dataset-1-chunk-1.png")) == (b"image-bytes", "chunk-1.png")
+
+
+def test_pdf_content_prefers_active_source_projection_and_filters_blocks(monkeypatch):
+    monkeypatch.setattr(
+        SourceProjectionService,
+        "active",
+        classmethod(
+            lambda _cls, _document: (
+                {"projection_revision": 4},
+                [
+                    {"block_ref": "0", "ordinal": 0, "kind": "heading", "page": 1, "positions": [[1, 1, 2, 3, 4]], "text": "Title", "parent_block_ref": None, "image_id": None},
+                    {"block_ref": "1", "ordinal": 1, "kind": "paragraph", "page": 2, "positions": [[2, 1, 2, 3, 4]], "text": "Body", "parent_block_ref": None, "image_id": None},
+                ],
+            )
+        ),
+    )
+    service = CorpusFsService("tenant-1", "dataset-1", "actor")
+
+    content, source, images, blocks = service.content_text({"id": "document-1", "run": TaskStatus.DONE.value, "type": "pdf"}, page=2, kinds={"paragraph"})
+
+    assert content == "Body"
+    assert source == "source_projection:4"
+    assert images == []
+    assert blocks == [{"block_ref": "1", "ordinal": 1, "kind": "paragraph", "page": 2, "positions": [[2, 1, 2, 3, 4]], "parent_block_ref": None, "content": "Body", "start": 0, "end": 4}]

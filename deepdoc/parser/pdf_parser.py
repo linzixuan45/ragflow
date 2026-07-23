@@ -1671,7 +1671,17 @@ class RAGFlowPdfParser:
         if len(self.boxes) == 0 and zoomin < 9:
             self.__images__(fnm, zoomin * 3, page_from, page_to, callback)
 
-    def __call__(self, fnm, need_image=True, zoomin=3, return_html=False, auto_rotate_tables=None):
+    def __call__(
+        self,
+        fnm,
+        need_image=True,
+        zoomin=3,
+        return_html=False,
+        auto_rotate_tables=None,
+        from_page=0,
+        to_page=MAXIMUM_PAGE_NUMBER,
+        callback=None,
+    ):
         """
         Parse a PDF file.
 
@@ -1689,14 +1699,15 @@ class RAGFlowPdfParser:
             auto_rotate_tables = os.getenv("TABLE_AUTO_ROTATE", "true").lower() in ("true", "1", "yes")
 
         self.outlines = extract_pdf_outlines(fnm)
-        self.__images__(fnm, zoomin)
+        self.__images__(fnm, zoomin, page_from=from_page, page_to=to_page, callback=callback)
         self._layouts_rec(zoomin)
         self._table_transformer_job(zoomin, auto_rotate=auto_rotate_tables)
         self._text_merge()
         self._concat_downward()
         self._filter_forpages()
         tbls = self._extract_table_figure(need_image, zoomin, return_html, False)
-        return self.__filterout_scraps(deepcopy(self.boxes), zoomin), tbls
+        boxes = self.__filterout_scraps(deepcopy(self.boxes), zoomin)
+        return self._to_global_boxes(boxes), tbls
 
     def parse_into_bboxes(self, fnm, callback=None, zoomin=3, from_page=0, to_page=MAXIMUM_PAGE_NUMBER):
         self.outlines = extract_pdf_outlines(fnm)

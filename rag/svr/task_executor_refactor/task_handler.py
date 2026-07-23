@@ -519,6 +519,9 @@ class TaskHandler:
         try:
             await self._run_standard_chunking_impl(embedding_model, vector_size)
         except Exception:
+            from api.apps.services.source_projection_service import SourceProjectionService
+
+            SourceProjectionService.fail_pending(ctx.doc_id)
             abort_doc_chunking_counter(ctx.doc_id)
             raise
 
@@ -566,6 +569,9 @@ class TaskHandler:
                 return
             task_time_cost = timer() - task_start_ts
             ctx.recording_context.record("task_status", "completed")
+            from api.apps.services.source_projection_service import SourceProjectionService
+
+            SourceProjectionService.publish(task_doc_id)
             ctx.progress_cb(prog=1.0, msg="Task done ({:.2f}s)".format(task_time_cost))
             return
 
@@ -601,6 +607,9 @@ class TaskHandler:
         chunk_service = ChunkService(ctx=ctx)
 
         if ctx.has_canceled_func(task_id):
+            from api.apps.services.source_projection_service import SourceProjectionService
+
+            SourceProjectionService.fail_pending(task_doc_id)
             abort_doc_chunking_counter(task_doc_id)
             ctx.progress_cb(-1, msg="Task has been canceled.")
             return
@@ -609,6 +618,9 @@ class TaskHandler:
 
         if not insert_result:
             ctx.recording_context.record("insertion_result", "failed")
+            from api.apps.services.source_projection_service import SourceProjectionService
+
+            SourceProjectionService.fail_pending(task_doc_id)
             abort_doc_chunking_counter(task_doc_id)
             return
         ctx.recording_context.record("insertion_result", "success")
@@ -625,6 +637,9 @@ class TaskHandler:
             await post_processor.insert_toc_chunk(toc_chunk, chunk_service)
 
         if ctx.has_canceled_func(task_id):
+            from api.apps.services.source_projection_service import SourceProjectionService
+
+            SourceProjectionService.fail_pending(task_doc_id)
             abort_doc_chunking_counter(task_doc_id)
             ctx.progress_cb(-1, msg="Task has been canceled.")
             return
@@ -646,6 +661,9 @@ class TaskHandler:
 
         task_time_cost = timer() - task_start_ts
         ctx.recording_context.record("task_status", "completed")
+        from api.apps.services.source_projection_service import SourceProjectionService
+
+        SourceProjectionService.publish(task_doc_id)
         ctx.progress_cb(prog=1.0, msg="Task done ({:.2f}s)".format(task_time_cost))
 
         logging.info("Chunk doc({}), page({}-{}), chunks({}), token({}), elapsed:{:.2f}".format(ctx.name, ctx.from_page, ctx.to_page, len(chunks), token_count, task_time_cost))

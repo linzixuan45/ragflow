@@ -112,6 +112,36 @@ def _normalize_section_text_for_rtl_presentation_forms(sections):
     return normalized_sections
 
 
+def _source_projection_blocks(sections, tables):
+    """Preserve parser-owned PDF structure before chunking flattens it."""
+    blocks = []
+    for section in sections or []:
+        if isinstance(section, (tuple, list)):
+            text = section[0] if section else ""
+            layout_type = section[1] if len(section) > 2 and isinstance(section[1], str) else "text"
+            positions = section[-1] if len(section) > 1 else []
+        else:
+            text, layout_type, positions = section, "text", []
+        if isinstance(text, str) and text.strip():
+            block = {"text": text, "layout_type": layout_type}
+            if isinstance(positions, str):
+                block["position_tag"] = positions
+            else:
+                block["positions"] = positions or []
+            blocks.append(block)
+    for table in tables or []:
+        if not isinstance(table, (tuple, list)) or len(table) != 2:
+            continue
+        data, positions = table
+        if not isinstance(data, (tuple, list)) or len(data) != 2:
+            continue
+        _, rows = data
+        text = rows if isinstance(rows, str) else "\n".join(rows or [])
+        if text.strip():
+            blocks.append({"text": text, "layout_type": "table", "positions": positions or []})
+    return blocks
+
+
 def by_deepdoc(filename, binary=None, from_page=0, to_page=MAXIMUM_PAGE_NUMBER, lang="Chinese", callback=None, pdf_cls=None, **kwargs):
     callback = callback
     binary = binary
@@ -1017,6 +1047,8 @@ def chunk(filename, binary=None, from_page=0, to_page=MAXIMUM_PAGE_NUMBER, lang=
         if not sections and not tables:
             return []
 
+        source_projection_blocks = _source_projection_blocks(sections, tables)
+
         if table_context_size or image_context_size:
             tables = append_context2table_image4pdf(sections, tables, image_context_size)
 
@@ -1256,6 +1288,9 @@ def chunk(filename, binary=None, from_page=0, to_page=MAXIMUM_PAGE_NUMBER, lang=
     # task_executor.py will extract and persist it as document metadata.
     if res and pdf_parser and getattr(pdf_parser, "outlines", None):
         res[0]["__outline__"] = [{"title": title, "depth": depth} for title, depth, *_ in pdf_parser.outlines]
+
+    if res and 'source_projection_blocks' in locals() and source_projection_blocks:
+        res[0]["__source_projection_blocks__"] = source_projection_blocks
 
     return res
 

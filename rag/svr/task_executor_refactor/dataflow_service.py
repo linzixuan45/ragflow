@@ -105,6 +105,10 @@ class DataflowService:
             # Load DSL
             dsl, corrected_id = await self._load_dsl(dataflow_id)
             if dsl is None:
+                if doc_id:
+                    from api.apps.services.source_projection_service import SourceProjectionService
+
+                    SourceProjectionService.fail_pending(doc_id)
                 return
             dataflow_id = corrected_id
 
@@ -121,6 +125,9 @@ class DataflowService:
                 ctx.recording_context.record("pipeline_output_count", 0)
                 ctx.recording_context.record("pipeline_output_type", "empty")
                 self._record_pipeline_log(doc_id, dataflow_id, pipeline)
+                from api.apps.services.source_projection_service import SourceProjectionService
+
+                SourceProjectionService.fail_pending(doc_id)
                 return
 
             embedding_token_consumption = chunks.get("embedding_token_consumption", 0)
@@ -132,6 +139,9 @@ class DataflowService:
 
             if not chunks:
                 self._record_pipeline_log(doc_id, dataflow_id, pipeline)
+                from api.apps.services.source_projection_service import SourceProjectionService
+
+                SourceProjectionService.fail_pending(doc_id)
                 return
 
             # Embed chunks if needed
@@ -140,6 +150,9 @@ class DataflowService:
                 chunks, embedding_token_consumption = await self._embed_chunks(chunks, embedding_token_consumption)
                 if chunks is None:
                     self._record_pipeline_log(doc_id, dataflow_id, pipeline)
+                    from api.apps.services.source_projection_service import SourceProjectionService
+
+                    SourceProjectionService.fail_pending(doc_id)
                     return
 
             # Process chunks
@@ -155,6 +168,9 @@ class DataflowService:
             e = await self._insert_chunks(task_id, ctx.tenant_id, ctx.kb_id, chunks)
             if not e:
                 self._record_pipeline_log(doc_id, dataflow_id, pipeline)
+                from api.apps.services.source_projection_service import SourceProjectionService
+
+                SourceProjectionService.fail_pending(doc_id)
                 return
 
             time_cost = timer() - start_ts
@@ -174,7 +190,15 @@ class DataflowService:
             # Billing hook: pipeline succeeded
             if self._billing_hook:
                 await self._billing_hook.on_pipeline_success()
+
+            from api.apps.services.source_projection_service import SourceProjectionService
+
+            SourceProjectionService.publish(doc_id)
         except Exception:
+            if ctx.doc_id:
+                from api.apps.services.source_projection_service import SourceProjectionService
+
+                SourceProjectionService.fail_pending(ctx.doc_id)
             if self._billing_hook:
                 await self._billing_hook.on_pipeline_error()
             raise

@@ -909,6 +909,24 @@ class Document(DataBaseModel):
         db_table = "document"
 
 
+class DocumentProjection(DataBaseModel):
+    """Immutable parser-block snapshot for a document source rendition."""
+
+    id = CharField(max_length=32, primary_key=True)
+    document_id = CharField(max_length=32, null=False, index=True)
+    dataset_id = CharField(max_length=32, null=False, index=True)
+    revision = IntegerField(null=False)
+    state = CharField(max_length=16, null=False, default="PENDING", index=True)
+    source_sha256 = CharField(max_length=64, null=False)
+    parser_fingerprint = CharField(max_length=64, null=False)
+    object_name = CharField(max_length=512, null=False)
+    block_count = IntegerField(null=False, default=0)
+
+    class Meta:
+        db_table = "document_projection"
+        indexes = ((('document_id', 'revision'), True),)
+
+
 class File(DataBaseModel):
     id = CharField(max_length=32, primary_key=True)
     parent_id = CharField(max_length=32, null=False, help_text="parent folder id", index=True)

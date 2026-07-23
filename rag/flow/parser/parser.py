@@ -1386,3 +1386,17 @@ class Parser(ProcessBase):
                 t.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             raise
+
+        # PDF parser output is still structural here. Persist it before a
+        # downstream chunker can merge, split, or enrich the blocks.
+        if self._canvas._doc_id and name.lower().endswith(".pdf") and outs.get("json"):
+            from api.apps.services.source_projection_service import SourceProjectionService
+
+            SourceProjectionService.write_pending(
+                self._canvas._doc_id,
+                self._canvas._kb_id,
+                blob,
+                "dataflow_pdf",
+                self._param.setups.get("pdf", {}),
+                outs["json"],
+            )

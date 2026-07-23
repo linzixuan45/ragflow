@@ -134,6 +134,19 @@ class ChunkService:
         # Run chunking (delegated)
         cks = await run_chunking(chunker, storage_binary, ctx)
 
+        source_blocks = cks[0].pop("__source_projection_blocks__", None) if cks else None
+        if source_blocks and ctx.name.lower().endswith(".pdf"):
+            from api.apps.services.source_projection_service import SourceProjectionService
+
+            SourceProjectionService.write_pending(
+                ctx.doc_id,
+                ctx.kb_id,
+                storage_binary,
+                str(ctx.parser_config.get("layout_recognize") or ctx.parser_id),
+                ctx.parser_config,
+                source_blocks,
+            )
+
         # Record raw chunks
         self._task_context.recording_context.record("raw_chunks", cks)
 
