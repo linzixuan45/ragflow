@@ -29,12 +29,15 @@ services:
     # This keeps :9381/9382/9383/9384 quiet even if a future base file adds
     # them back. The standard entrypoint still runs task executor and API.
     command: []
+    environment:
+      ENABLE_TIMEOUT_ASSERTION: "1"
     ports: !override
       - "127.0.0.1:80:80"
       - "127.0.0.1:9380:9380"
     volumes:
       # Keep the development container on the published runtime image while
       # loading the local Corpus FS implementation for restart-safe testing.
+      - ./nginx/ragflow.conf.python:/etc/nginx/conf.d/ragflow.conf.python:ro
       - ../api/apps/restful_apis/corpus_fs_api.py:/ragflow/api/apps/restful_apis/corpus_fs_api.py:ro
       - ../api/apps/restful_apis/keyword_search_api.py:/ragflow/api/apps/restful_apis/keyword_search_api.py:ro
       - ../agent/tools/googlescholar.py:/ragflow/agent/tools/googlescholar.py:ro
@@ -48,6 +51,7 @@ services:
       - ../api/apps/services/document_api_service.py:/ragflow/api/apps/services/document_api_service.py:ro
       - ../api/db/db_models.py:/ragflow/api/db/db_models.py:ro
       - ../rag/utils/es_conn.py:/ragflow/rag/utils/es_conn.py:ro
+      - ../rag/utils/source_projection.py:/ragflow/rag/utils/source_projection.py:ro
       - ../rag/app/naive.py:/ragflow/rag/app/naive.py:ro
       - ../rag/flow/parser/parser.py:/ragflow/rag/flow/parser/parser.py:ro
       - ../rag/svr/task_executor_refactor/chunk_service.py:/ragflow/rag/svr/task_executor_refactor/chunk_service.py:ro

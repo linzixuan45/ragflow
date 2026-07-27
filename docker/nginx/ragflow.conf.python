@@ -20,6 +20,17 @@ server {
         include proxy.conf;
     }
 
+    # Markdown documents may reference immutable knowledge assets in the
+    # Docker-internal MinIO bucket. Publish only this bucket through RAGFlow;
+    # MinIO itself remains unbound from the host.
+    location ^~ /knowledge-assets/ {
+        proxy_pass http://minio:9000;
+        proxy_set_header Host minio:9000;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_buffering off;
+    }
+
 
     location / {
         index index.html;

@@ -1,9 +1,12 @@
 import gzip
+import io
 import json
+
+from PIL import Image
 
 from api.apps.services.source_projection_service import SourceProjectionService
 from deepdoc.parser.pdf_parser import RAGFlowPdfParser
-from rag.app.naive import _source_projection_blocks
+from rag.utils.source_projection import source_projection_blocks
 
 
 def test_normalize_pdf_blocks_preserves_order_type_coordinates_and_image_association():
@@ -46,7 +49,7 @@ def test_projection_stream_is_ndjson_with_manifest_and_flat_blocks():
 
 
 def test_standard_pdf_parser_blocks_preserve_deepdoc_and_mineru_shapes():
-    blocks = _source_projection_blocks(
+    blocks = source_projection_blocks(
         [
             ("DeepDOC body", "@@1\t10\t20\t30\t40##"),
             ("MinerU heading", "title", [[2, 10, 20, 30, 40]]),
@@ -61,8 +64,104 @@ def test_standard_pdf_parser_blocks_preserve_deepdoc_and_mineru_shapes():
     assert normalized[2]["positions"] == [[3, 10, 20, 30, 40]]
 
 
+def test_source_projection_unifies_body_tables_and_figures_in_pdf_order():
+    image = object()
+    blocks = source_projection_blocks(
+        [
+            ("later body", "text", [[2, 10, 20, 100, 120]]),
+            ("earlier heading", "title", [[1, 10, 20, 20, 40]]),
+        ],
+        [
+            ((image, "Figure 1: result"), [[1, 10, 20, 60, 90]]),
+            ((None, "<table><tr><td>value</td></tr></table>"), [[2, 10, 20, 40, 80]]),
+        ],
+    )
+
+    assert [block["layout_type"] for block in blocks] == ["title", "figure", "table", "text"]
+    assert blocks[1]["image"] is image
+
+
+def test_source_projection_keeps_image_only_figures():
+    image = object()
+
+    blocks = source_projection_blocks([], [((image, ""), [[3, 10, 20, 30, 40]])])
+
+    assert len(blocks) == 1
+    assert blocks[0]["layout_type"] == "figure"
+    assert blocks[0]["text"] == ""
+    assert blocks[0]["image"] is image
+
+
+def test_projection_images_are_materialized_in_the_dataset_bucket(monkeypatch):
+    stored = {}
+
+    class Storage:
+        @staticmethod
+        def get(bucket, name):
+            assert (bucket, name) == ("imagetemps", "old-image")
+            return b"existing-image"
+
+        @staticmethod
+        def put(bucket, name, data):
+            stored[(bucket, name)] = data
+
+    monkeypatch.setattr("api.apps.services.source_projection_service.settings.STORAGE_IMPL", Storage())
+    generated = Image.new("RGB", (2, 2), "white")
+    blocks = [
+        {"block_ref": "0", "_image": generated, "image_id": None},
+        {"block_ref": "1", "image_id": "imagetemps-old-image"},
+    ]
+
+    SourceProjectionService._store_block_images("dataset-1", "doc-1", 3, blocks)
+
+    assert blocks[0]["image_id"] == "dataset-1-source-projections/doc-1/3/images/0.png"
+    assert blocks[1]["image_id"] == "dataset-1-source-projections/doc-1/3/images/1.png"
+    assert stored[("dataset-1", "source-projections/doc-1/3/images/1.png")] == b"existing-image"
+    assert Image.open(io.BytesIO(stored[("dataset-1", "source-projections/doc-1/3/images/0.png")])).size == (2, 2)
+
+
+def test_projection_page_windows_merge_in_global_pdf_order_without_duplicates():
+    first_window = SourceProjectionService.normalize_pdf_blocks(
+        [
+            {"text": "page 1", "layout_type": "text", "positions": [[1, 0, 100, 10, 20]]},
+            {"text": "page 2", "layout_type": "text", "positions": [[2, 0, 100, 10, 20]]},
+        ]
+    )
+    second_window = SourceProjectionService.normalize_pdf_blocks(
+        [
+            {"text": "page 2", "layout_type": "text", "positions": [[2, 0, 100, 10, 20]]},
+            {"text": "page 3", "layout_type": "text", "positions": [[3, 0, 100, 10, 20]]},
+        ]
+    )
+
+    merged = SourceProjectionService.merge_projection_blocks(first_window, second_window)
+
+    assert [block["text"] for block in merged] == ["page 1", "page 2", "page 3"]
+    assert [block["ordinal"] for block in merged] == [0, 1, 2]
+    assert [block["block_ref"] for block in merged] == ["0", "1", "2"]
+
+
+def test_projection_page_window_offsets_deepdoc_sections_but_not_global_tables():
+    source_blocks = source_projection_blocks(
+        [
+            ("window page 1", "@@1\t0\t100\t10\t20##"),
+            ("window page 2", "text", [[2, 0, 100, 10, 20]]),
+        ],
+        [((None, "<table><tr><td>global page 13</td></tr></table>"), [[13, 0, 100, 30, 40]])],
+        section_page_offset=12,
+    )
+    blocks = SourceProjectionService.normalize_pdf_blocks(source_blocks)
+
+    assert [block["page"] for block in blocks] == [13, 13, 14]
+    assert [block["text"] for block in blocks] == [
+        "window page 1",
+        "<table><tr><td>global page 13</td></tr></table>",
+        "window page 2",
+    ]
+
+
 def test_deepdoc_page_window_restores_global_page_numbers(monkeypatch):
-    parser = RAGFlowPdfParser()
+    parser = RAGFlowPdfParser.__new__(RAGFlowPdfParser)
     captured: dict[str, int] = {}
 
     def load_window(_fnm, _zoom, page_from=0, page_to=0, callback=None):

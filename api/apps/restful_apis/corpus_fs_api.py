@@ -1,19 +1,29 @@
-"""Read-only Corpus FS HTTP contract."""
+"""Dataset-scoped, path-only Corpus FS HTTP contract."""
 
 from __future__ import annotations
 
 import hashlib
+import hmac
+import json
 import mimetypes
 import os
+import time
 
 from quart import make_response, request
 
 from api.apps import login_required
 from api.apps.services.corpus_cursor_service import CorpusCursorError, CorpusCursorService, CorpusPageCursorService
-from api.apps.services.corpus_fs_service import CorpusFsError, CorpusFsService
+from api.apps.services.corpus_fs_service import CorpusFsError, CorpusFsService, InvalidConfirmationError
 from api.apps.services.corpus_path_service import AmbiguousPathError, CorpusPathError
 from api.apps.services.keyword_search_service import KeywordSearchService, SearchUnavailableError
 from api.apps.services import dataset_api_service
+from api.db.db_models import Task
+from api.db.services.document_service import DocumentService
+from api.db.services.file2document_service import File2DocumentService
+from api.db.services.file_service import FileService
+from api.db.services.task_service import TaskService, queue_tasks
+from common.constants import TaskStatus
+from common.misc_utils import thread_pool_exec
 from api.utils.api_utils import add_tenant_id_to_kwargs, get_error_data_result, get_result
 
 
@@ -67,6 +77,33 @@ def _page_offset(service: CorpusFsService, operation: str, scope: dict, cursor: 
 
 def _next_page_cursor(context: dict, offset: int, more: bool) -> str | None:
     return _page_cursor_service().issue(context, offset) if more else None
+
+
+def _delete_secret() -> bytes:
+    return os.environ.get("RAGFLOW_CORPUS_CURSOR_SECRET", "ragflow-corpus-fs-development-secret").encode()
+
+
+def _delete_snapshot(dataset_id: str, paths: list[str], target_ids: list[str]) -> str:
+    value = json.dumps({"dataset": dataset_id, "paths": paths, "targets": target_ids}, separators=(",", ":"), sort_keys=True).encode()
+    return hmac.new(_delete_secret(), value, hashlib.sha256).hexdigest()
+
+
+def _issue_delete_token(service: CorpusFsService, paths: list[str], target_ids: list[str]) -> str:
+    payload = json.dumps({"actor": service.actor_digest, "dataset": service.dataset_id, "paths": paths, "snapshot": _delete_snapshot(service.dataset_id, paths, target_ids), "exp": int(time.time()) + 300}, separators=(",", ":"), sort_keys=True).encode()
+    return f"{payload.hex()}.{hmac.new(_delete_secret(), payload, hashlib.sha256).hexdigest()}"
+
+
+def _parse_delete_token(service: CorpusFsService, paths: list[str], token: str) -> dict:
+    try:
+        encoded, supplied = token.rsplit(".", 1)
+        payload = bytes.fromhex(encoded)
+        data = json.loads(payload)
+        expected = hmac.new(_delete_secret(), payload, hashlib.sha256).hexdigest()
+    except Exception as exc:
+        raise InvalidConfirmationError("invalid delete confirmation") from exc
+    if not hmac.compare_digest(expected, supplied) or data.get("actor") != service.actor_digest or data.get("dataset") != service.dataset_id or data.get("paths") != paths or int(data.get("exp", 0)) < int(time.time()):
+        raise InvalidConfirmationError("delete confirmation expired or mismatched")
+    return data
 
 
 def _image_content_type(object_name: str, data: bytes) -> str:
@@ -136,6 +173,104 @@ def tree(tenant_id: str, dataset_id: str):
         return _error(error)
 
 
+@manager.route("/datasets/<dataset_id>/fs/entries/folders", methods=["POST"])  # noqa: F821
+@login_required
+@add_tenant_id_to_kwargs
+async def create_folder(tenant_id: str, dataset_id: str):
+    try:
+        payload = _body(await request.get_json() or {}, {"parent_path", "name"})
+        service = _service(tenant_id, dataset_id)
+        entry = service.create_folder(_body_string(payload, "parent_path", "/files", 1024), _body_string(payload, "name", maximum=256))
+        return _success(service, entry)
+    except (CorpusFsError, CorpusPathError) as error:
+        return _error(error)
+
+
+@manager.route("/datasets/<dataset_id>/fs/entries/upload", methods=["POST"])  # noqa: F821
+@login_required
+@add_tenant_id_to_kwargs
+async def upload(tenant_id: str, dataset_id: str):
+    try:
+        service = _service(tenant_id, dataset_id)
+        form = await request.form
+        parent_path = form.get("parent_path", "/files")
+        service.resolve_writable(parent_path, folder=True)
+        files = await request.files
+        file_objs = files.getlist("file") if "file" in files else []
+        if not file_objs or any(not item.filename for item in file_objs):
+            raise CorpusFsError("file is required")
+        errors, uploaded = await thread_pool_exec(FileService.upload_document, service._dataset(), file_objs, tenant_id)
+        if errors or not uploaded:
+            raise CorpusFsError("; ".join(errors) if errors else "upload failed")
+        document_ids = [document["id"] for document, _ in uploaded]
+        service.relocate_uploaded_documents(document_ids, parent_path)
+        for document_id in document_ids:
+            DocumentService.filter_update([DocumentService.model.id == document_id], {"run": TaskStatus.RUNNING.value, "progress": 0, "progress_msg": "", "chunk_num": 0, "token_num": 0})
+            TaskService.filter_delete([Task.doc_id == document_id])
+            found, document = DocumentService.get_by_id(document_id)
+            if found:
+                value = document.to_dict()
+                value["tenant_id"] = tenant_id
+                bucket, name = File2DocumentService.get_storage_address(doc_id=document_id)
+                queue_tasks(value, bucket, name, 0)
+        visible, _ = service.tree(parent_path, 200, 0)
+        names = {item.filename for item in file_objs}
+        return _success(service, {"items": [entry for entry in visible if entry["name"] in names]})
+    except (CorpusFsError, CorpusPathError) as error:
+        return _error(error)
+
+
+@manager.route("/datasets/<dataset_id>/fs/entries/move", methods=["POST"])  # noqa: F821
+@login_required
+@add_tenant_id_to_kwargs
+async def move(tenant_id: str, dataset_id: str):
+    try:
+        payload = _body(await request.get_json() or {}, {"source_paths", "destination_path", "new_name"})
+        source_paths = payload.get("source_paths")
+        if not isinstance(source_paths, list) or not source_paths or not all(isinstance(path, str) for path in source_paths):
+            raise CorpusFsError("source_paths is invalid")
+        service = _service(tenant_id, dataset_id)
+        count = service.move(source_paths, _body_string(payload, "destination_path", maximum=1024), payload.get("new_name"))
+        return _success(service, {"success_count": count, "failed_paths": []})
+    except (CorpusFsError, CorpusPathError) as error:
+        return _error(error)
+
+
+@manager.route("/datasets/<dataset_id>/fs/entries/delete-preview", methods=["POST"])  # noqa: F821
+@login_required
+@add_tenant_id_to_kwargs
+async def delete_preview(tenant_id: str, dataset_id: str):
+    try:
+        payload = _body(await request.get_json() or {}, {"paths"})
+        paths = sorted(set(payload.get("paths") or []))
+        if not paths or not all(isinstance(path, str) for path in paths):
+            raise CorpusFsError("paths is invalid")
+        service = _service(tenant_id, dataset_id)
+        target_ids, file_count, folder_count = service.deletion_targets(paths)
+        return _success(service, {"file_count": file_count, "folder_count": folder_count, "confirmation_token": _issue_delete_token(service, paths, target_ids)})
+    except (CorpusFsError, CorpusPathError) as error:
+        return _error(error)
+
+
+@manager.route("/datasets/<dataset_id>/fs/entries", methods=["DELETE"])  # noqa: F821
+@login_required
+@add_tenant_id_to_kwargs
+async def delete_entries(tenant_id: str, dataset_id: str):
+    try:
+        payload = _body(await request.get_json() or {}, {"paths", "confirmation_token"})
+        paths = sorted(set(payload.get("paths") or []))
+        if not paths or not all(isinstance(path, str) for path in paths):
+            raise CorpusFsError("paths is invalid")
+        service = _service(tenant_id, dataset_id)
+        token = _parse_delete_token(service, paths, _body_string(payload, "confirmation_token", maximum=4096))
+        target_ids, _, _ = service.deletion_targets(paths)
+        if not hmac.compare_digest(str(token.get("snapshot") or ""), _delete_snapshot(dataset_id, paths, target_ids)):
+            raise InvalidConfirmationError("delete targets changed after preview")
+        return _success(service, service.delete(paths))
+    except (CorpusFsError, CorpusPathError) as error:
+        return _error(error)
+
+
 @manager.route("/datasets/<dataset_id>/fs/find", methods=["GET"])  # noqa: F821
 @login_required
 @add_tenant_id_to_kwargs
@@ -197,26 +332,29 @@ def content(tenant_id: str, dataset_id: str):
         text, source, images, blocks = service.content_text(document, page, kinds)
         cursor_service = CorpusCursorService(os.environ.get("RAGFLOW_CORPUS_CURSOR_SECRET", "ragflow-corpus-fs-development-secret").encode())
         cursor = request.args.get("cursor")
-        cursor_scope = hashlib.sha256(f"{entry['_content_hash']}:{source}:{page}:{','.join(sorted(kinds or []))}".encode()).hexdigest()
-        offset = cursor_service.parse(cursor, tenant_id, dataset_id, document["id"], cursor_scope)["offset"] if cursor else 0
-        encoded = text.encode("utf-8")
-        segment = encoded[offset : offset + maximum].decode("utf-8", errors="ignore")
-        next_offset = offset + len(segment.encode("utf-8"))
-        next_cursor = cursor_service.issue(tenant_id, dataset_id, document["id"], cursor_scope, next_offset) if next_offset < len(encoded) else None
-        visible_images = [image for image in images if offset <= image["offset"] <= next_offset]
-        visible_blocks = []
-        for block in blocks:
-            if block["end"] <= offset or block["start"] >= next_offset:
-                continue
-            block_bytes = block["content"].encode("utf-8")
-            start = max(offset - block["start"], 0)
-            end = min(next_offset - block["start"], len(block_bytes))
-            item = {key: block[key] for key in ("block_ref", "ordinal", "kind", "page", "positions", "parent_block_ref") if key in block}
-            item["content"] = block_bytes[start:end].decode("utf-8", errors="ignore")
-            if block.get("image_ref") and block["end"] <= next_offset:
-                item["image_ref"] = block["image_ref"]
-            visible_blocks.append(item)
-        return _success(service, {"path": entry["path"], "content": segment, "content_source": source, "ranges": [{"start": offset, "end": next_offset}], "blocks": visible_blocks, "images": visible_images, "citation_ref": cursor_service.issue(tenant_id, dataset_id, document["id"], cursor_scope, offset), "next_cursor": next_cursor})
+        cursor_scope = hashlib.sha256(f"block-pages-v1:{entry['_content_hash']}:{source}:{page}:{','.join(sorted(kinds or []))}".encode()).hexdigest()
+        block_index = cursor_service.parse(cursor, tenant_id, dataset_id, document["id"], cursor_scope)["offset"] if cursor else 0
+        visible_blocks, next_index = service.content_page(blocks, block_index, maximum)
+        next_cursor = cursor_service.issue(tenant_id, dataset_id, document["id"], cursor_scope, next_index) if next_index < len(blocks) else None
+        segment = "\n\n".join(block.get("content", "") for block in visible_blocks)
+        image_refs = {block.get("image_ref") for block in visible_blocks if block.get("image_ref")}
+        visible_images = [image for image in images if image.get("image_ref") in image_refs]
+        projection_revision = int(source.rsplit(":", 1)[1]) if source.startswith("source_projection:") else None
+        range_start = visible_blocks[0]["start"] if visible_blocks else 0
+        range_end = visible_blocks[-1]["end"] if visible_blocks else range_start
+        return _success(service, {
+            "path": entry["path"],
+            "content": segment,
+            "content_source": source,
+            "ranges": [{"start": range_start, "end": range_end}],
+            "blocks": visible_blocks,
+            "images": visible_images,
+            "citation_ref": cursor_service.issue(tenant_id, dataset_id, document["id"], cursor_scope, block_index),
+            "next_cursor": next_cursor,
+            "projection_revision": projection_revision,
+            "block_count": len(blocks),
+            "returned_count": len(visible_blocks),
+        })
     except CorpusCursorError:
         return _error(CorpusFsError("invalid cursor"))
     except (ValueError, CorpusFsError, CorpusPathError) as error:

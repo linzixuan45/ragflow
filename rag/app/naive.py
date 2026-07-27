@@ -40,6 +40,7 @@ from api.db.joint_services.tenant_model_service import (
     get_tenant_default_model_by_type,
 )
 from rag.utils.file_utils import extract_embed_file, extract_links_from_pdf, extract_links_from_docx, extract_html
+from rag.utils.source_projection import source_projection_blocks as build_source_projection_blocks
 from deepdoc.parser import DocxParser, EpubParser, ExcelParser, HtmlParser, JsonParser, MarkdownElementExtractor, MarkdownParser, PdfParser, TxtParser
 from deepdoc.parser.figure_parser import VisionFigureParser, vision_figure_parser_docx_wrapper_naive, vision_figure_parser_pdf_wrapper
 from deepdoc.parser.pdf_parser import PlainParser, VisionParser
@@ -110,36 +111,6 @@ def _normalize_section_text_for_rtl_presentation_forms(sections):
         normalized_sections.append(normalize_arabic_presentation_forms(section))
 
     return normalized_sections
-
-
-def _source_projection_blocks(sections, tables):
-    """Preserve parser-owned PDF structure before chunking flattens it."""
-    blocks = []
-    for section in sections or []:
-        if isinstance(section, (tuple, list)):
-            text = section[0] if section else ""
-            layout_type = section[1] if len(section) > 2 and isinstance(section[1], str) else "text"
-            positions = section[-1] if len(section) > 1 else []
-        else:
-            text, layout_type, positions = section, "text", []
-        if isinstance(text, str) and text.strip():
-            block = {"text": text, "layout_type": layout_type}
-            if isinstance(positions, str):
-                block["position_tag"] = positions
-            else:
-                block["positions"] = positions or []
-            blocks.append(block)
-    for table in tables or []:
-        if not isinstance(table, (tuple, list)) or len(table) != 2:
-            continue
-        data, positions = table
-        if not isinstance(data, (tuple, list)) or len(data) != 2:
-            continue
-        _, rows = data
-        text = rows if isinstance(rows, str) else "\n".join(rows or [])
-        if text.strip():
-            blocks.append({"text": text, "layout_type": "table", "positions": positions or []})
-    return blocks
 
 
 def by_deepdoc(filename, binary=None, from_page=0, to_page=MAXIMUM_PAGE_NUMBER, lang="Chinese", callback=None, pdf_cls=None, **kwargs):
@@ -716,12 +687,20 @@ class Pdf(PdfParser):
         if separate_tables_figures:
             tbls, figures = self._extract_table_figure(True, zoomin, True, True, True)
             self._concat_downward()
+            self.source_projection_sections = [
+                (box["text"], box.get("layout_type", "text"), self._line_tag(box, zoomin))
+                for box in self.boxes
+            ]
             logging.info("layouts cost: {}s".format(timer() - first_start))
             return [(b["text"], self._line_tag(b, zoomin)) for b in self.boxes], tbls, figures
         else:
             tbls = self._extract_table_figure(True, zoomin, True, True)
             self._naive_vertical_merge()
             self._concat_downward()
+            self.source_projection_sections = [
+                (box["text"], box.get("layout_type", "text"), self._line_tag(box, zoomin))
+                for box in self.boxes
+            ]
             # self._final_reading_order_merge()
             # self._filter_forpages()
             logging.info("layouts cost: {}s".format(timer() - first_start))
@@ -1043,11 +1022,18 @@ def chunk(filename, binary=None, from_page=0, to_page=MAXIMUM_PAGE_NUMBER, lang=
             **kwargs,
         )
         sections = _normalize_section_text_for_rtl_presentation_forms(sections)
+        projection_sections = _normalize_section_text_for_rtl_presentation_forms(
+            getattr(pdf_parser, "source_projection_sections", sections)
+        )
 
         if not sections and not tables:
             return []
 
-        source_projection_blocks = _source_projection_blocks(sections, tables)
+        source_projection_blocks = build_source_projection_blocks(
+            projection_sections,
+            tables,
+            section_page_offset=from_page if name == "deepdoc" else 0,
+        )
 
         if table_context_size or image_context_size:
             tables = append_context2table_image4pdf(sections, tables, image_context_size)

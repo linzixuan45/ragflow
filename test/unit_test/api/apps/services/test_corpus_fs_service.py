@@ -1,7 +1,10 @@
 from common import settings
 from common.constants import TaskStatus
 
-from api.apps.services.corpus_fs_service import CorpusFsService
+import pytest
+
+from api.apps.services.corpus_fs_service import CorpusFsService, MoveCycleError
+from api.db.services.file_service import FileService
 from api.apps.services.source_projection_service import SourceProjectionService
 
 
@@ -39,6 +42,34 @@ def test_numbered_legacy_root_filename_is_not_mistaken_for_a_directory():
     file = {"id": "file-1", "name": "002_建议反馈___异常处理.md", "parent_id": "root"}
 
     assert CorpusFsService._file_parts(file, {}) == ["002_建议反馈___异常处理.md"]
+
+
+def test_create_folder_returns_path_only_entry(monkeypatch):
+    service = CorpusFsService("tenant-1", "dataset-1", "actor")
+    monkeypatch.setattr(service, "resolve_writable", lambda path, folder=None: {"path": "/files", "kind": "directory", "_file_id": "private-root"})
+    monkeypatch.setattr(FileService, "query", classmethod(lambda _cls, **_kwargs: []))
+
+    class Inserted:
+        pass
+
+    monkeypatch.setattr(FileService, "insert", classmethod(lambda _cls, _value: Inserted()))
+
+    result = service.create_folder("/files", "policies")
+
+    assert result == {"kind": "directory", "name": "policies", "path": "/files/policies", "child_count": 0}
+    assert "private-root" not in str(result)
+
+
+def test_move_rejects_destination_inside_source(monkeypatch):
+    service = CorpusFsService("tenant-1", "dataset-1", "actor")
+    entries = {
+        "/files/policies": {"path": "/files/policies", "name": "policies", "kind": "directory", "_file_id": "source-id"},
+        "/files/policies/archive": {"path": "/files/policies/archive", "name": "archive", "kind": "directory", "_file_id": "destination-id"},
+    }
+    monkeypatch.setattr(service, "resolve_writable", lambda path, folder=None: entries[path])
+
+    with pytest.raises(MoveCycleError):
+        service.move(["/files/policies"], "/files/policies/archive")
 
 
 def test_parsed_content_projects_opaque_image_reference_without_image_id(monkeypatch):
@@ -134,3 +165,28 @@ def test_pdf_content_prefers_active_source_projection_and_filters_blocks(monkeyp
     assert source == "source_projection:4"
     assert images == []
     assert blocks == [{"block_ref": "1", "ordinal": 1, "kind": "paragraph", "page": 2, "positions": [[2, 1, 2, 3, 4]], "parent_block_ref": None, "content": "Body", "start": 0, "end": 4}]
+
+
+def test_content_page_keeps_blocks_whole_across_byte_limit():
+    blocks = [
+        {"block_ref": "a", "content": "a" * 20, "start": 0, "end": 20},
+        {"block_ref": "b", "content": "b" * 20, "start": 20, "end": 40},
+        {"block_ref": "c", "content": "c" * 20, "start": 40, "end": 60},
+    ]
+
+    first, next_index = CorpusFsService.content_page(blocks, 0, 32)
+    second, final_index = CorpusFsService.content_page(blocks, next_index, 32)
+
+    assert [block["block_ref"] for block in first] == ["a"]
+    assert [block["block_ref"] for block in second] == ["b"]
+    assert final_index == 2
+    assert first[0]["content"] == "a" * 20
+
+
+def test_content_page_returns_oversized_first_block_without_splitting():
+    blocks = [{"block_ref": "a", "content": "内容" * 20, "start": 0, "end": 120}]
+
+    page, next_index = CorpusFsService.content_page(blocks, 0, 8)
+
+    assert page == blocks
+    assert next_index == 1
