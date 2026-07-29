@@ -13,14 +13,17 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 #
-import logging
-import os
 import enum
 import json
+import logging
+import os
+
+from api.db.services.tenant_llm_service import TenantService
+from api.db.services.tenant_model_instance_service import TenantModelInstanceService
+from api.db.services.tenant_model_provider_service import TenantModelProviderService
+from api.db.services.tenant_model_service import TenantModelService
 from common import settings
 from common.constants import (
-    ActiveStatusEnum,
-    LLMType,
     MINERU_DEFAULT_CONFIG,
     MINERU_ENV_KEYS,
     OPENDATALOADER_DEFAULT_CONFIG,
@@ -29,11 +32,9 @@ from common.constants import (
     PADDLEOCR_ENV_KEYS,
     SOMARK_DEFAULT_CONFIG,
     SOMARK_ENV_KEYS,
+    ActiveStatusEnum,
+    LLMType,
 )
-from api.db.services.tenant_llm_service import TenantService
-from api.db.services.tenant_model_provider_service import TenantModelProviderService
-from api.db.services.tenant_model_instance_service import TenantModelInstanceService
-from api.db.services.tenant_model_service import TenantModelService
 
 logger = logging.getLogger(__name__)
 
@@ -235,6 +236,27 @@ def _resolve_instance_for_model(provider_obj, instance_name: str, model_name: st
     raise LookupError(f"Instance {instance_name} not found for model {model_name}.")
 
 
+def _configured_system_default(model_type: str, model_name: str) -> dict | None:
+    config = {
+        LLMType.EMBEDDING.value: settings.EMBEDDING_CFG,
+        LLMType.RERANK.value: settings.RERANK_CFG,
+    }.get(model_type)
+    if not config or model_name != config.get("model"):
+        return None
+
+    pure_model_name, _, provider_name = split_model_name(model_name)
+    factory = config.get("factory") or provider_name
+    if not pure_model_name or not factory or not config.get("base_url"):
+        return None
+    return {
+        "llm_factory": factory,
+        "api_key": config.get("api_key", ""),
+        "llm_name": pure_model_name,
+        "api_base": config["base_url"],
+        "model_type": model_type,
+    }
+
+
 def get_model_config_from_provider_instance(tenant_id, model_type: str | enum.Enum, model_name: str):
     pure_model_name, instance_name, provider_name = split_model_name(model_name)
     model_type_val = model_type if isinstance(model_type, str) else model_type.value
@@ -253,6 +275,10 @@ def get_model_config_from_provider_instance(tenant_id, model_type: str | enum.En
             "api_base": embedding_cfg["base_url"],
             "model_type": LLMType.EMBEDDING.value,
         }
+
+    system_default = _configured_system_default(model_type_val, model_name)
+    if system_default:
+        return system_default
 
     provider_obj = TenantModelProviderService.get_by_tenant_id_and_provider_name(tenant_id, provider_name)
     if not provider_obj:

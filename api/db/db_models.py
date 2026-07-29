@@ -257,7 +257,39 @@ class JsonSerializedField(SerializedField):
         super(JsonSerializedField, self).__init__(serialized_type=SerializedType.JSON, object_hook=object_hook, object_pairs_hook=object_pairs_hook, **kwargs)
 
 
-class RetryingPooledMySQLDatabase(PooledMySQLDatabase):
+class TransactionAwareConnectionContext:
+    """Keep an existing connection open when called inside a transaction."""
+
+    __slots__ = ("database", "opened")
+
+    def __init__(self, database):
+        self.database = database
+        self.opened = False
+
+    def __enter__(self):
+        self.opened = self.database.is_closed()
+        if self.opened:
+            self.database.connect()
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        if self.opened:
+            self.database.close()
+
+    def __call__(self, function):
+        @wraps(function)
+        def inner(*args, **kwargs):
+            with type(self)(self.database):
+                return function(*args, **kwargs)
+
+        return inner
+
+
+class TransactionAwareConnectionMixin:
+    def connection_context(self):
+        return TransactionAwareConnectionContext(self)
+
+
+class RetryingPooledMySQLDatabase(TransactionAwareConnectionMixin, PooledMySQLDatabase):
     def __init__(self, *args, **kwargs):
         self.max_retries = kwargs.pop("max_retries", 5)
         self.retry_delay = kwargs.pop("retry_delay", 1)
@@ -318,7 +350,7 @@ class RetryingPooledMySQLDatabase(PooledMySQLDatabase):
         return None
 
 
-class RetryingPooledPostgresqlDatabase(PooledPostgresqlDatabase):
+class RetryingPooledPostgresqlDatabase(TransactionAwareConnectionMixin, PooledPostgresqlDatabase):
     def __init__(self, *args, **kwargs):
         self.max_retries = kwargs.pop("max_retries", 5)
         self.retry_delay = kwargs.pop("retry_delay", 1)
@@ -383,7 +415,7 @@ class RetryingPooledPostgresqlDatabase(PooledPostgresqlDatabase):
         return None
 
 
-class RetryingPooledOceanBaseDatabase(PooledMySQLDatabase):
+class RetryingPooledOceanBaseDatabase(TransactionAwareConnectionMixin, PooledMySQLDatabase):
     """Pooled OceanBase database with retry mechanism.
 
     OceanBase is compatible with MySQL protocol, so we inherit from PooledMySQLDatabase.
@@ -924,6 +956,23 @@ class DocumentProjection(DataBaseModel):
 
     class Meta:
         db_table = "document_projection"
+        indexes = ((('document_id', 'revision'), True),)
+
+
+class DocumentMarkdownVersion(DataBaseModel):
+    """Immutable Markdown derivative version for an uploaded document."""
+
+    id = CharField(max_length=32, primary_key=True)
+    document_id = CharField(max_length=32, null=False, index=True)
+    dataset_id = CharField(max_length=32, null=False, index=True)
+    revision = IntegerField(null=False)
+    content_sha256 = CharField(max_length=64, null=False)
+    object_name = CharField(max_length=512, null=False)
+    created_by = CharField(max_length=32, null=False, index=True)
+    restored_from_revision = IntegerField(null=True)
+
+    class Meta:
+        db_table = "document_markdown_version"
         indexes = ((('document_id', 'revision'), True),)
 
 

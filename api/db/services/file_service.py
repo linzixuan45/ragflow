@@ -23,8 +23,6 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Union
 
-logger = logging.getLogger(__name__)
-
 import xxhash
 from peewee import fn
 
@@ -34,14 +32,16 @@ from api.db.services import duplicate_name
 from api.db.services.common_service import CommonService
 from api.db.services.document_service import DocumentService
 from api.db.services.file2document_service import File2DocumentService
-from common.misc_utils import get_uuid
-from common.ssrf_guard import assert_url_is_safe
-from common.constants import TaskStatus, FileSource, ParserType, MAXIMUM_PAGE_NUMBER
 from api.db.services.knowledgebase_service import KnowledgebaseService
 from api.db.services.task_service import TaskService
-from api.utils.file_utils import filename_type, read_potential_broken_pdf, thumbnail_img, sanitize_path
-from rag.llm.cv_model import GptV4
+from api.utils.file_utils import filename_type, read_potential_broken_pdf, sanitize_path, thumbnail_img
 from common import settings
+from common.constants import MAXIMUM_PAGE_NUMBER, FileSource, ParserType, TaskStatus
+from common.misc_utils import get_uuid
+from common.ssrf_guard import assert_url_is_safe
+from rag.llm.cv_model import GptV4
+
+logger = logging.getLogger(__name__)
 
 
 class FileService(CommonService):
@@ -235,14 +235,18 @@ class FileService(CommonService):
 
     @classmethod
     @DB.connection_context()
-    def get_root_folder(cls, tenant_id):
-        # Get or create root folder for tenant
-        # Args:
-        #     tenant_id: Tenant ID
-        # Returns:
-        #     Root folder dictionary
+    def _find_root_folder(cls, tenant_id):
         for file in cls.model.select().where((cls.model.tenant_id == tenant_id), (cls.model.parent_id == cls.model.id)):
             return file.to_dict()
+        return None
+
+    @classmethod
+    @DB.connection_context()
+    def get_root_folder(cls, tenant_id):
+        # Get or create root folder for tenant
+        file = cls._find_root_folder(tenant_id)
+        if file:
+            return file
 
         file_id = get_uuid()
         file = {
@@ -260,19 +264,30 @@ class FileService(CommonService):
 
     @classmethod
     @DB.connection_context()
-    def get_kb_folder(cls, tenant_id):
-        # Get dataset folder for tenant
-        # Args:
-        #     tenant_id: Tenant ID
-        # Returns:
-        #     Knowledge base folder dictionary
-        root_folder = cls.get_root_folder(tenant_id)
+    def _find_kb_folder(cls, tenant_id, root_folder=None):
+        root_folder = root_folder or cls._find_root_folder(tenant_id)
+        if not root_folder:
+            return None
         root_id = root_folder["id"]
         kb_folder = cls.model.select().where((cls.model.tenant_id == tenant_id), (cls.model.parent_id == root_id), (cls.model.name == KNOWLEDGEBASE_FOLDER_NAME)).first()
-        if not kb_folder:
-            kb_folder = cls.new_a_file_from_kb(tenant_id, KNOWLEDGEBASE_FOLDER_NAME, root_id)
+        return kb_folder.to_dict() if kb_folder else None
+
+    @classmethod
+    @DB.connection_context()
+    def get_kb_folder(cls, tenant_id):
+        # Get or create dataset folder for tenant
+        root_folder = cls.get_root_folder(tenant_id)
+        kb_folder = cls._find_kb_folder(tenant_id, root_folder)
+        if kb_folder:
             return kb_folder
-        return kb_folder.to_dict()
+        return cls.new_a_file_from_kb(tenant_id, KNOWLEDGEBASE_FOLDER_NAME, root_folder["id"])
+
+    @classmethod
+    def ensure_dataset_folder(cls, tenant_id, dataset_name):
+        root_folder = cls.get_root_folder(tenant_id)
+        cls.init_knowledgebase_docs(root_folder["id"], tenant_id)
+        kb_folder = cls.get_kb_folder(tenant_id)
+        return cls.new_a_file_from_kb(tenant_id, dataset_name, kb_folder["id"])
 
     @classmethod
     @DB.connection_context()

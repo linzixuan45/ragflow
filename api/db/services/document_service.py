@@ -457,9 +457,15 @@ class DocumentService(CommonService):
     @DB.connection_context()
     def remove_document(cls, doc, tenant_id):
         from api.db.services.task_service import TaskService, cancel_all_task_of
+        from api.apps.services.document_markdown_service import DocumentMarkdownService
 
         if not cls.delete_document_and_update_kb_counts(doc.id):
             return True
+
+        try:
+            DocumentMarkdownService.delete_all(doc.id)
+        except Exception as e:
+            logging.warning(f"Failed to delete Markdown derivatives for document {doc.id}: {e}")
 
         chunk_index_name = search.index_name(tenant_id)
         chunk_index_exists = settings.docStoreConn.index_exist(chunk_index_name, doc.kb_id)
