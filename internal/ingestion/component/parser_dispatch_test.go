@@ -512,7 +512,7 @@ func TestDispatch_PDFVisionJSON_PreservesEmptyPages(t *testing.T) {
 func TestDispatch_PDFMinerUMarkdown_UsesConfiguredBackend(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodPost && r.URL.Path == "/file_parse":
+		case r.Method == http.MethodPost && r.URL.Path == "/tasks":
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"data":{"task_id":"task-3"}}`))
 		case r.Method == http.MethodGet && r.URL.Path == "/tasks/task-3/result":
