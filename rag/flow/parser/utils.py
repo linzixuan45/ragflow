@@ -19,10 +19,7 @@ from io import BytesIO
 from bs4 import BeautifulSoup
 from docx import Document
 from api.db.services.llm_service import LLMBundle
-from api.db.joint_services.tenant_model_service import (
-    get_tenant_default_model_by_type,
-    get_model_config_from_provider_instance,
-)
+from api.db.joint_services.tenant_model_service import get_model_config_from_provider_instance
 from common.constants import LLMType
 from deepdoc.parser.figure_parser import VisionFigureParser
 from rag.nlp import is_english, random_choices, remove_contents_table
@@ -165,14 +162,12 @@ def enhance_media_sections_with_vision(
     vlm_conf=None,
     callback=None,
 ):
-    if not sections or not tenant_id:
+    llm_id = vlm_conf.get("llm_id") if isinstance(vlm_conf, dict) else None
+    if not sections or not tenant_id or not llm_id:
         return sections
 
     try:
-        try:
-            vision_model_config = get_model_config_from_provider_instance(tenant_id, LLMType.IMAGE2TEXT, vlm_conf["llm_id"])
-        except Exception:
-            vision_model_config = get_tenant_default_model_by_type(tenant_id, LLMType.IMAGE2TEXT)
+        vision_model_config = get_model_config_from_provider_instance(tenant_id, LLMType.IMAGE2TEXT, llm_id)
         vision_model = LLMBundle(tenant_id, vision_model_config)
     except Exception:
         return sections

@@ -30,14 +30,23 @@ def _offset_positions(positions, page_offset):
 def source_projection_blocks(sections, tables, *, section_page_offset=0):
     blocks = []
     for source_index, section in enumerate(sections or []):
-        if isinstance(section, (tuple, list)):
+        if isinstance(section, dict):
+            text = section.get("text", "")
+            layout_type = section.get("layout_type", "text")
+            positions = section.get("positions", section.get("position_tag", []))
+            level = section.get("level")
+        elif isinstance(section, (tuple, list)):
             text = section[0] if section else ""
             layout_type = section[1] if len(section) > 2 and isinstance(section[1], str) else "text"
             positions = section[-1] if len(section) > 1 else []
+            level = None
         else:
             text, layout_type, positions = section, "text", []
+            level = None
         if isinstance(text, str) and text.strip():
             block = {"text": text, "layout_type": layout_type}
+            if isinstance(level, int) and not isinstance(level, bool) and 1 <= level <= 6:
+                block["level"] = level
             if isinstance(positions, str):
                 block["position_tag"] = _offset_position_tag(positions, section_page_offset)
             else:
@@ -58,7 +67,7 @@ def source_projection_blocks(sections, tables, *, section_page_offset=0):
         block = {
             "text": text,
             "layout_type": layout_type,
-            "positions": positions or [],
+            "positions": _offset_positions(positions or [], 1),
             "source_ref": f"table:{source_index}",
         }
         if image is not None:

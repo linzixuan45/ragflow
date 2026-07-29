@@ -410,6 +410,9 @@ class Parser(ProcessBase):
                     "text": t,
                     "layout_type": layout_type or "text",
                 }
+                metadata = line[3] if len(line) > 3 and isinstance(line[3], dict) else {}
+                if "level" in metadata:
+                    box["level"] = metadata["level"]
                 positions = [[pos[0][-1] + 1, *pos[1:]] for pos in pdf_parser.extract_positions(poss)]
                 if positions:
                     box["positions"] = positions

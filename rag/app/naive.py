@@ -108,6 +108,13 @@ def _normalize_section_text_for_rtl_presentation_forms(sections):
             normalized_text = normalize_arabic_presentation_forms(text)
             normalized_sections.append([normalized_text, *section[1:]])
             continue
+        if isinstance(section, dict):
+            normalized_section = section.copy()
+            text = normalized_section.get("text")
+            if isinstance(text, str):
+                normalized_section["text"] = normalize_arabic_presentation_forms(text)
+            normalized_sections.append(normalized_section)
+            continue
         normalized_sections.append(normalize_arabic_presentation_forms(section))
 
     return normalized_sections
@@ -142,6 +149,7 @@ def by_mineru(
     **kwargs,
 ):
     pdf_parser = None
+    failure_reason = "MinerU model not configured."
     if tenant_id:
         if not mineru_llm_name:
             try:
@@ -172,15 +180,18 @@ def by_mineru(
                     binary=binary,
                     callback=callback,
                     parse_method=parse_method,
+                    from_page=from_page,
+                    to_page=to_page,
                     lang=lang,
                     **kwargs,
                 )
                 return sections, tables, pdf_parser
             except Exception as e:
                 logging.error(f"Failed to parse pdf via LLMBundle MinerU ({mineru_llm_name}): {e}")
+                failure_reason = str(e)
 
     if callback:
-        callback(-1, "MinerU not found.")
+        callback(-1, failure_reason)
     return None, None, None
 
 
@@ -1032,7 +1043,7 @@ def chunk(filename, binary=None, from_page=0, to_page=MAXIMUM_PAGE_NUMBER, lang=
         source_projection_blocks = build_source_projection_blocks(
             projection_sections,
             tables,
-            section_page_offset=from_page if name == "deepdoc" else 0,
+            section_page_offset=from_page if name in {"deepdoc", "mineru"} else 0,
         )
 
         if table_context_size or image_context_size:

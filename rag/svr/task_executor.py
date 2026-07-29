@@ -1895,7 +1895,7 @@ async def main():
     logging.info(f"RAGFlow ingestion version: {get_ragflow_version()}")
     show_configs()
     settings.init_settings()
-    settings.check_and_install_torch()
+    settings.configure_parallel_devices()
     logging.info(f"default embedding config: {settings.EMBEDDING_CFG}")
     settings.print_rag_settings()
     if sys.platform != "win32":
