@@ -21,8 +21,6 @@ import functools
 import hashlib
 import logging
 import os
-import subprocess
-import sys
 import threading
 import uuid
 from urllib.parse import urljoin
@@ -229,16 +227,6 @@ def once(func):
         return result
 
     return wrapper
-
-
-@once
-def pip_install_torch():
-    device = os.getenv("DEVICE", "cpu")
-    if device == "cpu":
-        return
-    logging.info("Installing pytorch")
-    pkg_names = ["torch>=2.5.0,<3.0.0"]
-    subprocess.check_call([sys.executable, "-m", "pip", "install", *pkg_names])
 
 
 @once

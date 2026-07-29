@@ -22,7 +22,7 @@ from datetime import date
 from common.constants import RAG_FLOW_SERVICE_NAME
 from common.file_utils import get_project_base_directory
 from common.config_utils import get_base_config, decrypt_database_config
-from common.misc_utils import pip_install_torch
+from common.onnx_utils import get_onnx_cuda_device_count
 from common.constants import SVR_QUEUE_NAME, Storage
 
 import rag.utils
@@ -400,16 +400,10 @@ def init_settings():
     os.environ["DOTNET_SYSTEM_GLOBALIZATION_INVARIANT"] = "1"
 
 
-def check_and_install_torch():
+def configure_parallel_devices():
     global PARALLEL_DEVICES
-    try:
-        pip_install_torch()
-        import torch.cuda
-
-        PARALLEL_DEVICES = torch.cuda.device_count()
-        logging.info(f"found {PARALLEL_DEVICES} gpus")
-    except Exception:
-        logging.info("can't import package 'torch'")
+    PARALLEL_DEVICES = get_onnx_cuda_device_count()
+    logging.info("configured %s ONNX CUDA device(s)", PARALLEL_DEVICES)
 
 
 def _parse_model_entry(entry):
