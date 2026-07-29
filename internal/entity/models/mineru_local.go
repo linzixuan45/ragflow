@@ -24,6 +24,9 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"path"
+	"strconv"
+	"strings"
 )
 
 type MinerULocalModel struct {
@@ -129,6 +132,25 @@ func (m *MinerULocalModel) ParseFile(modelName *string, content []byte, document
 	} else {
 		_ = writer.WriteField("backend", "pipeline")
 	}
+	effort := "high"
+	imageAnalysis := true
+	if parseFileConfig != nil {
+		if strings.TrimSpace(parseFileConfig.Effort) != "" {
+			effort = strings.TrimSpace(parseFileConfig.Effort)
+		}
+		if parseFileConfig.ImageAnalysis != nil {
+			imageAnalysis = *parseFileConfig.ImageAnalysis
+		}
+	}
+	_ = writer.WriteField("effort", effort)
+	_ = writer.WriteField("image_analysis", strconv.FormatBool(imageAnalysis))
+	_ = writer.WriteField("lang_list", "ch")
+	_ = writer.WriteField("parse_method", "auto")
+	_ = writer.WriteField("formula_enable", "true")
+	_ = writer.WriteField("table_enable", "true")
+	_ = writer.WriteField("return_md", "true")
+	_ = writer.WriteField("return_content_list", "true")
+	_ = writer.WriteField("return_images", "true")
 
 	if err = writer.Close(); err != nil {
 		return nil, fmt.Errorf("failed to close multipart writer: %w", err)
@@ -231,46 +253,118 @@ func (m *MinerULocalModel) ShowTask(taskID string, apiConfig *APIConfig) (*TaskR
 		return nil, fmt.Errorf("MinerU local status API failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
-	// parse JSON
-	var result map[string]interface{}
-
+	var result struct {
+		Results map[string]struct {
+			MDContent   string            `json:"md_content"`
+			ContentList string            `json:"content_list"`
+			Images      map[string]string `json:"images"`
+		} `json:"results"`
+	}
 	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, fmt.Errorf("failed to parse JSON: %w", err)
 	}
-
-	content := ""
-
-	// results
-	results, ok := result["results"].(map[string]interface{})
-	if !ok {
+	if len(result.Results) == 0 {
 		return nil, fmt.Errorf("missing results field")
 	}
 
-	// Get markdown
-	for _, fileObj := range results {
-
-		fileMap, ok := fileObj.(map[string]interface{})
-		if !ok {
+	for _, fileResult := range result.Results {
+		content := inlineMinerUImages(fileResult.MDContent, fileResult.Images)
+		segments, err := minerUContentSegments(fileResult.ContentList, fileResult.Images)
+		if err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(content) == "" && len(segments) == 0 {
 			continue
 		}
+		return &TaskResponse{Content: content, Segments: segments}, nil
+	}
+	return nil, fmt.Errorf("MinerU result contains no markdown or structured content")
+}
 
-		md, ok := fileMap["md_content"].(string)
-		if ok {
-			content = md
-			break
+type minerUContentBlock struct {
+	Type           string    `json:"type"`
+	Text           string    `json:"text"`
+	Content        string    `json:"content"`
+	TableBody      string    `json:"table_body"`
+	ImagePath      string    `json:"img_path"`
+	TableImagePath string    `json:"table_img_path"`
+	ImageCaption   []string  `json:"image_caption"`
+	ImageFootnote  []string  `json:"image_footnote"`
+	ChartCaption   []string  `json:"chart_caption"`
+	ChartFootnote  []string  `json:"chart_footnote"`
+	TableCaption   []string  `json:"table_caption"`
+	TableFootnote  []string  `json:"table_footnote"`
+	BBox           []float64 `json:"bbox"`
+	PageIndex      int       `json:"page_idx"`
+}
+
+func minerUContentSegments(raw string, images map[string]string) ([]TaskSegment, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	var blocks []minerUContentBlock
+	if err := json.Unmarshal([]byte(raw), &blocks); err != nil {
+		return nil, fmt.Errorf("failed to parse MinerU content_list: %w", err)
+	}
+	segments := make([]TaskSegment, 0, len(blocks))
+	for _, block := range blocks {
+		segment := TaskSegment{Index: len(segments), Type: "text", Layout: "text"}
+		switch block.Type {
+		case "header", "footer", "page_number", "discarded":
+			continue
+		case "table":
+			segment.Type = "table"
+			segment.Layout = "table"
+			segment.Content = joinMinerUText(append([]string{block.TableBody}, append(block.TableCaption, block.TableFootnote...)...)...)
+			segment.Image = minerUImage(images, block.TableImagePath)
+		case "image":
+			segment.Type = "image"
+			segment.Layout = "figure"
+			segment.Content = joinMinerUText(append(block.ImageCaption, block.ImageFootnote...)...)
+			segment.Image = minerUImage(images, block.ImagePath)
+		case "chart":
+			segment.Type = "image"
+			segment.Layout = "figure"
+			segment.Content = joinMinerUText(append(append(block.ChartCaption, block.ChartFootnote...), block.Content)...)
+			segment.Image = minerUImage(images, block.ImagePath)
+		default:
+			segment.Content = joinMinerUText(block.Text, block.Content)
+		}
+		if segment.Content == "" && segment.Image != "" {
+			segment.Content = "[Image]"
+		}
+		if segment.Content == "" {
+			continue
+		}
+		if len(block.BBox) == 4 {
+			segment.Positions = []float64{float64(block.PageIndex + 1), block.BBox[0], block.BBox[2], block.BBox[1], block.BBox[3]}
+		}
+		segments = append(segments, segment)
+	}
+	return segments, nil
+}
+
+func minerUImage(images map[string]string, imagePath string) string {
+	if imagePath == "" {
+		return ""
+	}
+	return images[path.Base(imagePath)]
+}
+
+func inlineMinerUImages(markdown string, images map[string]string) string {
+	for name, dataURL := range images {
+		markdown = strings.ReplaceAll(markdown, "images/"+name, dataURL)
+	}
+	return markdown
+}
+
+func joinMinerUText(values ...string) string {
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			parts = append(parts, value)
 		}
 	}
-
-	if content == "" {
-		return nil, fmt.Errorf("md_content not found")
-	}
-
-	return &TaskResponse{
-		Segments: []TaskSegment{
-			{
-				Index:   1,
-				Content: content,
-			},
-		},
-	}, nil
+	return strings.Join(parts, "\n")
 }

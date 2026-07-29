@@ -117,11 +117,16 @@ type ListTaskStatus struct {
 }
 
 type TaskSegment struct {
-	Index   int    `json:"index"`
-	Content string `json:"content"`
+	Index     int       `json:"index"`
+	Content   string    `json:"content"`
+	Type      string    `json:"type,omitempty"`
+	Layout    string    `json:"layout,omitempty"`
+	Image     string    `json:"image,omitempty"`
+	Positions []float64 `json:"positions,omitempty"`
 }
 
 type TaskResponse struct {
+	Content  string        `json:"content,omitempty"`
 	Segments []TaskSegment `json:"segments"`
 }
 
@@ -200,6 +205,8 @@ type OCRConfig struct {
 }
 
 type ParseFileConfig struct {
+	Effort        string
+	ImageAnalysis *bool
 }
 
 // EmbeddingModel wraps a ModelDriver with embedding-specific configuration

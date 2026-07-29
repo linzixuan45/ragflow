@@ -16,7 +16,7 @@ func TestPDFParser_ParseWithResult_MinerUMarkdownIntegration(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodPost && r.URL.Path == "/file_parse":
+		case r.Method == http.MethodPost && r.URL.Path == "/tasks":
 			submitCalled.Store(true)
 			if got, want := r.Header.Get("Authorization"), "Bearer secret"; got != want {
 				t.Errorf("Authorization = %q, want %q", got, want)
@@ -27,7 +27,7 @@ func TestPDFParser_ParseWithResult_MinerUMarkdownIntegration(t *testing.T) {
 				t.Errorf("MultipartReader: %v", err)
 				return
 			}
-			var backend string
+			fields := map[string]string{}
 			var fileSeen bool
 			for {
 				part, err := reader.NextPart()
@@ -38,9 +38,9 @@ func TestPDFParser_ParseWithResult_MinerUMarkdownIntegration(t *testing.T) {
 					t.Errorf("NextPart: %v", err)
 					return
 				}
-				if part.FormName() == "backend" {
+				if part.FormName() != "files" {
 					body, _ := io.ReadAll(part)
-					backend = string(body)
+					fields[part.FormName()] = string(body)
 				}
 				if part.FormName() == "files" {
 					fileSeen = true
@@ -51,9 +51,20 @@ func TestPDFParser_ParseWithResult_MinerUMarkdownIntegration(t *testing.T) {
 					}
 				}
 			}
-			if backend != "pipeline" {
-				t.Errorf("backend = %q, want pipeline", backend)
+			if fields["backend"] != "pipeline" {
+				t.Errorf("backend = %q, want pipeline", fields["backend"])
 				return
+			}
+			for key, want := range map[string]string{
+				"effort":              "high",
+				"image_analysis":      "true",
+				"return_content_list": "true",
+				"return_images":       "true",
+			} {
+				if got := fields[key]; got != want {
+					t.Errorf("%s = %q, want %q", key, got, want)
+					return
+				}
 			}
 			if !fileSeen {
 				t.Error("multipart upload missing files part")
@@ -99,14 +110,31 @@ func TestPDFParser_ParseWithResult_MinerUMarkdownIntegration(t *testing.T) {
 }
 
 func TestPDFParser_ParseWithResult_MinerUJSONIntegration(t *testing.T) {
+	t.Setenv("MINERU_BACKEND", "")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodPost && r.URL.Path == "/file_parse":
+		case r.Method == http.MethodPost && r.URL.Path == "/tasks":
+			if err := r.ParseMultipartForm(1 << 20); err != nil {
+				t.Errorf("ParseMultipartForm: %v", err)
+				return
+			}
+			if got, want := r.FormValue("backend"), "hybrid-engine"; got != want {
+				t.Errorf("backend = %q, want %q", got, want)
+				return
+			}
+			if got, want := r.FormValue("effort"), "high"; got != want {
+				t.Errorf("effort = %q, want %q", got, want)
+				return
+			}
+			if got, want := r.FormValue("image_analysis"), "true"; got != want {
+				t.Errorf("image_analysis = %q, want %q", got, want)
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"data":{"task_id":"task-2"}}`))
 		case r.Method == http.MethodGet && r.URL.Path == "/tasks/task-2/result":
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"results":{"doc":{"md_content":"# Title\n\nBody paragraph.\n"}}}`))
+			_, _ = w.Write([]byte(`{"results":{"doc":{"md_content":"# Title\n\n![](images/chart.jpg)\n","content_list":"[{\"type\":\"text\",\"text\":\"Title\",\"page_idx\":0,\"bbox\":[1,2,30,40]},{\"type\":\"chart\",\"img_path\":\"images/chart.jpg\",\"content\":\"| Category | Value |\",\"chart_caption\":[\"Performance chart\"],\"page_idx\":1,\"bbox\":[10,20,110,220]}]","images":{"chart.jpg":"data:image/jpeg;base64,Y2hhcnQ="}}}}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -132,6 +160,23 @@ func TestPDFParser_ParseWithResult_MinerUJSONIntegration(t *testing.T) {
 	}
 	if got := res.JSON[0]["text"]; got == nil {
 		t.Fatal("JSON[0].text missing")
+	}
+	if got, want := len(res.JSON), 2; got != want {
+		t.Fatalf("len(JSON) = %d, want %d: %#v", got, want, res.JSON)
+	}
+	chart := res.JSON[1]
+	if got, want := chart["doc_type_kwd"], "image"; got != want {
+		t.Fatalf("chart.doc_type_kwd = %#v, want %#v", got, want)
+	}
+	if got, want := chart["image"], "data:image/jpeg;base64,Y2hhcnQ="; got != want {
+		t.Fatalf("chart.image = %#v, want %#v", got, want)
+	}
+	if got, want := chart["layout"], "figure"; got != want {
+		t.Fatalf("chart.layout = %#v, want %#v", got, want)
+	}
+	positions, ok := chart["positions"].([][]float64)
+	if !ok || len(positions) != 1 || positions[0][0] != 2 {
+		t.Fatalf("chart.positions = %#v, want one-based page 2", chart["positions"])
 	}
 }
 

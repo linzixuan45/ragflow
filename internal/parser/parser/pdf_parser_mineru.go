@@ -9,7 +9,7 @@ import (
 	models "ragflow/internal/entity/models"
 )
 
-const minerUPollTimeout = 30 * time.Second
+const minerUPollTimeout = 30 * time.Minute
 const minerUPollInterval = 200 * time.Millisecond
 
 func parsePDFWithMinerU(filename string, data []byte, parser *PDFParser) ParseResult {
@@ -41,7 +41,7 @@ func parsePDFWithMinerU(filename string, data []byte, parser *PDFParser) ParseRe
 
 	driver := models.NewMinerLocalUModel(
 		map[string]string{"default": apiServer},
-		models.URLSuffix{DocumentParse: "file_parse", Task: "tasks"},
+		models.URLSuffix{DocumentParse: "tasks", Task: "tasks"},
 	)
 	apiConfig := &models.APIConfig{
 		BaseURL: &apiServer,
@@ -50,22 +50,21 @@ func parsePDFWithMinerU(filename string, data []byte, parser *PDFParser) ParseRe
 		apiConfig.ApiKey = &apiKey
 	}
 
-	task, err := driver.ParseFile(&backend, data, nil, apiConfig, &models.ParseFileConfig{})
+	task, err := driver.ParseFile(&backend, data, nil, apiConfig, &models.ParseFileConfig{
+		Effort:        parser.MinerUEffort,
+		ImageAnalysis: &parser.MinerUImageAnalysis,
+	})
 	if err != nil {
 		return ParseResult{Err: fmt.Errorf("parser: MinerU submit: %w", err)}
 	}
-	content, err := pollMinerUTask(driver, task.TaskID, apiConfig, timeout)
+	result, err := pollMinerUTask(driver, task.TaskID, apiConfig, timeout)
 	if err != nil {
 		return ParseResult{Err: fmt.Errorf("parser: MinerU result: %w", err)}
 	}
-	pageCount := 0
-	if strings.TrimSpace(content) != "" {
-		pageCount = 1
-	}
-	return parseMinerUMarkdownResult(filename, content, parser.OutputFormat, pageCount)
+	return parseMinerUTaskResult(filename, result, parser.OutputFormat)
 }
 
-func pollMinerUTask(driver *models.MinerULocalModel, taskID string, apiConfig *models.APIConfig, timeout time.Duration) (string, error) {
+func pollMinerUTask(driver *models.MinerULocalModel, taskID string, apiConfig *models.APIConfig, timeout time.Duration) (*models.TaskResponse, error) {
 	if timeout <= 0 {
 		timeout = minerUPollTimeout
 	}
@@ -74,10 +73,8 @@ func pollMinerUTask(driver *models.MinerULocalModel, taskID string, apiConfig *m
 	for {
 		task, err := driver.ShowTask(taskID, apiConfig)
 		if err == nil {
-			for _, segment := range task.Segments {
-				if strings.TrimSpace(segment.Content) != "" {
-					return segment.Content, nil
-				}
+			if strings.TrimSpace(task.Content) != "" || len(task.Segments) > 0 {
+				return task, nil
 			}
 			lastErr = fmt.Errorf("empty MinerU task content")
 		} else {
@@ -87,9 +84,50 @@ func pollMinerUTask(driver *models.MinerULocalModel, taskID string, apiConfig *m
 			if lastErr == nil {
 				lastErr = fmt.Errorf("timed out waiting for MinerU task %s", taskID)
 			}
-			return "", lastErr
+			return nil, lastErr
 		}
 		time.Sleep(minerUPollInterval)
+	}
+}
+
+func parseMinerUTaskResult(filename string, task *models.TaskResponse, outputFormat string) ParseResult {
+	if task == nil {
+		return ParseResult{Err: fmt.Errorf("parser: empty MinerU task result")}
+	}
+	pageCount := 0
+	items := make([]map[string]any, 0, len(task.Segments))
+	for _, segment := range task.Segments {
+		item := map[string]any{
+			"text":         segment.Content,
+			"doc_type_kwd": segment.Type,
+			"layout":       segment.Layout,
+		}
+		if segment.Image != "" {
+			item["image"] = segment.Image
+		}
+		if len(segment.Positions) == 5 {
+			position := append([]float64(nil), segment.Positions...)
+			item["positions"] = [][]float64{position}
+			if page := int(position[0]); page > pageCount {
+				pageCount = page
+			}
+		}
+		items = append(items, item)
+	}
+	if pageCount == 0 && strings.TrimSpace(task.Content) != "" {
+		pageCount = 1
+	}
+
+	switch strings.ToLower(strings.TrimSpace(outputFormat)) {
+	case "", "json":
+		if len(items) > 0 {
+			return ParseResult{OutputFormat: "json", File: pdfFileMeta(filename, pageCount), JSON: items}
+		}
+		return parseMinerUMarkdownResult(filename, task.Content, "json", pageCount)
+	case "markdown":
+		return ParseResult{OutputFormat: "markdown", File: pdfFileMeta(filename, pageCount), Markdown: task.Content}
+	default:
+		return ParseResult{Err: fmt.Errorf("parser: unsupported PDF output_format %q", outputFormat)}
 	}
 }
 

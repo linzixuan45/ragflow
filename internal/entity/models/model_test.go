@@ -156,7 +156,7 @@ func TestLocalOCRProviderConfigsLoadLocalDrivers(t *testing.T) {
 	if _, ok := minerU.ModelDriver.(*MinerULocalModel); !ok {
 		t.Fatalf("MinerU ModelDriver=%T, want *models.MinerULocalModel", minerU.ModelDriver)
 	}
-	if minerU.URLSuffix.DocumentParse != "file_parse" {
+	if minerU.URLSuffix.DocumentParse != "tasks" {
 		t.Errorf("MinerU doc_parse suffix=%q", minerU.URLSuffix.DocumentParse)
 	}
 
