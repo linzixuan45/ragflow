@@ -24,6 +24,9 @@ Cargo.lock
 .cursor/settings.json
 .opencode/
 
+# Local operation notes (not for commit)
+重要信息.md
+
 # Exclude Mac generated files
 .DS_Store
 

@@ -1,7 +1,7 @@
 {
   "name": "MinerU",
   "url_suffix": {
-    "doc_parse": "file_parse",
+    "doc_parse": "tasks",
     "task": "tasks"
   },
   "class": "local"

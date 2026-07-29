@@ -133,6 +133,131 @@ RAGFlow uses multiple recall of both full-text search and vector search in its c
 
 See [Run retrieval test](./run_retrieval_test.md) for details.
 
+### Make a dataset available to an Agent through Corpus FS
+
+Corpus FS is the preferred boundary when an external Agent must browse and
+retrieve dataset content. It exposes a dataset-scoped `/files` tree while
+keeping document IDs, file IDs, chunk IDs, and object storage locations on the
+server. See [Corpus FS API](./corpus_fs_api.md) for the HTTP contract.
+
+Before marking a dataset as Agent-ready, verify all of the following:
+
+- Intended files are under the dataset's `/files` projection and have stable,
+  meaningful paths.
+- Parsing has reached `DONE`; clients must inspect `/fs/parse-status` instead of
+  waiting for a fixed delay.
+- `/fs/content` returns the expected ordered blocks and follows `next_cursor`
+  until the required evidence has been read.
+- Literal terms are discoverable through `/fs/grep`, and natural-language
+  questions produce useful evidence through `/fs/search` in `semantic` or
+  `hybrid` mode.
+- The Agent host authorizes the current user for the dataset. A service API key
+  alone is not user authorization.
+- Agent-visible results contain paths, snippets, opaque cursors, and
+  `citation_ref` values, but no upstream internal identifiers or storage URLs.
+
+#### Recommended Agent integration
+
+Expose a small read-only tool set from the Agent host and map it to Corpus FS:
+
+| Agent capability | Corpus FS operation |
+| --- | --- |
+| List one directory | `GET /fs/tree` |
+| Find by file name | `GET /fs/find` |
+| Inspect metadata and usage | `GET /fs/stat`, `GET /fs/usage` |
+| Read parsed evidence | `GET /fs/content` |
+| Locate exact words or phrases | `POST /fs/grep` |
+| Retrieve semantically related evidence | `POST /fs/search` |
+
+Keep the upstream `dataset_id` in the Agent host. The model should use a stable
+mount path such as `/knowledge/hr-handbook/files/policies/leave.md`; the host
+resolves `hr-handbook` to a dataset only after checking the current user's
+access. Do not let the model construct RAGFlow URLs or handle a RAGFlow API key.
+
+For DeerFlow, retain the existing `kb_ls`, `kb_find`, `kb_cat`, `kb_grep`,
+`kb_stat`, `kb_du`, and `knowledge_search` names and change their provider to
+Corpus FS. Adding a parallel `corpus_*` tool family would give the model two
+competing interfaces for the same content.
+
+For a multi-dataset Agent host, separate the model-visible path from the
+upstream route. A useful pattern is:
+
+```text
+DisplayPath /knowledge/{mount_key}/files/{relative_path}
+    -> MountRegistry resolves mount_key to an authorized dataset
+    -> PathResolver validates /files and the current conversation scope
+    -> Corpus FS receives dataset_id plus /files/{relative_path}
+```
+
+`mount_key` should be stable and unique within the host tenant. Do not use a
+mutable dataset display name or an upstream ID as the only model-visible path
+segment. If a conversation is restricted to selected files or folders, enforce
+those canonical roots in the host or Gateway as well as describing them in the
+prompt. Prompt instructions are not an authorization boundary.
+
+Use one structured response envelope across list, find, read, and search tools.
+It should preserve `path`, `next_cursor`, `truncated`, revision data,
+machine-readable errors, and `citation_ref`. A compact text renderer can reduce
+tokens, but it should not replace the structured contract. Keep Corpus FS
+cursors opaque; offset pagination from other file-system adapters is not
+interchangeable with a cursor bound to a dataset, revision, actor, and query.
+
+#### Prompt placement
+
+Prompt instructions should be split by ownership:
+
+- Put parameter semantics, path syntax, cursor behavior, and the distinction
+  between literal and semantic retrieval in each tool's schema or docstring.
+- Put the multi-step workflow -- browse, retrieve, read the matching path,
+  follow cursors, cross-check, and cite -- in a dedicated knowledge research
+  Agent's system prompt.
+- Put only a short routing rule in the lead Agent prompt: use knowledge tools
+  before web search for internal facts; call tools directly for simple questions
+  and delegate multi-document research; cite `path` and `citation_ref`.
+- Put organization-specific scope and answer policy in the business Agent's own
+  prompt or SOUL file. Never put API keys, dataset IDs, or storage locations in
+  prompts.
+
+The host can compose the knowledge workflow for three scopes instead of keeping
+one large prompt:
+
+| Scope | Expected behavior |
+| --- | --- |
+| Global knowledge | Browse authorized mounts or search across them. |
+| Selected files/folders | Restrict every operation to the selected canonical roots. |
+| Single file | Read, inspect, or grep that file without rediscovering it from the root. |
+
+Search snippets are location hints, not automatically complete evidence. Read
+the returned path when the claim needs surrounding context. Continue when
+`next_cursor` is present, and do not describe a partial page as a complete list.
+Cross-document comparisons should cover evidence for each compared item. These
+rules are preferable to forcing every simple factual question through a fixed
+number of search rounds.
+
+Example workflow prompt for a read-only knowledge research Agent:
+
+```text
+Use only the authorized knowledge tools.
+1. Browse or find to establish the visible mount and directory scope.
+2. Use semantic search for natural-language questions and grep for exact terms.
+3. Read the returned path for full context and continue while next_cursor exists.
+4. Cross-check important claims and cite path plus citation_ref.
+5. If evidence is absent, parsing is incomplete, or access is denied, say so.
+Never request an API key, invent inaccessible content, or use shell tools to
+bypass the knowledge interface.
+```
+
+Use the opaque `citation_ref` returned by Corpus FS as the durable citation
+handle. Session-local numeric markers used by other Agent frameworks should not
+be mapped to internal document or chunk IDs inside the model prompt.
+
+Keep read-only tools as the default Agent capability. If an Agent must create a
+derived Markdown result, expose draft saving and publication in a separate
+write-capability group with optimistic version checks and audit records. Do not
+grant those tools to a read-only knowledge research Agent. Upload, move, delete,
+source replacement, and parse control require their own authorization,
+confirmation, revision, and recovery design before they are exposed.
+
 ## Search for dataset
 
 As of RAGFlow v0.26.4, the search feature is still in a rudimentary form, supporting only dataset search by name.

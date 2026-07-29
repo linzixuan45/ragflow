@@ -30,6 +30,7 @@ services:
     # them back. The standard entrypoint still runs task executor and API.
     command: []
     environment:
+      DEVICE: "gpu"
       ENABLE_TIMEOUT_ASSERTION: "1"
     ports: !override
       - "127.0.0.1:80:80"
@@ -37,23 +38,39 @@ services:
     volumes:
       # Keep the development container on the published runtime image while
       # loading the local Corpus FS implementation for restart-safe testing.
+      - ../web/dist:/ragflow/web/dist:ro
       - ./nginx/ragflow.conf.python:/etc/nginx/conf.d/ragflow.conf.python:ro
       - ../api/apps/restful_apis/corpus_fs_api.py:/ragflow/api/apps/restful_apis/corpus_fs_api.py:ro
       - ../api/apps/restful_apis/keyword_search_api.py:/ragflow/api/apps/restful_apis/keyword_search_api.py:ro
       - ../agent/tools/googlescholar.py:/ragflow/agent/tools/googlescholar.py:ro
+      - ../api/apps/services/corpus_citation_service.py:/ragflow/api/apps/services/corpus_citation_service.py:ro
       - ../api/apps/services/corpus_cursor_service.py:/ragflow/api/apps/services/corpus_cursor_service.py:ro
       - ../api/apps/services/corpus_delegation_service.py:/ragflow/api/apps/services/corpus_delegation_service.py:ro
       - ../api/apps/services/corpus_fs_service.py:/ragflow/api/apps/services/corpus_fs_service.py:ro
+      - ../api/apps/services/document_markdown_service.py:/ragflow/api/apps/services/document_markdown_service.py:ro
       - ../api/apps/services/corpus_path_service.py:/ragflow/api/apps/services/corpus_path_service.py:ro
+      - ../api/apps/services/corpus_secret_service.py:/ragflow/api/apps/services/corpus_secret_service.py:ro
       - ../api/apps/services/corpus_revision_service.py:/ragflow/api/apps/services/corpus_revision_service.py:ro
       - ../api/apps/services/source_projection_service.py:/ragflow/api/apps/services/source_projection_service.py:ro
       - ../api/apps/services/keyword_search_service.py:/ragflow/api/apps/services/keyword_search_service.py:ro
       - ../api/apps/services/document_api_service.py:/ragflow/api/apps/services/document_api_service.py:ro
+      - ../api/apps/services/dataset_api_service.py:/ragflow/api/apps/services/dataset_api_service.py:ro
+      - ../api/db/joint_services/tenant_model_service.py:/ragflow/api/db/joint_services/tenant_model_service.py:ro
+      - ../api/db/services/document_service.py:/ragflow/api/db/services/document_service.py:ro
+      - ../api/db/services/file_service.py:/ragflow/api/db/services/file_service.py:ro
       - ../api/db/db_models.py:/ragflow/api/db/db_models.py:ro
+      - ../common/misc_utils.py:/ragflow/common/misc_utils.py:ro
+      - ../common/onnx_utils.py:/ragflow/common/onnx_utils.py:ro
+      - ../common/settings.py:/ragflow/common/settings.py:ro
+      - ../deepdoc/parser/mineru_parser.py:/ragflow/deepdoc/parser/mineru_parser.py:ro
+      - ../deepdoc/vision/ocr.py:/ragflow/deepdoc/vision/ocr.py:ro
+      - ../rag/llm/ocr_model.py:/ragflow/rag/llm/ocr_model.py:ro
       - ../rag/utils/es_conn.py:/ragflow/rag/utils/es_conn.py:ro
       - ../rag/utils/source_projection.py:/ragflow/rag/utils/source_projection.py:ro
       - ../rag/app/naive.py:/ragflow/rag/app/naive.py:ro
       - ../rag/flow/parser/parser.py:/ragflow/rag/flow/parser/parser.py:ro
+      - ../rag/flow/parser/utils.py:/ragflow/rag/flow/parser/utils.py:ro
+      - ../rag/svr/task_executor.py:/ragflow/rag/svr/task_executor.py:ro
       - ../rag/svr/task_executor_refactor/chunk_service.py:/ragflow/rag/svr/task_executor_refactor/chunk_service.py:ro
       - ../rag/svr/task_executor_refactor/task_handler.py:/ragflow/rag/svr/task_executor_refactor/task_handler.py:ro
       - ../rag/svr/task_executor_refactor/dataflow_service.py:/ragflow/rag/svr/task_executor_refactor/dataflow_service.py:ro

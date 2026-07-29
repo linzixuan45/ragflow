@@ -71,8 +71,15 @@ file_syncer:
 user_default_llm:
   default_models:
     embedding_model:
-      api_key: 'xxx'
-      base_url: 'http://${TEI_HOST}:80'
+      name: '${LOCAL_EMBEDDING_MODEL:-Qwen3-Embedding-4B}'
+      factory: 'VLLM'
+      api_key: '${LOCAL_EMBEDDING_API_KEY:-x}'
+      base_url: '${LOCAL_EMBEDDING_BASE_URL:-http://10.100.15.70:8000/v1}'
+    rerank_model:
+      name: '${LOCAL_RERANK_MODEL:-Qwen3-Reranker-4B}'
+      factory: 'VLLM'
+      api_key: '${LOCAL_RERANK_API_KEY:-x}'
+      base_url: '${LOCAL_RERANK_BASE_URL:-http://10.100.15.70:8001/v1}'
 # postgres:
 #   name: '${POSTGRES_DBNAME:-rag_flow}'
 #   user: '${POSTGRES_USER:-rag_flow}'

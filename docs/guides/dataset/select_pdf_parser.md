@@ -50,14 +50,12 @@ Starting from v0.22.0, RAGFlow includes MinerU (&ge; 2.6.3) as an optional PDF p
 2. In the **.env** file or from the **Model providers** page in the UI, configure RAGFlow as a remote client to MinerU:
    - `MINERU_APISERVER`: The MinerU API endpoint (e.g., `http://mineru-host:8886`).
    - `MINERU_BACKEND`: The MinerU backend:
-      - `"pipeline"` (default)
+      - `"pipeline"`
+      - `"vlm-engine"`
       - `"vlm-http-client"`
-      - `"vlm-transformers"`
-      - `"vlm-vllm-engine"`
-      - `"vlm-mlx-engine"`
-      - `"vlm-vllm-async-engine"`
-      - `"vlm-lmdeploy-engine"`.
-   - `MINERU_SERVER_URL`: (optional) The downstream vLLM HTTP server (e.g., `http://vllm-host:30000`). Applicable when `MINERU_BACKEND` is set to `"vlm-http-client"`. 
+      - `"hybrid-engine"` (default)
+      - `"hybrid-http-client"`.
+   - `MINERU_SERVER_URL`: (optional) The downstream vLLM HTTP server (e.g., `http://vllm-host:30000`). Required when `MINERU_BACKEND` is set to `"vlm-http-client"` or `"hybrid-http-client"`.
    - `MINERU_OUTPUT_DIR`: (optional) The local directory for holding the outputs of the MinerU API service (zip/JSON) before ingestion.
    - `MINERU_DELETE_OUTPUT`: Whether to delete temporary output when a temporary directory is used:
      - `1`: Delete.
@@ -65,6 +63,10 @@ Starting from v0.22.0, RAGFlow includes MinerU (&ge; 2.6.3) as an optional PDF p
 3. In the web UI, navigate to your dataset's **Configuration** page and find the **Ingestion pipeline** section:  
    - If you decide to use a chunking method from the **Built-in** dropdown, ensure it supports PDF parsing, then select **MinerU** from the **PDF parser** dropdown.
    - If you use a custom ingestion pipeline instead, select **MinerU** in the **PDF parser** section of the **Parser** component.
+   - For complex technical documents, keep **Parsing quality** set to `high` and enable **Image and chart analysis**. The default language is Chinese, while automatic parsing still handles text-based and scanned PDFs.
+
+Built-in parsing calls MinerU's synchronous `POST /file_parse` endpoint. Custom ingestion pipelines use `POST /tasks` and poll `GET /tasks/{task_id}/result`.
+Both paths ingest MinerU's structured content list and images. Figures and charts retain their semantic text and PDF positions, and image payloads use RAGFlow's standard media fields.
 
 To use an external Docling Serve instance (instead of local in-process Docling), set:
 
