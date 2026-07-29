@@ -22,7 +22,7 @@ import os
 from huggingface_hub import snapshot_download
 
 from common.file_utils import get_project_base_directory
-from common.misc_utils import pip_install_torch
+from common.onnx_utils import get_onnx_cuda_device_count
 from common import settings
 from .operators import *  # noqa: F403
 from . import operators
@@ -80,18 +80,6 @@ def load_model(model_dir, nm, device_id: int | None = None):
     if not os.path.exists(model_file_path):
         raise ValueError("not find model file path {}".format(model_file_path))
 
-    def cuda_is_available():
-        try:
-            pip_install_torch()
-            import torch
-
-            target_id = 0 if device_id is None else device_id
-            if torch.cuda.is_available() and torch.cuda.device_count() > target_id:
-                return True
-        except Exception:
-            return False
-        return False
-
     options = ort.SessionOptions()
     options.enable_cpu_mem_arena = False
     options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
@@ -102,22 +90,40 @@ def load_model(model_dir, nm, device_id: int | None = None):
     # https://github.com/microsoft/onnxruntime/issues/9509#issuecomment-951546580
     # Shrink GPU memory after execution
     run_options = ort.RunOptions()
-    if cuda_is_available():
+    target_id = 0 if device_id is None else device_id
+    sess = None
+    if get_onnx_cuda_device_count() > target_id:
         gpu_mem_limit_mb = int(os.environ.get("OCR_GPU_MEM_LIMIT_MB", "2048"))
         arena_strategy = os.environ.get("OCR_ARENA_EXTEND_STRATEGY", "kNextPowerOfTwo")
-        provider_device_id = 0 if device_id is None else device_id
+        provider_device_id = target_id
         cuda_provider_options = {
             "device_id": provider_device_id,  # Use specific GPU
             "gpu_mem_limit": max(gpu_mem_limit_mb, 0) * 1024 * 1024,
             "arena_extend_strategy": arena_strategy,  # gpu memory allocation strategy
         }
-        sess = ort.InferenceSession(model_file_path, options=options, providers=["CUDAExecutionProvider"], provider_options=[cuda_provider_options])
-        # Explicit arena shrinkage for GPU to release VRAM back to the system after each run
-        if os.environ.get("OCR_GPUMEM_ARENA_SHRINKAGE") == "1":
-            run_options.add_run_config_entry("memory.enable_memory_arena_shrinkage", f"gpu:{provider_device_id}")
-            logging.info(f"load_model {model_file_path} enabled GPU memory arena shrinkage on device {provider_device_id}")
-        logging.info(f"load_model {model_file_path} uses GPU (device {provider_device_id}, gpu_mem_limit={cuda_provider_options['gpu_mem_limit']}, arena_strategy={arena_strategy})")
-    else:
+        try:
+            candidate = ort.InferenceSession(
+                model_file_path,
+                options=options,
+                providers=["CUDAExecutionProvider"],
+                provider_options=[cuda_provider_options],
+            )
+            if "CUDAExecutionProvider" not in candidate.get_providers():
+                logging.warning("ONNX Runtime did not activate CUDA for %s; falling back to CPU", model_file_path)
+            else:
+                sess = candidate
+                # Explicit arena shrinkage for GPU to release VRAM back to the system after execution.
+                if os.environ.get("OCR_GPUMEM_ARENA_SHRINKAGE") == "1":
+                    run_options.add_run_config_entry("memory.enable_memory_arena_shrinkage", f"gpu:{provider_device_id}")
+                    logging.info(f"load_model {model_file_path} enabled GPU memory arena shrinkage on device {provider_device_id}")
+                logging.info(
+                    f"load_model {model_file_path} uses GPU (device {provider_device_id}, "
+                    f"gpu_mem_limit={cuda_provider_options['gpu_mem_limit']}, arena_strategy={arena_strategy})"
+                )
+        except Exception:
+            logging.exception("Failed to initialize ONNX CUDA provider for %s; falling back to CPU", model_file_path)
+
+    if sess is None:
         sess = ort.InferenceSession(model_file_path, options=options, providers=["CPUExecutionProvider"])
         run_options.add_run_config_entry("memory.enable_memory_arena_shrinkage", "cpu")
         logging.info(f"load_model {model_file_path} uses CPU")

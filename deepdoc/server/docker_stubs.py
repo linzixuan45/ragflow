@@ -97,22 +97,71 @@ def get_project_base_directory(*args):
 """,
 )
 
-# Real common.misc_utils imports 15+ modules.  The server only calls
-# pip_install_torch() inside load_model()'s cuda_is_available() guard.
-# On CPU-only images torch is not installed, so the try/except silently
-# returns False and onnxruntime falls back to CPUExecutionProvider.
+write(
+    "common/onnx_utils.py",
+    """
+# ONNX Runtime is the DeepDoc service's inference backend.
+import os
 
+
+def get_onnx_cuda_device_count():
+    if os.getenv("DEVICE", "cpu").lower() != "gpu":
+        return 0
+
+    import onnxruntime as ort
+
+    if hasattr(ort, "preload_dlls"):
+        try:
+            ort.preload_dlls()
+        except RuntimeError:
+            pass
+
+    if "CUDAExecutionProvider" not in ort.get_available_providers():
+        return 0
+
+    configured = os.getenv("PARALLEL_DEVICES")
+    if configured is None:
+        return 1
+    try:
+        return max(0, int(configured))
+    except ValueError:
+        return 1
+""",
+)
+
+# Real common.misc_utils pulls in urllib/SSRF guard/redis/sqlalchemy/...
+# The deepdoc server only needs the helpers invoked from the vision and
+# parser modules (``thread_pool_exec`` from t_ocr/pdf_parser,
+# ``get_uuid`` from anywhere that creates ids).  Stub the rest with
+# minimal placeholders so module-level imports succeed without
+# pulling in heavy dependencies.
 write(
     "common/misc_utils.py",
     """
 # Stub common.misc_utils for Docker deepdoc service.
+import asyncio
+import contextvars
+import functools
+import os
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 
-def pip_install_torch(*args, **kwargs):
-    try:
-        import torch  # noqa: F401
-    except ImportError:
-        pass
+def get_uuid():
+    return uuid.uuid1().hex
+
+
+_max_workers = int(os.environ.get("THREAD_POOL_MAX_WORKERS", "8"))
+_executor = ThreadPoolExecutor(max_workers=_max_workers)
+
+
+async def thread_pool_exec(func, *args, **kwargs):
+    loop = asyncio.get_running_loop()
+    ctx = contextvars.copy_context()
+    if kwargs:
+        inner = functools.partial(func, *args, **kwargs)
+        return await loop.run_in_executor(_executor, ctx.run, inner)
+    return await loop.run_in_executor(_executor, ctx.run, func, *args)
 """,
 )
 

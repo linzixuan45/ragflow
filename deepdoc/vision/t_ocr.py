@@ -19,8 +19,8 @@ import logging
 import os
 import sys
 
-
 from common.misc_utils import thread_pool_exec
+from common.onnx_utils import get_onnx_cuda_device_count
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../")))
 
@@ -35,9 +35,7 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # 1 gpu
 
 
 def main(args):
-    import torch.cuda
-
-    cuda_devices = torch.cuda.device_count()
+    cuda_devices = get_onnx_cuda_device_count()
     limiter = [asyncio.Semaphore(1) for _ in range(cuda_devices)] if cuda_devices > 1 else None
     ocr = OCR()
     images, outputs = init_in_out(args)
