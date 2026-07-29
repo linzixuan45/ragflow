@@ -85,6 +85,9 @@ class SourceProjectionService:
                 "_source_ref": item.get("source_ref"),
                 "_parent_source_ref": item.get("parent_block_ref"),
             }
+            level = item.get("level")
+            if kind == "heading" and isinstance(level, int) and not isinstance(level, bool) and 1 <= level <= 6:
+                block["level"] = level
             if item.get("image") is not None:
                 block["_image"] = item["image"]
             candidates.append(block)
@@ -135,6 +138,7 @@ class SourceProjectionService:
             identity = json.dumps(
                 {
                     "kind": block.get("kind"),
+                    "level": block.get("level"),
                     "positions": block.get("positions") or [],
                     "text": block.get("text") or "",
                     "image_id": block.get("image_id"),
@@ -275,6 +279,23 @@ class SourceProjectionService:
             DocumentProjection.select()
             .where((DocumentProjection.document_id == document["id"]) & (DocumentProjection.state == "ACTIVE"))
             .order_by(DocumentProjection.revision.desc())
+            .first()
+        )
+        if not row:
+            return None
+        return cls._read_row(row)
+
+    @classmethod
+    @DB.connection_context()
+    def revision(cls, document_id: str, projection_revision: int, source_hash: str) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
+        row = (
+            DocumentProjection.select()
+            .where(
+                (DocumentProjection.document_id == document_id)
+                & (DocumentProjection.revision == projection_revision)
+                & (DocumentProjection.source_sha256 == source_hash)
+                & (DocumentProjection.state.in_(["ACTIVE", "RETIRED"]))
+            )
             .first()
         )
         if not row:

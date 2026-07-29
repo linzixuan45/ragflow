@@ -13,24 +13,23 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 #
-import logging
 import json
+import logging
 import os
 import re
 
+from api.db.db_models import DB, File
 from api.db.joint_services.tenant_model_service import get_model_config_from_provider_instance
-from common.constants import PAGERANK_FLD
-from common import settings
-from api.db.db_models import File
+from api.db.services.connector_service import Connector2KbService
 from api.db.services.document_service import DocumentService, queue_raptor_o_graphrag_tasks
 from api.db.services.file2document_service import File2DocumentService
 from api.db.services.file_service import FileService
 from api.db.services.knowledgebase_service import KnowledgebaseService
-from api.db.services.connector_service import Connector2KbService
 from api.db.services.task_service import GRAPH_RAPTOR_FAKE_DOC_ID, TaskService
 from api.db.services.user_service import TenantService, UserService, UserTenantService
-from common.constants import FileSource, StatusEnum
 from api.utils.api_utils import deep_merge, get_parser_config, remap_dictionary_keys, verify_embedding_availability
+from common import settings
+from common.constants import PAGERANK_FLD, FileSource, StatusEnum
 from common.misc_utils import thread_pool_exec
 
 _VALID_INDEX_TYPES = {"graph", "raptor", "mindmap", "artifact", "skill"}
@@ -107,11 +106,13 @@ async def create_dataset(tenant_id: str, req: dict):
         if not ok:
             return False, err
 
-    if not KnowledgebaseService.save(**create_dict):
-        return False, "Failed to save dataset"
-    ok, k = KnowledgebaseService.get_by_id(create_dict["id"])
-    if not ok:
-        return False, "Dataset created failed"
+    with DB.atomic():
+        if not KnowledgebaseService.save(**create_dict):
+            return False, "Failed to save dataset"
+        ok, k = KnowledgebaseService.get_by_id(create_dict["id"])
+        if not ok:
+            raise RuntimeError("Dataset created failed")
+        FileService.ensure_dataset_folder(tenant_id, k.name)
     response_data = remap_dictionary_keys(k.to_dict())
     return True, response_data
 

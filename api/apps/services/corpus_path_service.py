@@ -52,8 +52,6 @@ class CorpusPathRegistry:
 
 
 class CorpusPathResolver:
-    ROOTS = {"files", "documents"}
-
     @staticmethod
     def normalize(path: str) -> str:
         if not isinstance(path, str) or not path.startswith("/") or len(path.encode("utf-8")) > 1024:

@@ -6,25 +6,27 @@ import hashlib
 import hmac
 import json
 import mimetypes
-import os
+import re
 import time
+from urllib.parse import quote
 
 from quart import make_response, request
 
 from api.apps import login_required
-from api.apps.services.corpus_cursor_service import CorpusCursorError, CorpusCursorService, CorpusPageCursorService
-from api.apps.services.corpus_fs_service import CorpusFsError, CorpusFsService, InvalidConfirmationError
-from api.apps.services.corpus_path_service import AmbiguousPathError, CorpusPathError
-from api.apps.services.keyword_search_service import KeywordSearchService, SearchUnavailableError
 from api.apps.services import dataset_api_service
+from api.apps.services.corpus_citation_service import CorpusCitationError, CorpusCitationService
+from api.apps.services.corpus_cursor_service import CorpusCursorError, CorpusCursorService, CorpusPageCursorService
+from api.apps.services.corpus_fs_service import CorpusFsError, CorpusFsService, InvalidConfirmationError, PreconditionRequiredError
+from api.apps.services.corpus_path_service import AmbiguousPathError, CorpusPathError
+from api.apps.services.corpus_secret_service import corpus_secret
+from api.apps.services.keyword_search_service import KeywordSearchService, SearchUnavailableError
 from api.db.db_models import Task
 from api.db.services.document_service import DocumentService
 from api.db.services.file2document_service import File2DocumentService
 from api.db.services.file_service import FileService
 from api.db.services.task_service import TaskService, queue_tasks
-from common.constants import TaskStatus
-from common.misc_utils import thread_pool_exec
 from api.utils.api_utils import add_tenant_id_to_kwargs, get_error_data_result, get_result
+from common.constants import TaskStatus
 
 
 def _actor_digest(tenant_id: str) -> str:
@@ -50,14 +52,70 @@ def _error(error: Exception):
 
 
 def _success(service: CorpusFsService, data: dict):
-    data["revision"] = service.revision(service._dataset())
+    revision = service.revision(service._dataset())
+    data["revision"] = revision
     response = get_result(data=data)
     response.headers["Cache-Control"] = "private, no-store"
+    response.headers["ETag"] = f'"{revision["content_revision"]}"'
+    return response
+
+
+def _expected_revision() -> int:
+    value = request.headers.get("If-Match")
+    if value is None:
+        raise PreconditionRequiredError("If-Match is required")
+    match = re.fullmatch(r'(?:W/)?"?(\d+)"?', value.strip())
+    if not match or int(match.group(1)) < 1:
+        raise CorpusFsError("If-Match must contain a positive content revision")
+    return int(match.group(1))
+
+
+async def _file_response(data: bytes, name: str, content_type: str, content_hash: str):
+    start, end = 0, len(data) - 1
+    status = 200
+    range_value = request.headers.get("Range")
+    if range_value:
+        match = re.fullmatch(r"bytes=(\d*)-(\d*)", range_value.strip())
+        if not match or not any(match.groups()) or not data:
+            response = await make_response(b"", 416)
+            response.headers["Content-Range"] = f"bytes */{len(data)}"
+            return response
+        first, last = match.groups()
+        if first:
+            start = int(first)
+            end = int(last) if last else len(data) - 1
+        else:
+            length = int(last)
+            start = max(0, len(data) - length)
+        if start >= len(data) or end < start:
+            response = await make_response(b"", 416)
+            response.headers["Content-Range"] = f"bytes */{len(data)}"
+            return response
+        end = min(end, len(data) - 1)
+        status = 206
+    response = await make_response(data[start : end + 1], status)
+    response.headers["Accept-Ranges"] = "bytes"
+    response.headers["Content-Type"] = content_type
+    response.headers["Content-Disposition"] = f"attachment; filename*=UTF-8''{quote(name)}"
+    response.headers["Content-Length"] = str(end - start + 1 if data else 0)
+    response.headers["Cache-Control"] = "private, no-store"
+    if content_hash:
+        response.headers["ETag"] = f'"{content_hash}"'
+    if status == 206:
+        response.headers["Content-Range"] = f"bytes {start}-{end}/{len(data)}"
     return response
 
 
 def _page_cursor_service() -> CorpusPageCursorService:
-    return CorpusPageCursorService(os.environ.get("RAGFLOW_CORPUS_CURSOR_SECRET", "ragflow-corpus-fs-development-secret").encode())
+    return CorpusPageCursorService(corpus_secret("page-cursor"))
+
+
+def _citation_service() -> CorpusCitationService:
+    return CorpusCitationService(corpus_secret("citation"))
+
+
+def _issue_citation(service: CorpusFsService, document: dict, target: dict) -> str:
+    return _citation_service().issue(service.tenant_id, service.dataset_id, document["id"], target)
 
 
 def _page_context(service: CorpusFsService, operation: str, scope: dict) -> dict:
@@ -80,7 +138,7 @@ def _next_page_cursor(context: dict, offset: int, more: bool) -> str | None:
 
 
 def _delete_secret() -> bytes:
-    return os.environ.get("RAGFLOW_CORPUS_CURSOR_SECRET", "ragflow-corpus-fs-development-secret").encode()
+    return corpus_secret("delete-confirmation")
 
 
 def _delete_snapshot(dataset_id: str, paths: list[str], target_ids: list[str]) -> str:
@@ -158,6 +216,15 @@ def _body_bool(payload: dict, name: str, default: bool) -> bool:
     return value
 
 
+def _body_paths(payload: dict, name: str = "paths", maximum: int = 100) -> list[str]:
+    value = payload.get(name)
+    if not isinstance(value, list) or not value or len(value) > maximum:
+        raise CorpusFsError(f"{name} is invalid")
+    if any(not isinstance(path, str) or not path or len(path.encode("utf-8")) > 1024 for path in value):
+        raise CorpusFsError(f"{name} is invalid")
+    return value
+
+
 @manager.route("/datasets/<dataset_id>/fs/tree", methods=["GET"])  # noqa: F821
 @login_required
 @add_tenant_id_to_kwargs
@@ -180,7 +247,8 @@ async def create_folder(tenant_id: str, dataset_id: str):
     try:
         payload = _body(await request.get_json() or {}, {"parent_path", "name"})
         service = _service(tenant_id, dataset_id)
-        entry = service.create_folder(_body_string(payload, "parent_path", "/files", 1024), _body_string(payload, "name", maximum=256))
+        with service.content_mutation(_expected_revision()):
+            entry = service.create_folder(_body_string(payload, "parent_path", "/files", 1024), _body_string(payload, "name", maximum=256))
         return _success(service, entry)
     except (CorpusFsError, CorpusPathError) as error:
         return _error(error)
@@ -194,28 +262,28 @@ async def upload(tenant_id: str, dataset_id: str):
         service = _service(tenant_id, dataset_id)
         form = await request.form
         parent_path = form.get("parent_path", "/files")
-        service.resolve_writable(parent_path, folder=True)
         files = await request.files
         file_objs = files.getlist("file") if "file" in files else []
         if not file_objs or any(not item.filename for item in file_objs):
             raise CorpusFsError("file is required")
-        errors, uploaded = await thread_pool_exec(FileService.upload_document, service._dataset(), file_objs, tenant_id)
-        if errors or not uploaded:
-            raise CorpusFsError("; ".join(errors) if errors else "upload failed")
-        document_ids = [document["id"] for document, _ in uploaded]
-        service.relocate_uploaded_documents(document_ids, parent_path)
-        for document_id in document_ids:
-            DocumentService.filter_update([DocumentService.model.id == document_id], {"run": TaskStatus.RUNNING.value, "progress": 0, "progress_msg": "", "chunk_num": 0, "token_num": 0})
-            TaskService.filter_delete([Task.doc_id == document_id])
-            found, document = DocumentService.get_by_id(document_id)
-            if found:
-                value = document.to_dict()
-                value["tenant_id"] = tenant_id
-                bucket, name = File2DocumentService.get_storage_address(doc_id=document_id)
-                queue_tasks(value, bucket, name, 0)
-        visible, _ = service.tree(parent_path, 200, 0)
-        names = {item.filename for item in file_objs}
-        return _success(service, {"items": [entry for entry in visible if entry["name"] in names]})
+        with service.content_mutation(_expected_revision()):
+            service.resolve_writable(parent_path, folder=True)
+            errors, uploaded = FileService.upload_document(service._dataset(), file_objs, tenant_id)
+            if not uploaded:
+                raise CorpusFsError("; ".join(errors) if errors else "upload failed")
+            document_ids = [document["id"] for document, _ in uploaded]
+            service.relocate_uploaded_documents(document_ids, parent_path)
+            uploaded_entries = service.uploaded_entries(document_ids)
+            for document_id in document_ids:
+                DocumentService.filter_update([DocumentService.model.id == document_id], {"run": TaskStatus.RUNNING.value, "progress": 0, "progress_msg": "", "chunk_num": 0, "token_num": 0})
+                TaskService.filter_delete([Task.doc_id == document_id])
+                found, document = DocumentService.get_by_id(document_id)
+                if found:
+                    value = document.to_dict()
+                    value["tenant_id"] = tenant_id
+                    bucket, name = File2DocumentService.get_storage_address(doc_id=document_id)
+                    queue_tasks(value, bucket, name, 0)
+        return _success(service, {"items": uploaded_entries, "errors": errors})
     except (CorpusFsError, CorpusPathError) as error:
         return _error(error)
 
@@ -230,7 +298,8 @@ async def move(tenant_id: str, dataset_id: str):
         if not isinstance(source_paths, list) or not source_paths or not all(isinstance(path, str) for path in source_paths):
             raise CorpusFsError("source_paths is invalid")
         service = _service(tenant_id, dataset_id)
-        count = service.move(source_paths, _body_string(payload, "destination_path", maximum=1024), payload.get("new_name"))
+        with service.content_mutation(_expected_revision()):
+            count = service.move(source_paths, _body_string(payload, "destination_path", maximum=1024), payload.get("new_name"))
         return _success(service, {"success_count": count, "failed_paths": []})
     except (CorpusFsError, CorpusPathError) as error:
         return _error(error)
@@ -263,10 +332,24 @@ async def delete_entries(tenant_id: str, dataset_id: str):
             raise CorpusFsError("paths is invalid")
         service = _service(tenant_id, dataset_id)
         token = _parse_delete_token(service, paths, _body_string(payload, "confirmation_token", maximum=4096))
-        target_ids, _, _ = service.deletion_targets(paths)
-        if not hmac.compare_digest(str(token.get("snapshot") or ""), _delete_snapshot(dataset_id, paths, target_ids)):
-            raise InvalidConfirmationError("delete targets changed after preview")
-        return _success(service, service.delete(paths))
+        with service.content_mutation(_expected_revision()):
+            target_ids, _, _ = service.deletion_targets(paths)
+            if not hmac.compare_digest(str(token.get("snapshot") or ""), _delete_snapshot(dataset_id, paths, target_ids)):
+                raise InvalidConfirmationError("delete targets changed after preview")
+            result = service.delete(paths)
+        return _success(service, result)
+    except (CorpusFsError, CorpusPathError) as error:
+        return _error(error)
+
+
+@manager.route("/datasets/<dataset_id>/fs/blob", methods=["GET"])  # noqa: F821
+@login_required
+@add_tenant_id_to_kwargs
+async def blob(tenant_id: str, dataset_id: str):
+    try:
+        service = _service(tenant_id, dataset_id)
+        entry, data, _ = service.original_data(request.args.get("path", ""))
+        return await _file_response(data, entry["name"], entry["mime_type"], entry.get("content_hash", ""))
     except (CorpusFsError, CorpusPathError) as error:
         return _error(error)
 
@@ -329,8 +412,10 @@ def content(tenant_id: str, dataset_id: str):
         kinds = {value.strip() for value in type_value.split(",") if value.strip()} if type_value else None
         if kinds and not kinds <= {"heading", "paragraph", "table", "image", "image_ocr", "image_caption", "header_footer", "other"}:
             raise CorpusFsError("type is invalid")
-        text, source, images, blocks = service.content_text(document, page, kinds)
-        cursor_service = CorpusCursorService(os.environ.get("RAGFLOW_CORPUS_CURSOR_SECRET", "ragflow-corpus-fs-development-secret").encode())
+        _, source, images, blocks = service.content_text(document, page, kinds)
+        content_revision = service.revision(service._dataset())["content_revision"]
+        citation_context = service.citation_context(document)
+        cursor_service = CorpusCursorService(corpus_secret("content-cursor"))
         cursor = request.args.get("cursor")
         cursor_scope = hashlib.sha256(f"block-pages-v1:{entry['_content_hash']}:{source}:{page}:{','.join(sorted(kinds or []))}".encode()).hexdigest()
         block_index = cursor_service.parse(cursor, tenant_id, dataset_id, document["id"], cursor_scope)["offset"] if cursor else 0
@@ -342,6 +427,9 @@ def content(tenant_id: str, dataset_id: str):
         projection_revision = int(source.rsplit(":", 1)[1]) if source.startswith("source_projection:") else None
         range_start = visible_blocks[0]["start"] if visible_blocks else 0
         range_end = visible_blocks[-1]["end"] if visible_blocks else range_start
+        for block in visible_blocks:
+            target = service.citation_target(entry, document, content_revision, block=block, context=citation_context)
+            block["citation_ref"] = _issue_citation(service, document, target)
         return _success(service, {
             "path": entry["path"],
             "content": segment,
@@ -349,7 +437,7 @@ def content(tenant_id: str, dataset_id: str):
             "ranges": [{"start": range_start, "end": range_end}],
             "blocks": visible_blocks,
             "images": visible_images,
-            "citation_ref": cursor_service.issue(tenant_id, dataset_id, document["id"], cursor_scope, block_index),
+            "citation_ref": visible_blocks[0]["citation_ref"] if visible_blocks else None,
             "next_cursor": next_cursor,
             "projection_revision": projection_revision,
             "block_count": len(blocks),
@@ -358,6 +446,116 @@ def content(tenant_id: str, dataset_id: str):
     except CorpusCursorError:
         return _error(CorpusFsError("invalid cursor"))
     except (ValueError, CorpusFsError, CorpusPathError) as error:
+        return _error(error)
+
+
+@manager.route("/datasets/<dataset_id>/fs/citations/resolve", methods=["POST"])  # noqa: F821
+@login_required
+@add_tenant_id_to_kwargs
+async def resolve_citation(tenant_id: str, dataset_id: str):
+    try:
+        payload = _body(await request.get_json() or {}, {"citation_ref"})
+        citation_ref = _body_string(payload, "citation_ref", maximum=16384)
+        service = _service(tenant_id, dataset_id)
+        document_id, target = _citation_service().resolve_locator(citation_ref, tenant_id, dataset_id)
+        service.authorize_citation(document_id)
+        return _success(service, {"dataset_id": dataset_id, **target})
+    except CorpusCitationError:
+        return _error(CorpusFsError("invalid citation"))
+    except (CorpusFsError, CorpusPathError) as error:
+        return _error(error)
+
+
+@manager.route("/datasets/<dataset_id>/fs/citations/preview", methods=["POST"])  # noqa: F821
+@login_required
+@add_tenant_id_to_kwargs
+async def preview_citation(tenant_id: str, dataset_id: str):
+    try:
+        payload = _body(await request.get_json() or {}, {"citation_ref"})
+        citation_ref = _body_string(payload, "citation_ref", maximum=16384)
+        service = _service(tenant_id, dataset_id)
+        document_id, target = _citation_service().resolve_locator(citation_ref, tenant_id, dataset_id)
+        preview = service.citation_preview(document_id, target)
+        return _success(service, {"citation": {"dataset_id": dataset_id, **target}, "preview": preview})
+    except CorpusCitationError:
+        return _error(CorpusFsError("invalid citation"))
+    except (CorpusFsError, CorpusPathError) as error:
+        return _error(error)
+
+
+@manager.route("/datasets/<dataset_id>/fs/derived-content", methods=["GET", "PUT"])  # noqa: F821
+@login_required
+@add_tenant_id_to_kwargs
+async def derived_content(tenant_id: str, dataset_id: str):
+    try:
+        service = _service(tenant_id, dataset_id)
+        if request.method == "GET":
+            return _success(service, service.markdown_current(request.args.get("path", "")))
+        payload = _body(await request.get_json() or {}, {"path", "content", "expected_version"})
+        path = _body_string(payload, "path", maximum=1024)
+        content_value = payload.get("content")
+        if not isinstance(content_value, str):
+            raise CorpusFsError("content must be a string")
+        expected_version = _int(payload.get("expected_version"), "expected_version", 0, 2147483647)
+        with service.content_mutation(_expected_revision()):
+            result = service.save_markdown(path, content_value, expected_version)
+        return _success(service, result)
+    except (ValueError, CorpusFsError, CorpusPathError) as error:
+        return _error(error)
+
+
+@manager.route("/datasets/<dataset_id>/fs/derived-content/versions", methods=["GET"])  # noqa: F821
+@login_required
+@add_tenant_id_to_kwargs
+def derived_content_versions(tenant_id: str, dataset_id: str):
+    try:
+        service = _service(tenant_id, dataset_id)
+        return _success(service, service.markdown_versions(request.args.get("path", "")))
+    except (CorpusFsError, CorpusPathError) as error:
+        return _error(error)
+
+
+@manager.route("/datasets/<dataset_id>/fs/derived-content/restore", methods=["POST"])  # noqa: F821
+@login_required
+@add_tenant_id_to_kwargs
+async def restore_derived_content(tenant_id: str, dataset_id: str):
+    try:
+        payload = _body(await request.get_json() or {}, {"path", "version", "expected_version"})
+        service = _service(tenant_id, dataset_id)
+        path = _body_string(payload, "path", maximum=1024)
+        version = _int(payload.get("version"), "version", 1, 2147483647)
+        expected_version = _int(payload.get("expected_version"), "expected_version", 1, 2147483647)
+        with service.content_mutation(_expected_revision()):
+            result = service.restore_markdown(path, version, expected_version)
+        return _success(service, result)
+    except (ValueError, CorpusFsError, CorpusPathError) as error:
+        return _error(error)
+
+
+@manager.route("/datasets/<dataset_id>/fs/parse-status", methods=["GET"])  # noqa: F821
+@login_required
+@add_tenant_id_to_kwargs
+def parse_status(tenant_id: str, dataset_id: str):
+    try:
+        service = _service(tenant_id, dataset_id)
+        return _success(service, service.parse_state(request.args.get("path", "")))
+    except (CorpusFsError, CorpusPathError) as error:
+        return _error(error)
+
+
+@manager.route("/datasets/<dataset_id>/fs/parse", methods=["POST"])  # noqa: F821
+@login_required
+@add_tenant_id_to_kwargs
+async def mutate_parse(tenant_id: str, dataset_id: str):
+    try:
+        payload = _body(await request.get_json() or {}, {"action", "paths"})
+        action = _body_string(payload, "action", maximum=16)
+        paths = _body_paths(payload)
+        service = _service(tenant_id, dataset_id)
+        with service.content_mutation(_expected_revision()):
+            result = service.parse_documents(paths, action)
+        return _success(service, result)
+    except (CorpusFsError, CorpusPathError) as error:
         return _error(error)
 
 
@@ -401,23 +599,35 @@ async def grep(tenant_id: str, dataset_id: str):
         if cursor is not None and not isinstance(cursor, str):
             raise CorpusFsError("cursor is invalid")
         service = _service(tenant_id, dataset_id)
-        offset, context = _page_offset(service, "grep", {"query": query, "path": path, "match": match, "exclude": exclude or [], "limit": limit, "highlight": highlight, "count_only": count_only}, cursor)
-        if path == "/":
-            document_ids = [document["id"] for document in service._documents()]
-        else:
-            entries, _ = service._projection()
-            prefix = path.rstrip("/") + "/"
-            document_ids = [entry["_document_id"] for entry_path, entry in entries.items() if entry["kind"] == "file" and (entry_path == path or entry_path.startswith(prefix))]
+        offset, page_context = _page_offset(service, "grep", {"query": query, "path": path, "match": match, "exclude": exclude or [], "limit": limit, "highlight": highlight, "count_only": count_only}, cursor)
+        by_document = service.search_scope(path)
+        document_ids = list(by_document)
         result = KeywordSearchService().search_authorized(tenant_id, [dataset_id], document_ids, query, match=match, exclude=exclude, offset=offset, limit=limit, highlight=highlight, count_only=count_only)
-        entries, _ = service._projection()
-        by_document = {entry["_document_id"]: entry for entry in entries.values() if entry["kind"] == "file"}
+        documents = {document["id"]: document for document in service._documents()}
+        content_revision = page_context["revision"]["content_revision"]
+        citation_contexts = {}
         items = []
         for chunk in result["chunks"]:
             entry = by_document.get(chunk.get("doc_id"))
-            if entry:
-                items.append({"path": entry["path"], "snippet": chunk.get("content_with_weight", ""), "citation_ref": hashlib.sha256(f"{dataset_id}:{entry['path']}:{chunk.get('id', '')}".encode()).hexdigest(), "page": chunk.get("page_num_int")})
-        more = not count_only and offset + len(items) < result["total"]
-        return _success(service, {"total": result["total"], "items": items, "next_cursor": _next_page_cursor(context, offset + len(items), more), "truncated": more})
+            document = documents.get(chunk.get("doc_id"))
+            if entry and document:
+                citation_context = citation_contexts.get(document["id"])
+                if citation_context is None:
+                    citation_context = citation_contexts[document["id"]] = service.citation_context(document)
+                target = service.citation_target(entry, document, content_revision, chunk=chunk, context=citation_context)
+                items.append({"path": entry["path"], "snippet": chunk.get("content_with_weight", ""), "citation_ref": _issue_citation(service, document, target), "page": target["page"]})
+        page = KeywordSearchService.page_state(result, offset=offset, returned_count=len(items), count_only=count_only)
+        return _success(
+            service,
+            {
+                "total": page["total"],
+                "returned_count": page["returned_count"],
+                "consumed_count": page["consumed_count"],
+                "items": items,
+                "next_cursor": _next_page_cursor(page_context, page["next_offset"], page["truncated"]),
+                "truncated": page["truncated"],
+            },
+        )
     except SearchUnavailableError:
         response = get_error_data_result(message="SEARCH_UNAVAILABLE")
         response.status_code = 503
@@ -445,15 +655,34 @@ async def semantic_search(tenant_id: str, dataset_id: str):
         if isinstance(vector_similarity_weight, bool) or not isinstance(vector_similarity_weight, (int, float)) or not 0 <= vector_similarity_weight <= 1:
             raise CorpusFsError("vector_similarity_weight is invalid")
         service = _service(tenant_id, dataset_id)
-        entries, _ = service._projection()
-        prefix = path.rstrip("/") + "/"
-        doc_ids = [entry["_document_id"] for entry_path, entry in entries.items() if entry["kind"] == "file" and (path == "/" or entry_path == path or entry_path.startswith(prefix))]
-        request_payload = {"question": query, "doc_ids": doc_ids, "size": top_k, "top_k": top_k, "similarity_threshold": similarity_threshold, "vector_similarity_weight": vector_similarity_weight}
+        by_document = service.search_scope(path)
+        if not by_document:
+            return _success(service, {"items": [], "total": 0})
+        doc_ids = list(by_document)
+        request_payload = {
+            "question": query,
+            "doc_ids": doc_ids,
+            "size": top_k,
+            "top_k": top_k,
+            "similarity_threshold": similarity_threshold,
+            "vector_similarity_weight": service.search_vector_weight(mode, vector_similarity_weight),
+        }
         ok, result = await dataset_api_service.search(dataset_id, tenant_id, request_payload)
         if not ok:
             raise NotImplementedError(result)
-        by_document = {entry["_document_id"]: entry for entry in entries.values() if entry["kind"] == "file"}
-        items = [{"path": by_document[chunk["doc_id"]]["path"], "snippet": chunk.get("content_with_weight", ""), "citation_ref": hashlib.sha256(f"{dataset_id}:{chunk.get('doc_id')}:{chunk.get('id', '')}".encode()).hexdigest()} for chunk in result.get("chunks", []) if chunk.get("doc_id") in by_document]
+        documents = {document["id"]: document for document in service._documents()}
+        content_revision = service.revision(service._dataset())["content_revision"]
+        citation_contexts = {}
+        items = []
+        for chunk in result.get("chunks", []):
+            entry = by_document.get(chunk.get("doc_id"))
+            document = documents.get(chunk.get("doc_id"))
+            if entry and document:
+                context = citation_contexts.get(document["id"])
+                if context is None:
+                    context = citation_contexts[document["id"]] = service.citation_context(document)
+                target = service.citation_target(entry, document, content_revision, chunk=chunk, context=context)
+                items.append({"path": entry["path"], "snippet": chunk.get("content_with_weight", ""), "citation_ref": _issue_citation(service, document, target), "page": target["page"]})
         return _success(service, {"items": items, "total": len(items)})
     except NotImplementedError:
         response = get_error_data_result(message="SEARCH_UNAVAILABLE")
