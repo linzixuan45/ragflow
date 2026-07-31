@@ -123,12 +123,26 @@ The [.env](./.env) file contains important environment variables for Docker.
 ### Doc bulk size
 
 - `DOC_BULK_SIZE`
-  The number of document chunks processed in a single batch during document parsing. Defaults to `4`.
+  The number of document chunks processed in a single batch during document parsing. Defaults to `32`.
 
 ### Embedding batch size
 
 - `EMBEDDING_BATCH_SIZE`
   The number of text chunks processed in a single batch during embedding vectorization. Defaults to `16`.
+
+### TOC generation limits
+
+- `TOC_PACK_TIMEOUT`
+  The timeout in seconds for one TOC model request. It is capped by `TOC_TOTAL_TIMEOUT` and defaults to `30`.
+- `TOC_TOTAL_TIMEOUT`
+  The total TOC generation deadline in seconds. When exceeded, ingestion continues without a generated TOC. Defaults to `30`.
+
+### MinerU image descriptions
+
+- `VLM_PARALLEL_PER_DOC`
+  The maximum number of concurrent image-description requests for one MinerU document. Defaults to `4`.
+- `VLM_DESCRIPTION_CACHE_SIZE`
+  The maximum number of successful image descriptions cached in each parser process. Defaults to `256`.
 
 ### OceanBase prerequisites
 

@@ -20,13 +20,10 @@ import random
 import re
 from functools import partial
 
-from litellm import logging
 import numpy as np
+from litellm import logging
 from PIL import Image
 
-from api.db.services.file2document_service import File2DocumentService
-from api.db.services.file_service import FileService
-from api.db.services.llm_service import LLMBundle
 from api.db.joint_services.tenant_model_service import (
     ensure_mineru_from_env,
     ensure_opendataloader_from_env,
@@ -35,6 +32,9 @@ from api.db.joint_services.tenant_model_service import (
     get_model_config_from_provider_instance,
     get_tenant_default_model_by_type,
 )
+from api.db.services.file2document_service import File2DocumentService
+from api.db.services.file_service import FileService
+from api.db.services.llm_service import LLMBundle
 from common import settings
 from common.constants import LLMType
 from common.misc_utils import get_uuid, thread_pool_exec
@@ -52,8 +52,8 @@ from rag.flow.parser.pdf_chunk_metadata import (
 from rag.flow.parser.schema import ParserFromUpstream
 from rag.flow.parser.utils import (
     enhance_media_sections_with_vision,
-    extract_word_outlines,
     extract_docx_header_footer_texts,
+    extract_word_outlines,
     remove_header_footer_docx_sections,
     remove_header_footer_html_blob,
     remove_toc,
@@ -62,6 +62,7 @@ from rag.flow.parser.utils import (
 )
 from rag.llm.cv_model import Base as VLM
 from rag.utils.base64_image import image2id
+from rag.utils.mineru_adapter import mineru_pipeline_boxes
 
 
 class ParserParam(ProcessParamBase):
@@ -393,33 +394,14 @@ class Parser(ProcessBase):
             ocr_model = LLMBundle(tenant_id, ocr_model_config, lang=conf.get("lang", "Chinese"))
             pdf_parser = ocr_model.mdl
 
-            lines, _ = pdf_parser.parse_pdf(
+            lines, media = pdf_parser.parse_pdf(
                 filepath=name,
                 binary=blob,
                 callback=self.callback,
                 parse_method="pipeline",
                 lang=conf.get("lang", "Chinese"),
             )
-            bboxes = []
-            for line in lines or []:
-                if not isinstance(line, tuple) or len(line) < 3:
-                    continue
-
-                t, layout_type, poss = line[0], line[1], line[2]
-                box = {
-                    "text": t,
-                    "layout_type": layout_type or "text",
-                }
-                metadata = line[3] if len(line) > 3 and isinstance(line[3], dict) else {}
-                if "level" in metadata:
-                    box["level"] = metadata["level"]
-                positions = [[pos[0][-1] + 1, *pos[1:]] for pos in pdf_parser.extract_positions(poss)]
-                if positions:
-                    box["positions"] = positions
-                image = pdf_parser.crop(poss, 1)
-                if image is not None:
-                    box["image"] = image
-                bboxes.append(box)
+            bboxes = mineru_pipeline_boxes(pdf_parser, lines, media)
 
         elif parse_method.lower() == "docling":
             pdf_parser = DoclingParser(docling_server_url=os.environ.get("DOCLING_SERVER_URL", ""))

@@ -28,8 +28,10 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
+from common.token_utils import num_tokens_from_string
 from rag.llm.rerank_model import (
     Base,
+    CoHereRerank,
     JinaRerank,
     NvidiaRerank,
 )
@@ -155,6 +157,34 @@ def test_calibrated_relevance_scores_are_preserved():
     with _mock_post(payload):
         rank, _ = jina.similarity("q", ["a", "b", "c"])
     assert np.allclose(rank, [0.8, 0.2, 0.5])
+
+
+def test_qwen3_vllm_reranker_bounds_each_query_document_sequence():
+    reranker = CoHereRerank.__new__(CoHereRerank)
+    reranker.model_name = "Qwen3-Reranker-4B"
+    reranker.client = MagicMock()
+    reranker.client.rerank.return_value = MagicMock(results=[])
+
+    reranker.similarity("query " * 400, ["document " * 4000, "short"])
+
+    request = reranker.client.rerank.call_args.kwargs
+    query_tokens = num_tokens_from_string(request["query"])
+    assert query_tokens <= 256
+    assert all(query_tokens + num_tokens_from_string(text) <= 768 for text in request["documents"])
+
+
+def test_qwen3_vllm_reranker_scales_budget_from_provider_context_limit():
+    reranker = CoHereRerank.__new__(CoHereRerank)
+    reranker.model_name = "Qwen3-Reranker-4B"
+    reranker.max_model_len = 1024
+    reranker.client = MagicMock()
+    reranker.client.rerank.return_value = MagicMock(results=[])
+
+    reranker.similarity("query " * 400, ["document " * 4000])
+
+    request = reranker.client.rerank.call_args.kwargs
+    request_tokens = num_tokens_from_string(request["query"]) + num_tokens_from_string(request["documents"][0])
+    assert request_tokens <= 384
 
 
 # --- Structural guarantee: providers override _compute_rank, not similarity --

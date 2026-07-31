@@ -69,10 +69,18 @@ env:
   # After making the change, ensure you update `client_max_body_size` in nginx/nginx.conf correspondingly.
 
   # The number of document chunks processed in a single batch during document parsing.
-  DOC_BULK_SIZE: 4
+  DOC_BULK_SIZE: 32
 
   # The number of text chunks processed in a single batch during embedding vectorization.
   EMBEDDING_BATCH_SIZE: 16
+
+  # TOC generation deadlines in seconds. A document falls back to no generated TOC after the total deadline.
+  TOC_PACK_TIMEOUT: 30
+  TOC_TOTAL_TIMEOUT: 30
+
+  # MinerU image-description concurrency and per-process cache capacity.
+  VLM_PARALLEL_PER_DOC: 4
+  VLM_DESCRIPTION_CACHE_SIZE: 256
 
 ragflow:
   image:

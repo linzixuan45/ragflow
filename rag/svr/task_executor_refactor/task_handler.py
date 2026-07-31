@@ -59,7 +59,8 @@ from rag.svr.task_executor_refactor.recording_context import RecordingContext
 from rag.svr.task_executor_refactor.task_context import TaskContext
 from rag.graphrag.general.index import run_graphrag_for_kb
 from api.db.services.file2document_service import File2DocumentService
-from rag.prompts.generator import run_toc_from_text
+from rag.prompts.generator import build_structured_toc, run_toc_from_text
+from rag.utils.chunk_metrics import summarize_chunk_tokens
 from common import settings
 
 
@@ -551,6 +552,11 @@ class TaskHandler:
             raise FileNotFoundError(f"Can not find file <{ctx.name}> from minio. Could you try it again.")
 
         chunks = await chunk_service.build_chunks(binary)
+        toc_structure = chunk_service.toc_structure
+        title_count = len(toc_structure["outline"] or toc_structure["source_blocks"])
+        chunk_stats = summarize_chunk_tokens(chunks, title_count=title_count)
+        ctx.recording_context.record("chunk_token_distribution", chunk_stats)
+        logging.info("Chunk token distribution: %s", chunk_stats)
         ctx.recording_context.record("chunks", chunks)
         chunk_ids = [c.get("id") for c in chunks if isinstance(c, dict) and "id" in c]
         ctx.recording_context.record("chunk_ids_count", len(chunk_ids))
@@ -596,10 +602,7 @@ class TaskHandler:
         logging.info(progress_message)
         ctx.progress_cb(msg=progress_message)
 
-        toc_thread = None
-        if ctx.parser_id.lower() == "naive" and ctx.parser_config.get("toc_extraction", False):
-            toc_thread = asyncio.create_task(asyncio.to_thread(self._build_toc, ctx, chunks, ctx.progress_cb))
-
+        toc_task = None
         # Insert chunks
         chunk_count = len(set([chunk["id"] for chunk in chunks]))
         start_ts = timer()
@@ -614,9 +617,17 @@ class TaskHandler:
             ctx.progress_cb(-1, msg="Task has been canceled.")
             return
 
-        insert_result = await chunk_service.insert_chunks(task_id, task_tenant_id, task_dataset_id, chunks)
+        if ctx.parser_id.lower() == "naive" and ctx.parser_config.get("toc_extraction", False):
+            toc_task = asyncio.create_task(self._build_toc(ctx, chunks, ctx.progress_cb, toc_structure))
+
+        try:
+            insert_result = await chunk_service.insert_chunks(task_id, task_tenant_id, task_dataset_id, chunks)
+        except BaseException:
+            await self._cancel_toc_task(toc_task)
+            raise
 
         if not insert_result:
+            await self._cancel_toc_task(toc_task)
             ctx.recording_context.record("insertion_result", "failed")
             from api.apps.services.source_projection_service import SourceProjectionService
 
@@ -631,7 +642,7 @@ class TaskHandler:
 
         ctx.progress_cb(msg="Indexing done ({:.2f}s).".format(timer() - start_ts))
 
-        toc_chunk = await self._process_toc_thread(toc_thread)
+        toc_chunk = await self._process_toc_task(toc_task)
         if toc_chunk:
             ctx.recording_context.record("toc_chunk", [toc_chunk])
             await post_processor.insert_toc_chunk(toc_chunk, chunk_service)
@@ -692,15 +703,22 @@ class TaskHandler:
             token_count,
         )
 
-    async def _process_toc_thread(self, toc_thread):
+    async def _process_toc_task(self, toc_task):
         try:
-            if toc_thread:
-                return await toc_thread
+            if toc_task:
+                return await toc_task
             else:
                 return None
         finally:
-            if toc_thread is not None and not toc_thread.done():
-                toc_thread.cancel()
+            if toc_task is not None and not toc_task.done():
+                toc_task.cancel()
+
+    @staticmethod
+    async def _cancel_toc_task(toc_task):
+        if toc_task is None or toc_task.done():
+            return
+        toc_task.cancel()
+        await asyncio.gather(toc_task, return_exceptions=True)
 
     @classmethod
     async def _get_storage_binary(cls, bucket: str, name: str) -> bytes:
@@ -786,7 +804,7 @@ class TaskHandler:
             offset += batch_size
 
     @classmethod
-    def _build_toc(cls, ctx: TaskContext, docs: List[Dict], progress_cb: Callable) -> Optional[Dict]:
+    async def _build_toc(cls, ctx: TaskContext, docs: List[Dict], progress_cb: Callable, toc_structure=None) -> Optional[Dict]:
         """Build table of contents."""
         progress_cb(msg="Start to generate table of content ...")
         chat_model_config = get_model_config_from_provider_instance(ctx.tenant_id, LLMType.CHAT, ctx.llm_id)
@@ -798,11 +816,19 @@ class TaskHandler:
                     d.get("top_int", 0)[0] if isinstance(d.get("top_int", 0), list) else d.get("top_int", 0),
                 ),
             )
+            structured_toc = build_structured_toc(
+                [d["content_with_weight"] for d in docs],
+                outline=(toc_structure or {}).get("outline"),
+                source_blocks=(toc_structure or {}).get("source_blocks"),
+            )
 
-            # NOTE: asyncio.run() creates a new event loop in the worker thread
-            # (this method is called via asyncio.to_thread), which is the
-            # intended pattern for bridging sync -> async in a thread context.
-            toc: list[dict] = asyncio.run(run_toc_from_text([d["content_with_weight"] for d in docs], chat_mdl, progress_cb))
+            toc: list[dict] = await run_toc_from_text(
+                [d["content_with_weight"] for d in docs],
+                chat_mdl,
+                progress_cb,
+                structured_toc=structured_toc,
+                limiter=ctx.chat_limiter,
+            )
             logging.info("------------ T O C -------------\n" + json.dumps(toc, ensure_ascii=False, indent="  "))
 
             for ii, item in enumerate(toc):

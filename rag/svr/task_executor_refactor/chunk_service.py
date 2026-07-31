@@ -85,6 +85,7 @@ class ChunkService:
             ctx: TaskContext containing task configuration and execution resources.
         """
         self._task_context = ctx
+        self.toc_structure: dict[str, list[dict]] = {"outline": [], "source_blocks": []}
 
     @timeout(60 * 80, 1)
     async def build_chunks(
@@ -135,6 +136,15 @@ class ChunkService:
         cks = await run_chunking(chunker, storage_binary, ctx)
 
         source_blocks = cks[0].pop("__source_projection_blocks__", None) if cks else None
+        outline = cks[0].get("__outline__") if cks else None
+        self.toc_structure = {
+            "outline": outline or [],
+            "source_blocks": [
+                {"layout_type": "title", "level": block.get("level"), "text": block.get("text")}
+                for block in source_blocks or []
+                if isinstance(block, dict) and block.get("layout_type") == "title"
+            ],
+        }
         if source_blocks and ctx.name.lower().endswith(".pdf"):
             from api.apps.services.source_projection_service import SourceProjectionService
 

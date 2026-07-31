@@ -54,7 +54,7 @@ def test_standard_pdf_parser_blocks_preserve_deepdoc_and_mineru_shapes():
             ("DeepDOC body", "@@1\t10\t20\t30\t40##"),
             ("MinerU heading", "title", [[2, 10, 20, 30, 40]]),
         ],
-        [((None, "<table><tr><td>cell</td></tr></table>"), [[3, 10, 20, 30, 40]])],
+        [((None, "<table><tr><td>cell</td></tr></table>"), [[2, 10, 20, 30, 40]])],
     )
 
     normalized = SourceProjectionService.normalize_pdf_blocks(blocks)
@@ -62,6 +62,25 @@ def test_standard_pdf_parser_blocks_preserve_deepdoc_and_mineru_shapes():
     assert [block["kind"] for block in normalized] == ["paragraph", "heading", "table"]
     assert normalized[1]["page"] == 2
     assert normalized[2]["positions"] == [[3, 10, 20, 30, 40]]
+
+
+def test_mineru_heading_level_survives_source_projection_normalization():
+    blocks = source_projection_blocks(
+        [
+            {
+                "text": "2.1 Prior Work",
+                "layout_type": "title",
+                "level": 2,
+                "positions": [[4, 10, 20, 30, 40]],
+            }
+        ],
+        [],
+    )
+
+    normalized = SourceProjectionService.normalize_pdf_blocks(blocks)
+
+    assert normalized[0]["kind"] == "heading"
+    assert normalized[0]["level"] == 2
 
 
 def test_source_projection_unifies_body_tables_and_figures_in_pdf_order():
@@ -72,8 +91,8 @@ def test_source_projection_unifies_body_tables_and_figures_in_pdf_order():
             ("earlier heading", "title", [[1, 10, 20, 20, 40]]),
         ],
         [
-            ((image, "Figure 1: result"), [[1, 10, 20, 60, 90]]),
-            ((None, "<table><tr><td>value</td></tr></table>"), [[2, 10, 20, 40, 80]]),
+            ((image, "Figure 1: result"), [[0, 10, 20, 60, 90]]),
+            ((None, "<table><tr><td>value</td></tr></table>"), [[1, 10, 20, 40, 80]]),
         ],
     )
 
@@ -90,6 +109,21 @@ def test_source_projection_keeps_image_only_figures():
     assert blocks[0]["layout_type"] == "figure"
     assert blocks[0]["text"] == ""
     assert blocks[0]["image"] is image
+
+
+def test_source_projection_converts_zero_based_table_and_figure_pages():
+    image = object()
+
+    blocks = source_projection_blocks(
+        [],
+        [
+            ((None, "<table><tr><td>value</td></tr></table>"), [[4, 10, 20, 30, 40]]),
+            ((image, "Figure 1"), [[6, 50, 60, 70, 80]]),
+        ],
+    )
+
+    assert blocks[0]["positions"] == [[5, 10, 20, 30, 40]]
+    assert blocks[1]["positions"] == [[7, 50, 60, 70, 80]]
 
 
 def test_projection_images_are_materialized_in_the_dataset_bucket(monkeypatch):
@@ -147,7 +181,7 @@ def test_projection_page_window_offsets_deepdoc_sections_but_not_global_tables()
             ("window page 1", "@@1\t0\t100\t10\t20##"),
             ("window page 2", "text", [[2, 0, 100, 10, 20]]),
         ],
-        [((None, "<table><tr><td>global page 13</td></tr></table>"), [[13, 0, 100, 30, 40]])],
+        [((None, "<table><tr><td>global page 13</td></tr></table>"), [[12, 0, 100, 30, 40]])],
         section_page_offset=12,
     )
     blocks = SourceProjectionService.normalize_pdf_blocks(source_blocks)

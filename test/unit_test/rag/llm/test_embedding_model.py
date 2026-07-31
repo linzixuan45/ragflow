@@ -41,6 +41,7 @@ from rag.llm.embedding_model import (
     LocalAIEmbed,
     MistralEmbed,
     NvidiaEmbed,
+    OpenAI_APIEmbed,
     OllamaEmbed,
     OpenAIEmbed,
     ZhipuEmbed,
@@ -101,6 +102,11 @@ class _BadRespNoText:
     @property
     def data(self):
         raise ValueError("malformed response payload")
+
+
+class _ContextLengthError(Exception):
+    status_code = 400
+    body = {"error": {"code": 400, "param": "input_tokens", "message": "maximum context length is 2048 tokens"}}
 
 
 @pytest.mark.p1
@@ -217,6 +223,55 @@ class TestTruncationBoundary:
         # Truncated to the documented 8191 ceiling, never above the 8192 model limit.
         assert num_tokens_from_string(sent) <= 8191
         assert num_tokens_from_string(sent) <= DEFAULT_MAX_TOKENS
+
+    @pytest.mark.parametrize("method", ["encode", "encode_queries"])
+    def test_qwen3_vllm_input_uses_conservative_half_window_limit(self, method):
+        embed = OpenAI_APIEmbed("x", "Qwen3-Embedding-4B", "http://10.100.15.70:8000/v1")
+        embed.client = MagicMock()
+        embed.client.embeddings.create = MagicMock(side_effect=_openai_create(total_tokens=1))
+
+        huge = "word " * 3000
+        argument = [huge] if method == "encode" else huge
+        getattr(embed, method)(argument)
+
+        sent = embed.client.embeddings.create.call_args.kwargs["input"][0]
+        assert 512 < num_tokens_from_string(sent) <= 1024
+
+    def test_qwen3_vllm_keeps_item_batching_separate_from_sequence_limit(self):
+        embed = OpenAI_APIEmbed("x", "Qwen3-Embedding-4B", "http://10.100.15.70:8000/v1")
+        embed.client = MagicMock()
+        embed.client.embeddings.create = MagicMock(side_effect=_openai_create(total_tokens=1))
+
+        texts = ["word " * 700, "word " * 700, "short"]
+        vectors, _ = embed.encode(texts)
+
+        assert vectors.shape[0] == 3
+        assert embed.client.embeddings.create.call_count == 1
+        sent = embed.client.embeddings.create.call_args.kwargs["input"]
+        assert len(sent) == 3
+        assert all(num_tokens_from_string(text) <= 1024 for text in sent)
+
+    def test_qwen3_vllm_retries_only_the_oversized_sequence(self):
+        embed = OpenAI_APIEmbed("x", "Qwen3-Embedding-4B", "http://10.100.15.70:8000/v1", max_model_len=2048)
+        embed.client = MagicMock()
+
+        def reject_provider_oversize(input, model, **kwargs):
+            if any(num_tokens_from_string(text) > 700 for text in input):
+                raise _ContextLengthError()
+            return _OpenAIResp([[float(i)] * 3 for i in range(len(input))], total_tokens=1)
+
+        embed.client.embeddings.create = MagicMock(side_effect=reject_provider_oversize)
+
+        vectors, _ = embed.encode(["word " * 900, "short"])
+
+        assert vectors.shape == (2, 3)
+        assert embed.client.embeddings.create.call_count == 4
+        successful_inputs = [
+            call.kwargs["input"]
+            for call in embed.client.embeddings.create.call_args_list
+            if all(num_tokens_from_string(text) <= 700 for text in call.kwargs["input"])
+        ]
+        assert [len(batch) for batch in successful_inputs] == [1, 1]
 
     def test_mistral_truncates_to_8192_not_8196(self):
         embed = MistralEmbed.__new__(MistralEmbed)

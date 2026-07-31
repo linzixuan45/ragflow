@@ -7,6 +7,7 @@ import { useFormContext, useWatch } from 'react-hook-form';
 import { useTranslation } from 'react-i18next';
 
 const parseMethodOptions = buildOptions(['auto', 'txt', 'ocr']);
+const effortOptions = buildOptions(['medium', 'high']);
 const languageOptions = buildOptions([
   'English',
   'Chinese',
@@ -90,10 +91,50 @@ export function MinerUOptionsFormField({
       >
         {(field) => (
           <RAGFlowSelect
-            value={field.value || 'English'}
+            value={field.value || 'Chinese'}
             onChange={field.onChange}
             options={languageOptions}
             placeholder={t('common.selectPlaceholder', 'Select value')}
+          />
+        )}
+      </RAGFlowFormItem>
+
+      <RAGFlowFormItem
+        name={buildName('mineru_effort')}
+        label={t('knowledgeConfiguration.mineruEffort', 'Parsing quality')}
+        tooltip={t(
+          'knowledgeConfiguration.mineruEffortTip',
+          'High enables higher-accuracy hybrid parsing and image/chart analysis, but takes longer.',
+        )}
+        horizontal={true}
+      >
+        {(field) => (
+          <RAGFlowSelect
+            value={field.value || 'high'}
+            onChange={field.onChange}
+            options={effortOptions}
+            placeholder={t('common.selectPlaceholder', 'Select value')}
+          />
+        )}
+      </RAGFlowFormItem>
+
+      <RAGFlowFormItem
+        name={buildName('mineru_image_analysis')}
+        label={t(
+          'knowledgeConfiguration.mineruImageAnalysis',
+          'Image and chart analysis',
+        )}
+        tooltip={t(
+          'knowledgeConfiguration.mineruImageAnalysisTip',
+          'Analyze figures and charts and preserve their semantic descriptions.',
+        )}
+        horizontal={true}
+        labelClassName="!mb-0"
+      >
+        {(field) => (
+          <Switch
+            checked={field.value ?? true}
+            onCheckedChange={field.onChange}
           />
         )}
       </RAGFlowFormItem>

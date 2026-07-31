@@ -57,7 +57,7 @@ from rag.utils.raptor_utils import (
 from common.log_utils import init_root_logger
 from common.config_utils import show_configs
 from rag.graphrag.utils import get_llm_cache, set_llm_cache, get_tags_from_cache, set_tags_to_cache
-from rag.prompts.generator import keyword_extraction, question_proposal, content_tagging, run_toc_from_text, gen_metadata
+from rag.prompts.generator import build_structured_toc, keyword_extraction, question_proposal, content_tagging, run_toc_from_text, gen_metadata
 import logging
 import os
 from datetime import datetime
@@ -107,6 +107,7 @@ from rag.utils.table_es_metadata import (
     table_parser_strip_doc_metadata_keys,
 )
 from rag.nlp import search as nlp_search
+from rag.utils.chunk_metrics import summarize_chunk_tokens
 
 BATCH_SIZE = 64
 
@@ -362,6 +363,27 @@ async def build_chunks(task, progress_callback):
     outline_data = cks[0].get("__outline__") if cks else None
     get_recording_context().record("outline_data", outline_data)
 
+    source_blocks = cks[0].pop("__source_projection_blocks__", None) if cks else None
+    toc_structure = {
+        "outline": outline_data or [],
+        "source_blocks": [
+            {"layout_type": "title", "level": block.get("level"), "text": block.get("text")}
+            for block in source_blocks or []
+            if isinstance(block, dict) and block.get("layout_type") == "title"
+        ],
+    }
+    if source_blocks and task["name"].lower().endswith(".pdf"):
+        from api.apps.services.source_projection_service import SourceProjectionService
+
+        SourceProjectionService.write_pending(
+            task["doc_id"],
+            task["kb_id"],
+            binary,
+            str(parser_config_for_chunk.get("layout_recognize") or task["parser_id"]),
+            parser_config_for_chunk,
+            source_blocks,
+        )
+
     if cks and cks[0].get("__outline__"):
         outline = cks[0].pop("__outline__")
         try:
@@ -412,6 +434,9 @@ async def build_chunks(task, progress_callback):
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         raise
+
+    if docs and (toc_structure["outline"] or toc_structure["source_blocks"]):
+        docs[0]["__toc_structure__"] = toc_structure
 
     el = timer() - st
     logging.info("MINIO PUT({}) cost {:.3f} s".format(task["name"], el))
@@ -632,8 +657,8 @@ async def build_chunks(task, progress_callback):
     return docs
 
 
-@timed_with_recording
-def build_TOC(task, docs, progress_callback):
+async def build_TOC(task, docs, progress_callback, toc_structure=None):
+    started_at = timer()
     progress_callback(msg="Start to generate table of content ...")
     chat_model_config = get_model_config_from_provider_instance(task["tenant_id"], LLMType.CHAT, task["llm_id"])
     chat_mdl = LLMBundle(task["tenant_id"], chat_model_config, lang=task["language"])
@@ -644,7 +669,18 @@ def build_TOC(task, docs, progress_callback):
             d.get("top_int", 0)[0] if isinstance(d.get("top_int", 0), list) else d.get("top_int", 0),
         ),
     )
-    toc: list[dict] = asyncio.run(run_toc_from_text([d["content_with_weight"] for d in docs], chat_mdl, progress_callback))
+    structured_toc = build_structured_toc(
+        [d["content_with_weight"] for d in docs],
+        outline=(toc_structure or {}).get("outline"),
+        source_blocks=(toc_structure or {}).get("source_blocks"),
+    )
+    toc: list[dict] = await run_toc_from_text(
+        [d["content_with_weight"] for d in docs],
+        chat_mdl,
+        progress_callback,
+        structured_toc=structured_toc,
+        limiter=chat_limiter,
+    )
     logging.info("------------ T O C -------------\n" + json.dumps(toc, ensure_ascii=False, indent="  "))
     for ii, item in enumerate(toc):
         try:
@@ -670,6 +706,7 @@ def build_TOC(task, docs, progress_callback):
         except Exception as e:
             logging.exception(f"Index {ii}: Unexpected error - {e}")
 
+    result = None
     if toc:
         d = copy.deepcopy(docs[-1])
         d["content_with_weight"] = json.dumps(toc, ensure_ascii=False)
@@ -677,8 +714,9 @@ def build_TOC(task, docs, progress_callback):
         d["available_int"] = 0
         d["page_num_int"] = [100000000]
         d["id"] = xxhash.xxh64((d["content_with_weight"] + str(d["doc_id"])).encode("utf-8", "surrogatepass")).hexdigest()
-        return d
-    return None
+        result = d
+    get_recording_context().record("build_TOC_time", timer() - started_at)
+    return result
 
 
 def init_kb(row, vector_size: int):
@@ -1399,7 +1437,7 @@ async def do_handle_task(task):
     task_document_name = task["name"]
     task_parser_config = task["parser_config"]
     task_start_ts = timer()
-    toc_thread = None
+    toc_task = None
     raptor_cleanup_chunks = []
 
     # prepare the progress callback function
@@ -1555,6 +1593,11 @@ async def do_handle_task(task):
         task["llm_id"] = doc_task_llm_id
         start_ts = timer()
         chunks = await build_chunks(task, progress_callback)
+        toc_structure = chunks[0].pop("__toc_structure__", None) if chunks else None
+        title_count = len((toc_structure or {}).get("outline") or (toc_structure or {}).get("source_blocks") or [])
+        chunk_stats = summarize_chunk_tokens(chunks, title_count=title_count)
+        get_recording_context().record("chunk_token_distribution", chunk_stats)
+        logging.info("Chunk token distribution: %s", chunk_stats)
         get_recording_context().record("chunks", chunks)
         # Record chunk_ids_count for comparison
         chunk_ids = [c.get("id") for c in chunks if isinstance(c, dict) and "id" in c]
@@ -1583,7 +1626,7 @@ async def do_handle_task(task):
         progress_callback(msg=progress_message)
 
         if task["parser_id"].lower() == "naive" and task["parser_config"].get("toc_extraction", False):
-            toc_thread = asyncio.create_task(asyncio.to_thread(build_TOC, task, chunks, progress_callback))
+            toc_task = asyncio.create_task(build_TOC(task, chunks, progress_callback, toc_structure))
 
     chunk_count = len(set([chunk["id"] for chunk in chunks]))
     start_ts = timer()
@@ -1661,8 +1704,8 @@ async def do_handle_task(task):
 
         progress_callback(msg="Indexing done ({:.2f}s).".format(timer() - start_ts))
 
-        if toc_thread:
-            d = await toc_thread
+        if toc_task:
+            d = await toc_task
             if d:
                 get_recording_context().record("toc_chunk", [d])
                 if not await _maybe_insert_chunks([d]):
@@ -1682,8 +1725,9 @@ async def do_handle_task(task):
         logging.info("Chunk doc({}), page({}-{}), chunks({}), token({}), elapsed:{:.2f}".format(task_document_name, task_from_page, task_to_page, len(chunks), token_count, task_time_cost))
 
     finally:
-        if toc_thread is not None and not toc_thread.done():
-            toc_thread.cancel()
+        if toc_task is not None and not toc_task.done():
+            toc_task.cancel()
+            await asyncio.gather(toc_task, return_exceptions=True)
         if has_canceled(task_id):
             try:
                 exists = await thread_pool_exec(

@@ -851,13 +851,78 @@ class LmStudioEmbed(LocalAIEmbed):
 
 class OpenAI_APIEmbed(OpenAIEmbed):
     _FACTORY_NAME = ["VLLM", "OpenAI-API-Compatible"]
+    MODEL_INPUT_TOKEN_LIMITS = {
+        # The deployed vLLM sequence limit is 2048 Qwen tokens. Keep half of
+        # that window for tokenizer drift in mixed Chinese, OCR, and table text.
+        "Qwen3-Embedding-4B": 1024,
+    }
 
-    def __init__(self, key, model_name, base_url):
+    def __init__(self, key, model_name, base_url, max_model_len=None):
         if not base_url:
             raise ValueError("url cannot be None")
         base_url = urljoin(base_url, "v1")
         self.client = OpenAI(api_key=key, base_url=base_url)
         self.model_name = model_name.split("___")[0]
+        self.max_model_len = max_model_len
+
+    def _max_input_tokens(self) -> int:
+        limit = self.MODEL_INPUT_TOKEN_LIMITS.get(self.model_name, 8191)
+        if self.max_model_len:
+            limit = min(limit, max(1, int(self.max_model_len) // 2))
+        return limit
+
+    @staticmethod
+    def _is_context_length_error(error: Exception) -> bool:
+        if getattr(error, "status_code", None) != 400:
+            return False
+        body = getattr(error, "body", None)
+        detail = body.get("error", body) if isinstance(body, dict) else {}
+        param = str(detail.get("param", "")).lower() if isinstance(detail, dict) else ""
+        message = str(detail.get("message", error)).lower() if isinstance(detail, dict) else str(error).lower()
+        return param == "input_tokens" or "maximum context length" in message
+
+    def _call_with_context_retry(self, batch):
+        try:
+            return self._call(batch)
+        except Exception as error:
+            if not self._is_context_length_error(error):
+                raise
+
+        embeddings = []
+        token_count = 0
+        for text in batch:
+            retry_text = text
+            while True:
+                try:
+                    vectors, tokens = self._call([retry_text])
+                    embeddings.extend(vectors)
+                    token_count += tokens
+                    break
+                except Exception as error:
+                    retry_tokens = num_tokens_from_string(retry_text)
+                    if not self._is_context_length_error(error) or retry_tokens <= 1:
+                        raise
+                    retry_text = truncate(retry_text, max(1, retry_tokens // 2))
+        return embeddings, token_count
+
+    def encode(self, texts: list):
+        token_budget = self._max_input_tokens()
+        return self._batched_encode(
+            texts,
+            self._call_with_context_retry,
+            batch_size=16,
+            truncate_to=token_budget,
+        )
+
+    def encode_queries(self, text):
+        token_budget = self._max_input_tokens()
+        vectors, token_count = self._batched_encode(
+            [text],
+            self._call_with_context_retry,
+            batch_size=16,
+            truncate_to=token_budget,
+        )
+        return vectors[0], token_count
 
 
 class CoHereEmbed(Base):

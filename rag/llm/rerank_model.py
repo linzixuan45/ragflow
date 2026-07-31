@@ -270,8 +270,16 @@ class OpenAI_APIRerank(Base):
 
 class CoHereRerank(Base):
     _FACTORY_NAME = ["Cohere", "VLLM"]
+    MODEL_SEQUENCE_TOKEN_LIMITS = {
+        # Upstream adds the Qwen yes/no classification instruction. A local
+        # 1024-token query/document pair expanded to 2049 Qwen tokens in a real
+        # request, so reserve 768 locally: at most 256 query + 512 document.
+        "Qwen3-Reranker-4B": 768,
+        "Qwen/Qwen3-Reranker-4B": 768,
+    }
+    QUERY_TOKEN_LIMIT = 256
 
-    def __init__(self, key, model_name, base_url=None):
+    def __init__(self, key, model_name, base_url=None, max_model_len=None):
         from cohere import Client
 
         client_kwargs = {"api_key": key, "timeout": 30.0}
@@ -279,8 +287,23 @@ class CoHereRerank(Base):
             client_kwargs["base_url"] = base_url
         self.client = Client(**client_kwargs)
         self.model_name = model_name.split("___")[0]
+        self.max_model_len = max_model_len
+
+    def _sequence_limit(self) -> int | None:
+        limit = self.MODEL_SEQUENCE_TOKEN_LIMITS.get(self.model_name)
+        max_model_len = getattr(self, "max_model_len", None)
+        if limit is not None and max_model_len:
+            limit = min(limit, max(1, int(max_model_len) * 3 // 8))
+        return limit
 
     def _compute_rank(self, query: str, texts: List) -> Tuple[np.ndarray, int]:
+        sequence_limit = self._sequence_limit()
+        if sequence_limit is not None:
+            # The upstream Qwen tokenizer and reranker instruction both add
+            # tokens that RAGFlow's local estimator cannot count exactly.
+            query = truncate(query, min(self.QUERY_TOKEN_LIMIT, sequence_limit - 1))
+            document_limit = max(1, sequence_limit - num_tokens_from_string(query))
+            texts = [truncate(text, document_limit) for text in texts]
         token_count = num_tokens_from_string(query) + sum([num_tokens_from_string(t) for t in texts])
         res = self.client.rerank(
             model=self.model_name,

@@ -56,6 +56,7 @@ services:
       - ../api/apps/services/document_api_service.py:/ragflow/api/apps/services/document_api_service.py:ro
       - ../api/apps/services/dataset_api_service.py:/ragflow/api/apps/services/dataset_api_service.py:ro
       - ../api/db/joint_services/tenant_model_service.py:/ragflow/api/db/joint_services/tenant_model_service.py:ro
+      - ../api/db/services/tenant_llm_service.py:/ragflow/api/db/services/tenant_llm_service.py:ro
       - ../api/db/services/document_service.py:/ragflow/api/db/services/document_service.py:ro
       - ../api/db/services/file_service.py:/ragflow/api/db/services/file_service.py:ro
       - ../api/db/db_models.py:/ragflow/api/db/db_models.py:ro
@@ -64,8 +65,13 @@ services:
       - ../common/settings.py:/ragflow/common/settings.py:ro
       - ../deepdoc/parser/mineru_parser.py:/ragflow/deepdoc/parser/mineru_parser.py:ro
       - ../deepdoc/vision/ocr.py:/ragflow/deepdoc/vision/ocr.py:ro
+      - ../rag/llm/embedding_model.py:/ragflow/rag/llm/embedding_model.py:ro
       - ../rag/llm/ocr_model.py:/ragflow/rag/llm/ocr_model.py:ro
+      - ../rag/llm/rerank_model.py:/ragflow/rag/llm/rerank_model.py:ro
+      - ../rag/prompts/generator.py:/ragflow/rag/prompts/generator.py:ro
       - ../rag/utils/es_conn.py:/ragflow/rag/utils/es_conn.py:ro
+      - ../rag/utils/chunk_metrics.py:/ragflow/rag/utils/chunk_metrics.py:ro
+      - ../rag/utils/mineru_adapter.py:/ragflow/rag/utils/mineru_adapter.py:ro
       - ../rag/utils/source_projection.py:/ragflow/rag/utils/source_projection.py:ro
       - ../rag/app/naive.py:/ragflow/rag/app/naive.py:ro
       - ../rag/flow/parser/parser.py:/ragflow/rag/flow/parser/parser.py:ro

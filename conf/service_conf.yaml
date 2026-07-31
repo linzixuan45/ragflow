@@ -63,11 +63,13 @@ user_default_llm:
       factory: 'VLLM'
       api_key: 'x'
       base_url: 'http://10.100.15.70:8000/v1'
+      max_model_len: 2048
     rerank_model:
       name: 'Qwen3-Reranker-4B'
       factory: 'VLLM'
       api_key: 'x'
       base_url: 'http://10.100.15.70:8001/v1'
+      max_model_len: 2048
 # postgres:
 #   name: 'rag_flow'
 #   user: 'rag_flow'

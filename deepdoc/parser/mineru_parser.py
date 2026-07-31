@@ -13,8 +13,9 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 #
-import json
+import hashlib
 import html
+import json
 import logging
 import os
 import re
@@ -23,22 +24,97 @@ import sys
 import tempfile
 import threading
 import zipfile
+from collections import OrderedDict
+from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from enum import StrEnum
 from io import BytesIO
 from os import PathLike
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
 import numpy as np
 import pdfplumber
 import requests
 from PIL import Image
-from enum import StrEnum
 
+from common.constants import MAXIMUM_PAGE_NUMBER
 from deepdoc.parser.pdf_parser import RAGFlowPdfParser
 from deepdoc.parser.utils import extract_pdf_outlines
 
-from common.constants import MAXIMUM_PAGE_NUMBER
+_VLM_DESCRIPTION_CACHE: OrderedDict[tuple[str, str, str], str] = OrderedDict()
+_VLM_DESCRIPTION_INFLIGHT: dict[tuple[str, str, str], Future] = {}
+_VLM_DESCRIPTION_CACHE_LOCK = threading.Lock()
+
+
+def _positive_env_int(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.environ.get(name, default)))
+    except (TypeError, ValueError):
+        logging.warning("Invalid %s; using %d", name, default)
+        return default
+
+
+def _vision_model_cache_identity(vision_model) -> str:
+    model_config = getattr(vision_model, "model_config", None)
+    if not isinstance(model_config, dict):
+        model_config = {}
+    public_config = {
+        key: model_config.get(key)
+        for key in ("llm_factory", "llm_name", "api_base", "model_type", "instance_name")
+        if model_config.get(key) is not None
+    }
+    values = (
+        getattr(vision_model, "tenant_id", ""),
+        getattr(vision_model, "llm_name", ""),
+        getattr(vision_model, "lang", ""),
+        type(vision_model).__qualname__,
+        json.dumps(public_config, ensure_ascii=True, sort_keys=True),
+    )
+    return "|".join(str(value or "") for value in values)
+
+
+def _cached_vlm_description(image_path: str, vision_model, prompt: str, generate: Callable[[], str]) -> str:
+    with open(image_path, "rb") as image_file:
+        content_digest = hashlib.sha256(image_file.read()).hexdigest()
+    cache_key = (
+        content_digest,
+        _vision_model_cache_identity(vision_model),
+        hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+    )
+    cache_size = _positive_env_int("VLM_DESCRIPTION_CACHE_SIZE", 256)
+
+    with _VLM_DESCRIPTION_CACHE_LOCK:
+        cached = _VLM_DESCRIPTION_CACHE.pop(cache_key, None)
+        if cached is not None:
+            _VLM_DESCRIPTION_CACHE[cache_key] = cached
+            return cached
+        future = _VLM_DESCRIPTION_INFLIGHT.get(cache_key)
+        is_owner = future is None
+        if is_owner:
+            future = Future()
+            _VLM_DESCRIPTION_INFLIGHT[cache_key] = future
+
+    if not is_owner:
+        return future.result()
+
+    try:
+        description = (generate() or "").strip()
+    except BaseException as exc:
+        with _VLM_DESCRIPTION_CACHE_LOCK:
+            _VLM_DESCRIPTION_INFLIGHT.pop(cache_key, None)
+        future.set_exception(exc)
+        raise
+
+    with _VLM_DESCRIPTION_CACHE_LOCK:
+        if description:
+            _VLM_DESCRIPTION_CACHE[cache_key] = description
+            while len(_VLM_DESCRIPTION_CACHE) > cache_size:
+                _VLM_DESCRIPTION_CACHE.popitem(last=False)
+        _VLM_DESCRIPTION_INFLIGHT.pop(cache_key, None)
+    future.set_result(description)
+    return description
 
 LOCK_KEY_pdfplumber = "global_shared_lock_pdfplumber"
 if LOCK_KEY_pdfplumber not in sys.modules:
@@ -365,31 +441,39 @@ class MinerUParser(RAGFlowPdfParser):
     def __images__(self, fnm, zoomin: int = 1, page_from=0, page_to=MAXIMUM_PAGE_NUMBER, callback=None):
         self.page_from = page_from
         self.page_to = page_to
+        self.page_images = None
+        self.page_sizes = []
         try:
-            with pdfplumber.open(fnm) if isinstance(fnm, (str, PathLike)) else pdfplumber.open(BytesIO(fnm)) as pdf:
+            source = fnm if isinstance(fnm, (str, PathLike)) else BytesIO(fnm)
+            with sys.modules[LOCK_KEY_pdfplumber], pdfplumber.open(source) as pdf:
                 self.pdf = pdf
-                self.page_images = [p.to_image(resolution=72 * zoomin, antialias=True).original for _, p in enumerate(self.pdf.pages[page_from:page_to])]
-        except Exception as e:
+                pages = self.pdf.pages[page_from:page_to]
+                self.page_sizes = [(float(page.width), float(page.height)) for page in pages]
+                self.page_images = [page.to_image(resolution=72 * zoomin, antialias=True).original for page in pages]
+        except Exception:
             self.page_images = None
-            self.total_page = 0
-            self.logger.exception(e)
+            self.total_page = len(self.page_sizes)
+            self.logger.exception("[MinerU] Failed to render local PDF pages")
 
-    def _line_tag(self, bx):
-        pn = [bx["page_idx"] + 1]
-        positions = bx.get("bbox", (0, 0, 0, 0))
-        x0, top, x1, bott = positions
-        # Normalize flipped coordinates (MinerU may report inverted bbox for flipped images)
+    def _pdf_bbox(self, page_idx: int, bbox) -> tuple[float, float, float, float]:
+        x0, top, x1, bott = (float(value) for value in bbox)
         if x0 > x1:
             x0, x1 = x1, x0
         if top > bott:
             top, bott = bott, top
 
-        if hasattr(self, "page_images") and self.page_images and len(self.page_images) > bx["page_idx"]:
-            page_width, page_height = self.page_images[bx["page_idx"]].size
+        page_sizes = getattr(self, "page_sizes", None) or []
+        if 0 <= page_idx < len(page_sizes):
+            page_width, page_height = page_sizes[page_idx]
             x0 = (x0 / 1000.0) * page_width
             x1 = (x1 / 1000.0) * page_width
             top = (top / 1000.0) * page_height
             bott = (bott / 1000.0) * page_height
+        return x0, top, x1, bott
+
+    def _line_tag(self, bx):
+        pn = [bx["page_idx"] + 1]
+        x0, top, x1, bott = self._pdf_bbox(bx["page_idx"], bx.get("bbox", (0, 0, 0, 0)))
 
         return "@@{}\t{:.1f}\t{:.1f}\t{:.1f}\t{:.1f}##".format("-".join([str(p) for p in pn]), x0, x1, top, bott)
 
@@ -754,7 +838,7 @@ class MinerUParser(RAGFlowPdfParser):
                 continue
 
             image = None
-            image_path = output.get("table_img_path") if output_type == MinerUContentType.TABLE else output.get("img_path")
+            image_path = (output.get("table_img_path") or output.get("img_path")) if output_type == MinerUContentType.TABLE else output.get("img_path")
             if image_path:
                 if not os.path.isfile(image_path):
                     self.logger.warning("[MinerU] Image output is missing: %s", image_path)
@@ -769,15 +853,12 @@ class MinerUParser(RAGFlowPdfParser):
                 continue
 
             try:
-                page_idx = int(output.get("page_idx", 0)) + page_offset
-                left, top, right, bottom = [float(value) for value in output.get("bbox", (0, 0, 0, 0))]
+                local_page_idx = int(output.get("page_idx", 0))
+                page_idx = local_page_idx + page_offset
+                left, top, right, bottom = self._pdf_bbox(local_page_idx, output.get("bbox", (0, 0, 0, 0)))
             except (TypeError, ValueError):
                 self.logger.warning("[MinerU] Invalid image position: page=%r bbox=%r", output.get("page_idx"), output.get("bbox"))
                 continue
-            if left > right:
-                left, right = right, left
-            if top > bottom:
-                top, bottom = bottom, top
 
             if output_type == MinerUContentType.TABLE:
                 values = [output.get("table_body", ""), *output.get("table_caption", []), *output.get("table_footnote", [])]
@@ -796,7 +877,6 @@ class MinerUParser(RAGFlowPdfParser):
         field that ``_transfer_to_sections`` then folds into the chunk
         text — closing issue #14869.
         """
-        from concurrent.futures import ThreadPoolExecutor, as_completed
         from rag.app.picture import vision_llm_chunk
         from rag.prompts.generator import vision_llm_figure_describe_prompt
 
@@ -818,15 +898,19 @@ class MinerUParser(RAGFlowPdfParser):
 
         def worker(idx, item):
             try:
-                with Image.open(item["img_path"]) as img:
-                    img.load()
-                    desc = vision_llm_chunk(binary=img, vision_model=vision_model, prompt=prompt)
-                return idx, (desc or "").strip()
+                def generate():
+                    with Image.open(item["img_path"]) as img:
+                        img.load()
+                        return vision_llm_chunk(binary=img, vision_model=vision_model, prompt=prompt)
+
+                desc = _cached_vlm_description(item["img_path"], vision_model, prompt, generate)
+                return idx, desc
             except Exception as e:
                 logging.warning(f"[MinerU] VLM description failed for image #{idx}: {e}")
                 return idx, ""
 
-        with ThreadPoolExecutor(max_workers=10) as executor:
+        workers = min(len(image_jobs), _positive_env_int("VLM_PARALLEL_PER_DOC", 4))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = [executor.submit(worker, idx, item) for idx, item in image_jobs]
             for fut in as_completed(futures):
                 idx, desc = fut.result()

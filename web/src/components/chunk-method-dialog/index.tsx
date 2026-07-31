@@ -122,6 +122,8 @@ export function ChunkMethodDialog({
         mineru_formula_enable: z.boolean().optional(),
         mineru_table_enable: z.boolean().optional(),
         mineru_lang: z.string().optional(),
+        mineru_effort: z.enum(['medium', 'high']).optional(),
+        mineru_image_analysis: z.boolean().optional(),
         raptor: z
           .object({
             use_raptor: z.boolean().optional(),

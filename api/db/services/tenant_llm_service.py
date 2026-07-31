@@ -190,13 +190,19 @@ class TenantLLMService(CommonService):
             if model_config["llm_factory"] not in EmbeddingModel:
                 logging.error("Factory not in embedding model. Supported factories: %s", list(EmbeddingModel.keys()))
                 return None
-            return EmbeddingModel[model_config["llm_factory"]](api_key, model_config["llm_name"], base_url=model_config["api_base"])
+            embedding_kwargs = {}
+            if model_config["llm_factory"] in {"VLLM", "OpenAI-API-Compatible"} and model_config.get("max_tokens"):
+                embedding_kwargs["max_model_len"] = model_config["max_tokens"]
+            return EmbeddingModel[model_config["llm_factory"]](api_key, model_config["llm_name"], base_url=model_config["api_base"], **embedding_kwargs)
 
         elif model_config["model_type"] == LLMType.RERANK.value:
             if model_config["llm_factory"] not in RerankModel:
                 logging.error("Factory not in rerank model. Supported factories: %s", list(RerankModel.keys()))
                 return None
-            return RerankModel[model_config["llm_factory"]](api_key, model_config["llm_name"], base_url=model_config["api_base"])
+            rerank_kwargs = {}
+            if model_config["llm_factory"] == "VLLM" and model_config.get("max_tokens"):
+                rerank_kwargs["max_model_len"] = model_config["max_tokens"]
+            return RerankModel[model_config["llm_factory"]](api_key, model_config["llm_name"], base_url=model_config["api_base"], **rerank_kwargs)
 
         elif model_config["model_type"] == LLMType.IMAGE2TEXT.value:
             if model_config["llm_factory"] not in CvModel:
@@ -509,6 +515,7 @@ class LLM4Tenant:
         self.langfuse_session_id = kwargs.pop("langfuse_session_id", None)
         self.tenant_id = tenant_id
         self.llm_name = model_config["llm_name"]
+        self.lang = lang
         self.model_config = model_config
         self.mdl = TenantLLMService.model_instance(model_config, lang=lang, **kwargs)
         assert self.mdl, "Can't find model for {}/{}/{}".format(tenant_id, model_config["model_type"], model_config["llm_name"])

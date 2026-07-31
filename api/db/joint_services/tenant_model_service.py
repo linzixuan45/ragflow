@@ -248,13 +248,16 @@ def _configured_system_default(model_type: str, model_name: str) -> dict | None:
     factory = config.get("factory") or provider_name
     if not pure_model_name or not factory or not config.get("base_url"):
         return None
-    return {
+    model_config = {
         "llm_factory": factory,
         "api_key": config.get("api_key", ""),
         "llm_name": pure_model_name,
         "api_base": config["base_url"],
         "model_type": model_type,
     }
+    if config.get("max_model_len"):
+        model_config["max_tokens"] = int(config["max_model_len"])
+    return model_config
 
 
 def get_model_config_from_provider_instance(tenant_id, model_type: str | enum.Enum, model_name: str):

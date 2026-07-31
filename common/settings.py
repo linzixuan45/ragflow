@@ -125,7 +125,7 @@ OS = {}
 GCS = {}
 
 DOC_MAXIMUM_SIZE: int = 128 * 1024 * 1024
-DOC_BULK_SIZE: int = 4
+DOC_BULK_SIZE: int = 32
 EMBEDDING_BATCH_SIZE: int = 16
 
 PARALLEL_DEVICES: int = 0
@@ -394,7 +394,7 @@ def init_settings():
 
     global DOC_MAXIMUM_SIZE, DOC_BULK_SIZE, EMBEDDING_BATCH_SIZE
     DOC_MAXIMUM_SIZE = int(os.environ.get("MAX_CONTENT_LENGTH", 128 * 1024 * 1024))
-    DOC_BULK_SIZE = int(os.environ.get("DOC_BULK_SIZE", 4))
+    DOC_BULK_SIZE = int(os.environ.get("DOC_BULK_SIZE", 32))
     EMBEDDING_BATCH_SIZE = int(os.environ.get("EMBEDDING_BATCH_SIZE", 16))
 
     os.environ["DOTNET_SYSTEM_GLOBALIZATION_INVARIANT"] = "1"
@@ -408,7 +408,7 @@ def configure_parallel_devices():
 
 def _parse_model_entry(entry):
     if isinstance(entry, str):
-        return {"name": entry, "factory": None, "api_key": None, "base_url": None}
+        return {"name": entry, "factory": None, "api_key": None, "base_url": None, "max_model_len": None}
     if isinstance(entry, dict):
         name = entry.get("name") or entry.get("model") or ""
         return {
@@ -416,8 +416,9 @@ def _parse_model_entry(entry):
             "factory": entry.get("factory"),
             "api_key": entry.get("api_key"),
             "base_url": entry.get("base_url"),
+            "max_model_len": entry.get("max_model_len"),
         }
-    return {"name": "", "factory": None, "api_key": None, "base_url": None}
+    return {"name": "", "factory": None, "api_key": None, "base_url": None, "max_model_len": None}
 
 
 def _resolve_per_model_config(entry_dict, backup_factory, backup_api_key, backup_base_url):
@@ -434,6 +435,7 @@ def _resolve_per_model_config(entry_dict, backup_factory, backup_api_key, backup
         "factory": m_factory,
         "api_key": m_api_key,
         "base_url": m_base_url,
+        "max_model_len": entry_dict.get("max_model_len"),
     }
 
 

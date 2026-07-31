@@ -17,21 +17,35 @@ import asyncio
 import datetime
 import json
 import logging
+import os
 import re
 from copy import deepcopy
 from typing import Tuple
-from jinja2.sandbox import SandboxedEnvironment
-import json_repair
 
+import json_repair
+from jinja2.sandbox import SandboxedEnvironment
+
+from common.constants import TAG_FLD
 from common.misc_utils import hash_str2int
+from common.token_utils import encoder, num_tokens_from_string
 from rag.nlp import rag_tokenizer
 from rag.prompts.template import load_prompt
-from common.constants import TAG_FLD
-from common.token_utils import encoder, num_tokens_from_string
 
 STOP_TOKEN = "<|STOP|>"
 COMPLETE_TASK = "complete_task"
 INPUT_UTILIZATION = 0.5
+
+
+def _positive_env_float(name: str, default: float) -> float:
+    try:
+        return max(1.0, float(os.environ.get(name, default)))
+    except (TypeError, ValueError):
+        logging.warning("Invalid %s; using %.1f", name, default)
+        return default
+
+
+TOC_PACK_TIMEOUT = _positive_env_float("TOC_PACK_TIMEOUT", 30.0)
+TOC_TOTAL_TIMEOUT = _positive_env_float("TOC_TOTAL_TIMEOUT", 30.0)
 
 
 def get_value(d, k1, k2):
@@ -780,16 +794,78 @@ TOC_FROM_TEXT_USER = load_prompt("toc_from_text_user")
 async def gen_toc_from_text(txt_info: dict, chat_mdl, callback=None):
     if callback:
         callback(msg="")
-    try:
-        ans = await gen_json(
-            PROMPT_JINJA_ENV.from_string(TOC_FROM_TEXT_SYSTEM).render(),
-            PROMPT_JINJA_ENV.from_string(TOC_FROM_TEXT_USER).render(text="\n".join([json.dumps(d, ensure_ascii=False) for d in txt_info["chunks"]])),
-            chat_mdl,
-            gen_conf={"temperature": 0.0, "top_p": 0.9},
+    ans = await gen_json(
+        PROMPT_JINJA_ENV.from_string(TOC_FROM_TEXT_SYSTEM).render(),
+        PROMPT_JINJA_ENV.from_string(TOC_FROM_TEXT_USER).render(text="\n".join([json.dumps(d, ensure_ascii=False) for d in txt_info["chunks"]])),
+        chat_mdl,
+        gen_conf={"temperature": 0.0, "top_p": 0.9},
+    )
+    txt_info["toc"] = ans if ans and not isinstance(ans, str) else []
+
+
+def _normalized_heading_text(value: str) -> str:
+    return " ".join(str(value or "").split()).casefold()
+
+
+def build_structured_toc(chunks, *, outline=None, source_blocks=None):
+    normalized_chunk_lines = [
+        {
+            normalized
+            for line in str(chunk or "").splitlines()
+            if (normalized := _normalized_heading_text(line))
+        }
+        for chunk in chunks
+    ]
+
+    def map_candidates(candidates):
+        toc = []
+        search_from = 0
+        previous_title = None
+        for level, title in candidates:
+            if not isinstance(level, int) or isinstance(level, bool) or not 1 <= level <= 6:
+                continue
+            normalized_title = _normalized_heading_text(title)
+            if not normalized_title:
+                continue
+            start_index = search_from + 1 if normalized_title == previous_title else search_from
+            chunk_index = next(
+                (index for index in range(start_index, len(normalized_chunk_lines)) if normalized_title in normalized_chunk_lines[index]),
+                None,
+            )
+            if chunk_index is None:
+                continue
+            toc.append({"level": str(level), "title": str(title).strip(), "chunk_id": str(chunk_index)})
+            search_from = chunk_index
+            previous_title = normalized_title
+        return toc
+
+    def valid_candidate_count(candidates):
+        return sum(
+            isinstance(level, int)
+            and not isinstance(level, bool)
+            and 1 <= level <= 6
+            and bool(_normalized_heading_text(title))
+            for level, title in candidates
         )
-        txt_info["toc"] = ans if ans and not isinstance(ans, str) else []
-    except Exception as e:
-        logging.exception(e)
+
+    outline_candidates = [
+        (item.get("depth") + 1, item.get("title"))
+        for item in outline or []
+        if isinstance(item, dict) and isinstance(item.get("depth"), int) and not isinstance(item.get("depth"), bool)
+    ]
+    source_candidates = [
+        (item.get("level"), item.get("text"))
+        for item in source_blocks or []
+        if isinstance(item, dict) and item.get("layout_type") == "title"
+    ]
+    outline_toc = map_candidates(outline_candidates)
+    if outline_toc and len(outline_toc) == valid_candidate_count(outline_candidates):
+        return outline_toc
+
+    source_toc = map_candidates(source_candidates)
+    if len(source_toc) > len(outline_toc):
+        return source_toc
+    return outline_toc or source_toc
 
 
 def split_chunks(chunks, max_length: int):
@@ -813,10 +889,10 @@ def split_chunks(chunks, max_length: int):
     return result
 
 
-async def run_toc_from_text(chunks, chat_mdl, callback=None):
+async def _run_toc_from_text(chunks, chat_mdl, callback, limiter, pack_timeout):
     input_budget = int(chat_mdl.max_length * INPUT_UTILIZATION) - num_tokens_from_string(TOC_FROM_TEXT_USER + TOC_FROM_TEXT_SYSTEM)
 
-    input_budget = 1024 if input_budget > 1024 else input_budget
+    input_budget = max(1, min(1024, input_budget))
     chunk_sections = split_chunks(chunks, input_budget)
     titles = []
 
@@ -826,15 +902,19 @@ async def run_toc_from_text(chunks, chat_mdl, callback=None):
         if not chunk:
             continue
         chunks_res.append({"chunks": chunk})
-        tasks.append(asyncio.create_task(gen_toc_from_text(chunks_res[-1], chat_mdl, callback)))
-    try:
-        await asyncio.gather(*tasks, return_exceptions=False)
-    except Exception as e:
-        logging.error(f"Error generating TOC: {e}")
-        for t in tasks:
-            t.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-        raise
+        async def generate_pack(info=chunks_res[-1]):
+            try:
+                async with limiter:
+                    await asyncio.wait_for(gen_toc_from_text(info, chat_mdl, callback), timeout=pack_timeout)
+            except asyncio.TimeoutError:
+                info["toc"] = []
+                logging.warning("TOC pack generation timed out after %.1fs", pack_timeout)
+            except Exception:
+                info["toc"] = []
+                logging.exception("TOC pack generation failed")
+
+        tasks.append(asyncio.create_task(generate_pack()))
+    await asyncio.gather(*tasks, return_exceptions=True)
 
     for chunk in chunks_res:
         titles.extend(chunk.get("toc", []))
@@ -860,7 +940,18 @@ async def run_toc_from_text(chunks, chat_mdl, callback=None):
     raw_structure = [x.get("title", "") for x in filtered]
 
     # Assign hierarchy levels using LLM
-    toc_with_levels = await assign_toc_levels(raw_structure, chat_mdl, {"temperature": 0.0, "top_p": 0.9})
+    try:
+        async with limiter:
+            toc_with_levels = await asyncio.wait_for(
+                assign_toc_levels(raw_structure, chat_mdl, {"temperature": 0.0, "top_p": 0.9}),
+                timeout=pack_timeout,
+            )
+    except asyncio.TimeoutError:
+        logging.warning("TOC level assignment timed out after %.1fs", pack_timeout)
+        return []
+    except Exception:
+        logging.exception("TOC level assignment failed")
+        return []
     if not toc_with_levels:
         return []
 
@@ -900,6 +991,35 @@ async def run_toc_from_text(chunks, chat_mdl, callback=None):
         )
 
     return merged
+
+
+async def run_toc_from_text(
+    chunks,
+    chat_mdl,
+    callback=None,
+    *,
+    structured_toc=None,
+    limiter=None,
+    pack_timeout=None,
+    total_timeout=None,
+):
+    if structured_toc:
+        return deepcopy(structured_toc)
+    if limiter is None:
+        from rag.graphrag.utils import chat_limiter
+
+        limiter = chat_limiter
+    pack_timeout = TOC_PACK_TIMEOUT if pack_timeout is None else max(0.001, float(pack_timeout))
+    total_timeout = TOC_TOTAL_TIMEOUT if total_timeout is None else max(0.001, float(total_timeout))
+    pack_timeout = min(pack_timeout, total_timeout)
+    try:
+        return await asyncio.wait_for(
+            _run_toc_from_text(chunks, chat_mdl, callback, limiter, pack_timeout),
+            timeout=total_timeout,
+        )
+    except asyncio.TimeoutError:
+        logging.warning("TOC generation exceeded the %.1fs total deadline; continuing without TOC", total_timeout)
+        return []
 
 
 TOC_RELEVANCE_SYSTEM = load_prompt("toc_relevance_system")
