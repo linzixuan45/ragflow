@@ -29,6 +29,11 @@ authenticated caller with access to the dataset.
 | `GET /parse-status?path=...` | Read detailed parsing status, progress, message, and counts. |
 | `POST /parse` | Start, restart, or cancel parsing for up to 100 paths. |
 
+`GET /content` binds every returned block citation to the same source-projection
+snapshot used to render that response. A projection published concurrently with
+the read can therefore become the next active revision without invalidating the
+citations already returned by the in-flight request.
+
 `/blob` and `/content` are intentionally different. `/blob` returns the exact
 uploaded object. `/content` returns readable parsed blocks and is not a raw
 DeepDOC Markdown file.

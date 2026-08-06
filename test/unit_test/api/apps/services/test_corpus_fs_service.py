@@ -352,6 +352,46 @@ def test_content_page_returns_oversized_first_block_without_splitting():
     assert next_index == 1
 
 
+def test_content_text_reuses_the_citation_projection_snapshot(monkeypatch):
+    service = CorpusFsService("tenant-1", "dataset-1", "actor")
+    snapshot = (
+        {"projection_revision": 4, "source_sha256": "a" * 64},
+        [
+            {
+                "block_ref": "8",
+                "ordinal": 8,
+                "kind": "paragraph",
+                "page": 2,
+                "positions": [[2, 10, 100, 80, 120]],
+                "parent_block_ref": None,
+                "text": "versioned evidence",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        SourceProjectionService,
+        "active",
+        classmethod(lambda _cls, _document: pytest.fail("projection snapshot was read twice")),
+    )
+
+    content, source, _, blocks = service.content_text(
+        {"id": "doc-1", "type": "pdf"},
+        citation_context=snapshot,
+    )
+    target = service.citation_target(
+        {"path": "/files/report.pdf"},
+        {"id": "doc-1", "type": "pdf"},
+        11,
+        block=blocks[0],
+        context=snapshot,
+    )
+
+    assert content == "versioned evidence"
+    assert source == "source_projection:4"
+    assert target["projection_revision"] == 4
+    assert target["block_ref"] == "8"
+
+
 def test_citation_target_maps_search_chunk_to_versioned_projection_block(monkeypatch):
     service = CorpusFsService("tenant-1", "dataset-1", "actor")
     projection = (
@@ -379,6 +419,48 @@ def test_citation_target_maps_search_chunk_to_versioned_projection_block(monkeyp
         "range": {"start": 0, "end": 16},
         "source_hash": "a" * 64,
     }
+
+
+def test_citation_target_accepts_retrieval_chunk_fields(monkeypatch):
+    service = CorpusFsService("tenant-1", "dataset-1", "actor")
+    projection = (
+        {"projection_revision": 4, "source_sha256": "a" * 64},
+        [
+            {"block_ref": "8", "page": 1, "positions": [[1, 10, 100, 80, 120]], "text": "matched evidence"},
+            {"block_ref": "9", "page": 2, "positions": [[2, 10, 100, 80, 120]], "text": "matched evidence"},
+        ],
+    )
+    monkeypatch.setattr(SourceProjectionService, "active", classmethod(lambda _cls, _document: projection))
+
+    target = service.citation_target(
+        {"path": "/files/report.pdf"},
+        {"id": "doc-1", "type": "pdf"},
+        11,
+        chunk={"chunk_id": "chunk-1", "content_with_weight": "matched evidence", "positions": [[2, 10, 100, 80, 120]]},
+    )
+
+    assert target["projection_revision"] == 4
+    assert target["block_ref"] == "9"
+    assert target["page"] == 2
+
+
+def test_citation_target_uses_retrieval_chunk_id_when_projection_does_not_match(monkeypatch):
+    service = CorpusFsService("tenant-1", "dataset-1", "actor")
+    projection = (
+        {"projection_revision": 4, "source_sha256": "a" * 64},
+        [{"block_ref": "8", "page": 1, "positions": [[1, 10, 100, 20, 60]], "text": "unrelated paragraph"}],
+    )
+    monkeypatch.setattr(SourceProjectionService, "active", classmethod(lambda _cls, _document: projection))
+
+    target = service.citation_target(
+        {"path": "/files/report.pdf"},
+        {"id": "doc-1", "type": "pdf"},
+        11,
+        chunk={"chunk_id": "chunk-1", "content_with_weight": "matched evidence", "positions": []},
+    )
+
+    assert target["projection_revision"] is None
+    assert target["block_ref"] == service._chunk_ref("doc-1", "chunk-1")
 
 
 def test_citation_target_falls_back_to_chunk_when_projection_blocks_do_not_match(monkeypatch):

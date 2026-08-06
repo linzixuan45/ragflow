@@ -608,12 +608,23 @@ class CorpusFsService:
             return (2, order, 0, 0, chunk_id)
         return (3, 0, 0, 0, chunk_id)
 
-    def content_text(self, document: dict, page: int | None = None, kinds: set[str] | None = None) -> tuple[str, str, list[dict], list[dict]]:
+    def content_text(
+        self,
+        document: dict,
+        page: int | None = None,
+        kinds: set[str] | None = None,
+        *,
+        citation_context: tuple[dict, list[dict] | None] | None = None,
+    ) -> tuple[str, str, list[dict], list[dict]]:
         if document.get("type", "").lower() == "pdf":
-            try:
-                projection = SourceProjectionService.active(document)
-            except (OperationalError, ProgrammingError):
-                projection = None
+            if citation_context is not None:
+                manifest, projection_blocks = citation_context
+                projection = (manifest, projection_blocks) if projection_blocks is not None else None
+            else:
+                try:
+                    projection = SourceProjectionService.active(document)
+                except (OperationalError, ProgrammingError):
+                    projection = None
             if projection:
                 manifest, projection_blocks = projection
                 selected = [
@@ -731,9 +742,13 @@ class CorpusFsService:
     ) -> dict:
         manifest, projection_blocks = context or self.citation_context(document)
         selected = block
-        page = self._first_page((chunk or {}).get("page_num_int")) or self._first_page((block or {}).get("page"))
+        chunk_positions = (chunk or {}).get("position_int") or (chunk or {}).get("positions") or []
+        page = (
+            self._first_page((chunk or {}).get("page_num_int"))
+            or self._first_page(chunk_positions[0] if chunk_positions else None)
+            or self._first_page((block or {}).get("page"))
+        )
         if chunk is not None and projection_blocks:
-            chunk_positions = chunk.get("position_int") or []
             ranked = []
             for candidate in projection_blocks:
                 overlap = max(
@@ -762,7 +777,7 @@ class CorpusFsService:
         cited_text = snippet if snippet and content[start : start + len(snippet)] == snippet else content
         block_ref = (selected or {}).get("block_ref")
         if block_ref is None and chunk is not None:
-            chunk_id = chunk.get("id")
+            chunk_id = chunk.get("id") or chunk.get("chunk_id")
             block_ref = self._chunk_ref(document["id"], chunk_id) if chunk_id else None
         if block_ref is None and block is not None:
             block_ref = "raw:0"

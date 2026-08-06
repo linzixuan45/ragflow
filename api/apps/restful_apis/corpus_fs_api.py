@@ -412,9 +412,14 @@ def content(tenant_id: str, dataset_id: str):
         kinds = {value.strip() for value in type_value.split(",") if value.strip()} if type_value else None
         if kinds and not kinds <= {"heading", "paragraph", "table", "image", "image_ocr", "image_caption", "header_footer", "other"}:
             raise CorpusFsError("type is invalid")
-        _, source, images, blocks = service.content_text(document, page, kinds)
-        content_revision = service.revision(service._dataset())["content_revision"]
         citation_context = service.citation_context(document)
+        _, source, images, blocks = service.content_text(
+            document,
+            page,
+            kinds,
+            citation_context=citation_context,
+        )
+        content_revision = service.revision(service._dataset())["content_revision"]
         cursor_service = CorpusCursorService(corpus_secret("content-cursor"))
         cursor = request.args.get("cursor")
         cursor_scope = hashlib.sha256(f"block-pages-v1:{entry['_content_hash']}:{source}:{page}:{','.join(sorted(kinds or []))}".encode()).hexdigest()
