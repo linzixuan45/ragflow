@@ -4,9 +4,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from api.apps.services.corpus_fs_service import CorpusFsError, CorpusFsService, EntryConflictError, MoveCycleError, NotFoundError, PreconditionRequiredError, RevisionConflictError
-from api.apps.services.document_markdown_service import DocumentMarkdownService, MarkdownVersionConflict
+from api.apps.services.corpus_fs_service import CorpusFsError, CorpusFsService, EntryConflictError, MoveCycleError, NotFoundError, PreconditionRequiredError, RevisionConflictError, VersionNotFoundError
+from api.apps.services.document_markdown_service import DocumentMarkdownService, MarkdownVersionConflict, MarkdownVersionNotFound
 from api.apps.services.source_projection_service import SourceProjectionService
+from api.db.services.document_service import DocumentService
+from api.db.services.file2document_service import File2DocumentService
 from api.db.services.file_service import FileService
 from common import settings
 from common.constants import TaskStatus
@@ -92,6 +94,15 @@ def test_projection_has_one_canonical_files_root(monkeypatch):
 
     assert set(entries) == {"/", "/files"}
     assert [entry["path"] for entry in children["/"]] == ["/files"]
+
+
+def test_projection_document_selection_prefers_explicit_file_active_pointer():
+    linked = [{"id": "old-document"}, {"id": "shadow-document"}]
+
+    assert CorpusFsService._select_active_document(
+        {"active_document_id": "shadow-document"}, linked
+    ) == {"id": "shadow-document"}
+    assert CorpusFsService._select_active_document({}, linked) == {"id": "old-document"}
 
 
 def test_dataset_file_root_is_resolved_without_mutating_file_hierarchy(monkeypatch):
@@ -578,9 +589,15 @@ def test_file_entry_exposes_complete_parse_lifecycle(run, expected):
 def test_original_data_resolves_storage_without_exposing_internal_ids(monkeypatch):
     service = CorpusFsService("tenant-1", "dataset-1", "actor")
     entry = {"path": "/files/report.pdf", "name": "report.pdf", "mime_type": "application/pdf"}
-    document = {"id": "doc-1"}
+    document = {"id": "active-shadow"}
+    entry["_file_id"] = "file-1"
     monkeypatch.setattr(service, "resolve_document", lambda _path: (entry, document))
-    monkeypatch.setattr("api.apps.services.corpus_fs_service.File2DocumentService.get_storage_address", classmethod(lambda _cls, **_kwargs: ("bucket", "object")))
+
+    def storage_address(_cls, **kwargs):
+        assert kwargs == {"file_id": "file-1"}
+        return "bucket", "object"
+
+    monkeypatch.setattr(File2DocumentService, "get_storage_address", classmethod(storage_address))
 
     class Storage:
         @staticmethod
@@ -593,9 +610,122 @@ def test_original_data_resolves_storage_without_exposing_internal_ids(monkeypatc
     assert service.original_data("/files/report.pdf") == (entry, b"source", "object")
 
 
+def test_delete_logical_file_removes_source_shadow_versions_and_objects(monkeypatch):
+    service = CorpusFsService("tenant-1", "dataset-1", "actor")
+    file = SimpleNamespace(id="file-1", type="pdf")
+    source_link = SimpleNamespace(document_id="source-doc")
+    documents = {
+        "source-doc": SimpleNamespace(id="source-doc"),
+        "shadow-doc": SimpleNamespace(id="shadow-doc"),
+    }
+    events = []
+
+    monkeypatch.setattr(service, "deletion_targets", lambda _paths: (["file-1"], 1, 0))
+    monkeypatch.setattr(FileService, "get_by_id", classmethod(lambda _cls, _file_id: (True, file)))
+    monkeypatch.setattr(FileService, "delete", classmethod(lambda _cls, value: events.append(("file", value.id))))
+    monkeypatch.setattr(File2DocumentService, "get_by_file_id", classmethod(lambda _cls, _file_id: [source_link]))
+    monkeypatch.setattr(File2DocumentService, "get_storage_address", classmethod(lambda _cls, **_kwargs: ("source-bucket", "source-object")))
+    monkeypatch.setattr(File2DocumentService, "delete_by_file_id", classmethod(lambda _cls, file_id: events.append(("links", file_id))))
+    monkeypatch.setattr(DocumentMarkdownService, "publication_document_ids", classmethod(lambda _cls, file_id: ["shadow-doc"]))
+    monkeypatch.setattr(DocumentMarkdownService, "delete_objects", classmethod(lambda _cls, file_id: events.append(("version-objects", file_id))))
+    monkeypatch.setattr(DocumentMarkdownService, "delete_rows", classmethod(lambda _cls, file_id: events.append(("version-rows", file_id))))
+    monkeypatch.setattr(DocumentService, "get_by_id", classmethod(lambda _cls, doc_id: (True, documents[doc_id])))
+    monkeypatch.setattr(DocumentService, "get_tenant_id", classmethod(lambda _cls, _doc_id: "tenant-1"))
+    monkeypatch.setattr(DocumentService, "remove_document", classmethod(lambda _cls, doc, _tenant_id: events.append(("document", doc.id)) or True))
+
+    class Storage:
+        @staticmethod
+        def rm(bucket, object_name):
+            events.append(("source-object", bucket, object_name))
+
+    monkeypatch.setattr(settings, "STORAGE_IMPL", Storage())
+
+    assert service.delete(["/files/report.pdf"]) == {
+        "success_count": 1,
+        "error_count": 0,
+        "failed_paths": [],
+    }
+    assert events == [
+        ("version-objects", "file-1"),
+        ("source-object", "source-bucket", "source-object"),
+        ("document", "source-doc"),
+        ("document", "shadow-doc"),
+        ("version-rows", "file-1"),
+        ("links", "file-1"),
+        ("file", "file-1"),
+    ]
+
+
+def test_delete_logical_file_keeps_source_link_when_version_cleanup_fails(monkeypatch):
+    service = CorpusFsService("tenant-1", "dataset-1", "actor")
+    file = SimpleNamespace(id="file-1", type="pdf")
+    source_link = SimpleNamespace(document_id="source-doc")
+    events = []
+
+    monkeypatch.setattr(service, "deletion_targets", lambda _paths: (["file-1"], 1, 0))
+    monkeypatch.setattr(FileService, "get_by_id", classmethod(lambda _cls, _file_id: (True, file)))
+    monkeypatch.setattr(FileService, "delete", classmethod(lambda _cls, _file: pytest.fail("file must be retained")))
+    monkeypatch.setattr(File2DocumentService, "get_by_file_id", classmethod(lambda _cls, _file_id: [source_link]))
+    monkeypatch.setattr(File2DocumentService, "get_storage_address", classmethod(lambda _cls, **_kwargs: ("source-bucket", "source-object")))
+    monkeypatch.setattr(File2DocumentService, "delete_by_file_id", classmethod(lambda _cls, _file_id: pytest.fail("source link must be retained")))
+    monkeypatch.setattr(DocumentMarkdownService, "publication_document_ids", classmethod(lambda _cls, _file_id: []))
+    monkeypatch.setattr(
+        DocumentMarkdownService,
+        "delete_objects",
+        classmethod(lambda _cls, _file_id: (_ for _ in ()).throw(OSError("storage unavailable"))),
+    )
+    monkeypatch.setattr(DocumentMarkdownService, "delete_rows", classmethod(lambda _cls, _file_id: pytest.fail("version rows must be retained")))
+    monkeypatch.setattr(DocumentService, "get_by_id", classmethod(lambda _cls, _doc_id: (True, SimpleNamespace(id="source-doc"))))
+    monkeypatch.setattr(DocumentService, "get_tenant_id", classmethod(lambda _cls, _doc_id: "tenant-1"))
+    monkeypatch.setattr(DocumentService, "remove_document", classmethod(lambda _cls, doc, _tenant_id: events.append(("document", doc.id)) or True))
+
+    assert service.delete(["/files/report.pdf"]) == {
+        "success_count": 0,
+        "error_count": 1,
+        "failed_paths": ["/files/report.pdf"],
+    }
+    assert events == []
+
+
+def test_delete_logical_file_keeps_metadata_when_source_object_cleanup_fails(monkeypatch):
+    service = CorpusFsService("tenant-1", "dataset-1", "actor")
+    file = SimpleNamespace(id="file-1", type="pdf")
+    source_link = SimpleNamespace(document_id="source-doc")
+    events = []
+
+    monkeypatch.setattr(service, "deletion_targets", lambda _paths: (["file-1"], 1, 0))
+    monkeypatch.setattr(FileService, "get_by_id", classmethod(lambda _cls, _file_id: (True, file)))
+    monkeypatch.setattr(FileService, "delete", classmethod(lambda _cls, _file: pytest.fail("file must be retained on source-object failure")))
+    monkeypatch.setattr(File2DocumentService, "get_by_file_id", classmethod(lambda _cls, _file_id: [source_link]))
+    monkeypatch.setattr(File2DocumentService, "get_storage_address", classmethod(lambda _cls, **_kwargs: ("source-bucket", "source-object")))
+    monkeypatch.setattr(File2DocumentService, "delete_by_file_id", classmethod(lambda _cls, _file_id: pytest.fail("source link must be retained on source-object failure")))
+    monkeypatch.setattr(DocumentMarkdownService, "publication_document_ids", classmethod(lambda _cls, _file_id: []))
+    monkeypatch.setattr(DocumentMarkdownService, "delete_objects", classmethod(lambda _cls, file_id: events.append(("version-objects", file_id))))
+    monkeypatch.setattr(DocumentMarkdownService, "delete_rows", classmethod(lambda _cls, _file_id: pytest.fail("version rows must be retained on source-object failure")))
+    monkeypatch.setattr(DocumentService, "get_by_id", classmethod(lambda _cls, _doc_id: (True, SimpleNamespace(id="source-doc"))))
+    monkeypatch.setattr(DocumentService, "get_tenant_id", classmethod(lambda _cls, _doc_id: "tenant-1"))
+    monkeypatch.setattr(DocumentService, "remove_document", classmethod(lambda _cls, _doc, _tenant_id: pytest.fail("document must be retained on source-object failure")))
+
+    class Storage:
+        @staticmethod
+        def rm(bucket, object_name):
+            raise OSError("source object unavailable")
+
+    monkeypatch.setattr(settings, "STORAGE_IMPL", Storage())
+
+    result = service.delete(["/files/report.pdf"])
+
+    assert result == {
+        "success_count": 0,
+        "error_count": 1,
+        "failed_paths": ["/files/report.pdf"],
+    }
+    assert events == [("version-objects", "file-1")]
+
+
 def test_save_markdown_maps_version_conflict_to_corpus_revision_conflict(monkeypatch):
     service = CorpusFsService("tenant-1", "dataset-1", "actor")
-    monkeypatch.setattr(service, "resolve_document", lambda _path: ({"path": "/files/report.pdf"}, {"id": "doc-1"}))
+    monkeypatch.setattr(service, "resolve_document", lambda _path: ({"path": "/files/report.pdf", "_file_id": "file-1"}, {"id": "doc-1"}))
 
     def conflict(*_args, **_kwargs):
         raise MarkdownVersionConflict("changed")
@@ -604,6 +734,23 @@ def test_save_markdown_maps_version_conflict_to_corpus_revision_conflict(monkeyp
 
     with pytest.raises(RevisionConflictError):
         service.save_markdown("/files/report.pdf", "updated", 2)
+
+
+def test_publish_markdown_uses_stable_file_and_maps_missing_version(monkeypatch):
+    service = CorpusFsService("tenant-1", "dataset-1", "actor", actor_ref="deer-user")
+    entry = {"path": "/files/report.pdf", "_file_id": "file-1"}
+    document = {"id": "doc-active"}
+    file = SimpleNamespace(to_dict=lambda: {"id": "file-1", "active_document_id": "doc-active"})
+    monkeypatch.setattr(service, "resolve_document", lambda _path: (entry, document))
+    monkeypatch.setattr(FileService, "get_by_id", classmethod(lambda _cls, _file_id: (True, file)))
+
+    def missing(*_args, **_kwargs):
+        raise MarkdownVersionNotFound("missing")
+
+    monkeypatch.setattr(DocumentMarkdownService, "begin_publish", missing)
+
+    with pytest.raises(VersionNotFoundError):
+        service.publish_markdown("/files/report.pdf", 3, 3)
 
 
 def test_retry_parse_rejects_an_already_running_document(monkeypatch):

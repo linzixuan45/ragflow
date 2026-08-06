@@ -29,6 +29,8 @@ services:
     # This keeps :9381/9382/9383/9384 quiet even if a future base file adds
     # them back. The standard entrypoint still runs task executor and API.
     command: []
+    env_file:
+      - .env.local
     environment:
       DEVICE: "gpu"
       ENABLE_TIMEOUT_ASSERTION: "1"

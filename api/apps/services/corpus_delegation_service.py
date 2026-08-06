@@ -19,13 +19,22 @@ class CorpusDelegationError(ValueError):
 class CorpusDelegation:
     actor_id: str
     dataset_ids: frozenset[str]
+    purpose: str
 
 
 class CorpusDelegationService:
     audience = "ragflow-corpus-keyword-search"
+    corpus_fs_audience = "ragflow-corpus-fs"
 
     @classmethod
-    def verify(cls, token: str | None, service_tenant_id: str) -> CorpusDelegation:
+    def verify(
+        cls,
+        token: str | None,
+        service_tenant_id: str,
+        *,
+        audience: str | None = None,
+        purpose: str = "keyword-search",
+    ) -> CorpusDelegation:
         secret = os.environ.get("RAGFLOW_CORPUS_DELEGATION_SECRET")
         if not secret or not token:
             raise CorpusDelegationError("missing delegation")
@@ -41,10 +50,14 @@ class CorpusDelegationService:
             raise CorpusDelegationError("invalid delegation")
         actor_id = payload.get("actor_id")
         dataset_ids = payload.get("dataset_ids")
+        now = int(time.time())
         if (
-            payload.get("aud") != cls.audience
+            payload.get("aud") != (audience or cls.audience)
+            or payload.get("purpose") != purpose
             or payload.get("service_tenant_id") != service_tenant_id
-            or payload.get("exp", 0) < int(time.time())
+            or payload.get("exp", 0) < now
+            or payload.get("exp", 0) > now + 300
+            or payload.get("iat", 0) > now + 30
             or not isinstance(actor_id, str)
             or not actor_id
             or not isinstance(dataset_ids, list)
@@ -52,7 +65,7 @@ class CorpusDelegationService:
             or not all(isinstance(dataset_id, str) and dataset_id for dataset_id in dataset_ids)
         ):
             raise CorpusDelegationError("invalid delegation")
-        return CorpusDelegation(actor_id=actor_id, dataset_ids=frozenset(dataset_ids))
+        return CorpusDelegation(actor_id=actor_id, dataset_ids=frozenset(dataset_ids), purpose=purpose)
 
     @staticmethod
     def _unb64(value: str) -> bytes:

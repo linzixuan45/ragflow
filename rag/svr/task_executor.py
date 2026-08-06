@@ -1303,6 +1303,11 @@ async def insert_chunks(task_id, task_tenant_id, task_dataset_id, chunks, progre
         chunks: List of chunk dictionaries to insert
         progress_callback: Callback function for progress updates
     """
+    shadow_ids = DocumentService.shadow_document_ids({chunk.get("doc_id") for chunk in chunks if chunk.get("doc_id")})
+    for chunk in chunks:
+        if chunk.get("doc_id") in shadow_ids:
+            chunk["available_int"] = 0
+
     mothers = []
     mother_ids = set([])
     for ck in chunks:

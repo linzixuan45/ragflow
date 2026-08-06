@@ -17,13 +17,52 @@ def _token(secret: str, payload: dict) -> str:
 
 def test_delegation_requires_valid_signature_audience_tenant_and_expiry(monkeypatch):
     monkeypatch.setenv("RAGFLOW_CORPUS_DELEGATION_SECRET", "test-secret")
-    payload = {"actor_id": "user-1", "dataset_ids": ["dataset-1"], "service_tenant_id": "service-tenant", "aud": CorpusDelegationService.audience, "exp": int(time.time()) + 60}
+    payload = {
+        "actor_id": "user-1",
+        "dataset_ids": ["dataset-1"],
+        "service_tenant_id": "service-tenant",
+        "aud": CorpusDelegationService.audience,
+        "purpose": "keyword-search",
+        "iat": int(time.time()),
+        "exp": int(time.time()) + 60,
+    }
 
     delegation = CorpusDelegationService.verify(_token("test-secret", payload), "service-tenant")
 
     assert delegation.actor_id == "user-1"
     assert delegation.dataset_ids == {"dataset-1"}
+    assert delegation.purpose == "keyword-search"
     with pytest.raises(CorpusDelegationError):
         CorpusDelegationService.verify(_token("wrong-secret", payload), "service-tenant")
     with pytest.raises(CorpusDelegationError):
         CorpusDelegationService.verify(_token("test-secret", {**payload, "exp": 0}), "service-tenant")
+
+
+def test_corpus_fs_delegation_is_bound_to_purpose_and_audience(monkeypatch):
+    monkeypatch.setenv("RAGFLOW_CORPUS_DELEGATION_SECRET", "test-secret")
+    now = int(time.time())
+    payload = {
+        "actor_id": "deer-user",
+        "dataset_ids": ["dataset-1"],
+        "service_tenant_id": "service-tenant",
+        "aud": CorpusDelegationService.corpus_fs_audience,
+        "purpose": "corpus-fs",
+        "iat": now,
+        "exp": now + 60,
+    }
+
+    delegation = CorpusDelegationService.verify(
+        _token("test-secret", payload),
+        "service-tenant",
+        audience=CorpusDelegationService.corpus_fs_audience,
+        purpose="corpus-fs",
+    )
+
+    assert delegation.actor_id == "deer-user"
+    with pytest.raises(CorpusDelegationError):
+        CorpusDelegationService.verify(
+            _token("test-secret", {**payload, "purpose": "keyword-search"}),
+            "service-tenant",
+            audience=CorpusDelegationService.corpus_fs_audience,
+            purpose="corpus-fs",
+        )

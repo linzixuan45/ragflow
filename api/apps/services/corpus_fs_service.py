@@ -41,6 +41,11 @@ class NotFoundError(CorpusFsError):
     status = 404
 
 
+class VersionNotFoundError(CorpusFsError):
+    code = "VERSION_NOT_FOUND"
+    status = 404
+
+
 class DocumentNotReadyError(CorpusFsError):
     code = "DOCUMENT_NOT_READY"
     status = 409
@@ -84,10 +89,11 @@ class PreconditionRequiredError(CorpusFsError):
 class CorpusFsService:
     registry = CorpusPathRegistry()
 
-    def __init__(self, tenant_id: str, dataset_id: str, actor_digest: str):
+    def __init__(self, tenant_id: str, dataset_id: str, actor_digest: str, actor_ref: str | None = None):
         self.tenant_id = tenant_id
         self.dataset_id = dataset_id
         self.actor_digest = actor_digest
+        self.actor_ref = actor_ref or tenant_id
 
     def _dataset(self):
         ok, dataset = KnowledgebaseService.get_by_id(self.dataset_id)
@@ -98,6 +104,11 @@ class CorpusFsService:
     def _documents(self) -> list[dict[str, Any]]:
         self._dataset()
         return list(Document.select().where((Document.kb_id == self.dataset_id) & (Document.status == "1")).dicts())
+
+    @staticmethod
+    def _select_active_document(file: dict, linked: list[dict]) -> dict:
+        active_document_id = file.get("active_document_id")
+        return next((candidate for candidate in linked if candidate["id"] == active_document_id), linked[0])
 
     def _dataset_file_root(self) -> dict:
         dataset = self._dataset()
@@ -153,6 +164,10 @@ class CorpusFsService:
             if doc is None or file is None or not check_file_team_permission(file, self.tenant_id):
                 continue
             file_docs[file["id"]].append(doc)
+        for file in files.values():
+            active = docs.get(file.get("active_document_id"))
+            if active is not None and all(candidate["id"] != active["id"] for candidate in file_docs[file["id"]]):
+                file_docs[file["id"]].append(active)
 
         entries: dict[str, dict] = {"/": {"kind": "directory", "name": "/", "path": "/"}, "/files": {"kind": "directory", "name": "files", "path": "/files", "_file_id": root["id"]}}
         children: dict[str, list[dict]] = defaultdict(list)
@@ -173,7 +188,7 @@ class CorpusFsService:
                 linked = file_docs.get(file["id"], [])
                 if not linked:
                     continue
-                doc = linked[0]
+                doc = self._select_active_document(file, linked)
                 parts = [file["name"]]
                 display_parent = parent_path
                 for part in parts[:-1]:
@@ -246,8 +261,12 @@ class CorpusFsService:
                 updates["name"] = new_name
             FileService.update_by_id(file.id, updates)
             if new_name:
+                updated_document_ids: set[str] = set()
                 for link in File2DocumentService.get_by_file_id(file.id):
                     DocumentService.update_by_id(link.document_id, {"name": new_name})
+                    updated_document_ids.add(link.document_id)
+                if file.active_document_id and file.active_document_id not in updated_document_ids:
+                    DocumentService.update_by_id(file.active_document_id, {"name": new_name})
         return len(sources)
 
     def deletion_targets(self, paths: list[str]) -> tuple[list[str], int, int]:
@@ -283,18 +302,56 @@ class CorpusFsService:
             if not ok:
                 continue
             if file.type != FileType.FOLDER.value:
-                for link in File2DocumentService.get_by_file_id(file_id):
-                    found, document = DocumentService.get_by_id(link.document_id)
-                    tenant_id = DocumentService.get_tenant_id(link.document_id)
+                links = File2DocumentService.get_by_file_id(file_id)
+                document_ids = list(
+                    dict.fromkeys(
+                        [link.document_id for link in links]
+                        + DocumentMarkdownService.publication_document_ids(file_id)
+                    )
+                )
+                try:
+                    source_bucket, source_object = File2DocumentService.get_storage_address(file_id=file_id)
+                except Exception:
+                    source_bucket, source_object = None, None
+                try:
+                    DocumentMarkdownService.delete_objects(file_id)
+                except Exception:
+                    errors.append(f"failed to remove version objects for path target {file_id}")
+                    continue
+                if source_bucket and source_object:
+                    try:
+                        settings.STORAGE_IMPL.rm(source_bucket, source_object)
+                    except Exception:
+                        errors.append(
+                            f"failed to remove source object for path target {file_id}; "
+                            "version objects already removed, metadata and File retained for retry"
+                        )
+                        continue
+                document_cleanup_failed = False
+                for document_id in document_ids:
+                    found, document = DocumentService.get_by_id(document_id)
+                    tenant_id = DocumentService.get_tenant_id(document_id)
                     if found and document and tenant_id and not DocumentService.remove_document(document, tenant_id):
                         errors.append(f"failed to remove document for path target {file_id}")
-                File2DocumentService.delete_by_file_id(file_id)
+                        document_cleanup_failed = True
+                if document_cleanup_failed:
+                    continue
+                try:
+                    DocumentMarkdownService.delete_rows(file_id)
+                    File2DocumentService.delete_by_file_id(file_id)
+                except Exception:
+                    errors.append(f"failed to remove version metadata for path target {file_id}")
+                    continue
             try:
                 FileService.delete(file)
                 success_count += 1
             except Exception:
                 errors.append(f"failed to remove path target {file_id}")
-        return {"success_count": success_count, "error_count": len(errors)}
+        return {
+            "success_count": success_count,
+            "error_count": len(errors),
+            "failed_paths": list(paths) if errors else [],
+        }
 
     def relocate_uploaded_documents(self, document_ids: list[str], destination_path: str) -> None:
         destination = self.resolve_writable(destination_path, folder=True)
@@ -456,8 +513,8 @@ class CorpusFsService:
         return entry, doc
 
     def original_data(self, path: str) -> tuple[dict, bytes, str]:
-        entry, document = self.resolve_document(path)
-        bucket, object_name = File2DocumentService.get_storage_address(doc_id=document["id"])
+        entry, _ = self.resolve_document(path)
+        bucket, object_name = File2DocumentService.get_storage_address(file_id=entry["_file_id"])
         data = settings.STORAGE_IMPL.get(bucket, object_name)
         if data is None:
             raise NotFoundError("source object not found")
@@ -535,19 +592,21 @@ class CorpusFsService:
 
     def markdown_current(self, path: str) -> dict:
         entry, document = self.resolve_document(path)
-        result = DocumentMarkdownService.current(document["id"])
+        result = DocumentMarkdownService.current(entry["_file_id"])
         if result is None:
             raise NotFoundError("markdown derivative not found")
+        active = DocumentMarkdownService.active_row(entry["_file_id"])
+        result["active_version"] = active.revision if active else None
         return {"path": entry["path"], **result}
 
     def markdown_versions(self, path: str) -> dict:
         entry, document = self.resolve_document(path)
-        return {"path": entry["path"], "items": DocumentMarkdownService.versions(document["id"])}
+        return {"path": entry["path"], "items": DocumentMarkdownService.versions(entry["_file_id"])}
 
     def save_markdown(self, path: str, content: str, expected_version: int) -> dict:
         entry, document = self.resolve_document(path)
         try:
-            result = DocumentMarkdownService.save(document, self.tenant_id, content, expected_version)
+            result = DocumentMarkdownService.save(document, entry["_file_id"], self.tenant_id, self.actor_ref, content, expected_version)
         except MarkdownVersionConflict as exc:
             raise RevisionConflictError(str(exc)) from exc
         except ValueError as exc:
@@ -557,11 +616,39 @@ class CorpusFsService:
     def restore_markdown(self, path: str, version: int, expected_version: int) -> dict:
         entry, document = self.resolve_document(path)
         try:
-            result = DocumentMarkdownService.restore(document, self.tenant_id, version, expected_version)
+            result = DocumentMarkdownService.restore(document, entry["_file_id"], self.tenant_id, self.actor_ref, version, expected_version)
         except MarkdownVersionConflict as exc:
             raise RevisionConflictError(str(exc)) from exc
         except MarkdownVersionNotFound as exc:
-            raise NotFoundError(str(exc)) from exc
+            raise VersionNotFoundError(str(exc)) from exc
+        return {"path": entry["path"], **result}
+
+    def publish_markdown(self, path: str, version: int, expected_version: int) -> dict:
+        entry, document = self.resolve_document(path)
+        found, file = FileService.get_by_id(entry["_file_id"])
+        if not found or file is None:
+            raise NotFoundError("file not found")
+        try:
+            result = DocumentMarkdownService.begin_publish(
+                document,
+                file.to_dict(),
+                self.tenant_id,
+                self.actor_ref,
+                version,
+                expected_version,
+            )
+        except MarkdownVersionConflict as exc:
+            raise RevisionConflictError(str(exc)) from exc
+        except MarkdownVersionNotFound as exc:
+            raise VersionNotFoundError(str(exc)) from exc
+        return {"path": entry["path"], **result}
+
+    def markdown_publish_status(self, path: str, version: int) -> dict:
+        entry, _ = self.resolve_document(path)
+        try:
+            result = DocumentMarkdownService.refresh_publish(entry["_file_id"], version, self.tenant_id)
+        except MarkdownVersionNotFound as exc:
+            raise VersionNotFoundError(str(exc)) from exc
         return {"path": entry["path"], **result}
 
     @staticmethod

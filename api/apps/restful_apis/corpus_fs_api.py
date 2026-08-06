@@ -16,6 +16,7 @@ from api.apps import login_required
 from api.apps.services import dataset_api_service
 from api.apps.services.corpus_citation_service import CorpusCitationError, CorpusCitationService
 from api.apps.services.corpus_cursor_service import CorpusCursorError, CorpusCursorService, CorpusPageCursorService
+from api.apps.services.corpus_delegation_service import CorpusDelegationError, CorpusDelegationService
 from api.apps.services.corpus_fs_service import CorpusFsError, CorpusFsService, InvalidConfirmationError, PreconditionRequiredError
 from api.apps.services.corpus_path_service import AmbiguousPathError, CorpusPathError
 from api.apps.services.corpus_secret_service import corpus_secret
@@ -33,8 +34,22 @@ def _actor_digest(tenant_id: str) -> str:
     return hashlib.sha256(tenant_id.encode()).hexdigest()
 
 
-def _service(tenant_id: str, dataset_id: str) -> CorpusFsService:
-    return CorpusFsService(tenant_id, dataset_id, _actor_digest(tenant_id))
+def _service(tenant_id: str, dataset_id: str, *, require_delegation: bool = False) -> CorpusFsService:
+    actor_ref = tenant_id
+    if require_delegation:
+        try:
+            delegation = CorpusDelegationService.verify(
+                request.headers.get("X-RAGFlow-Delegation"),
+                tenant_id,
+                audience=CorpusDelegationService.corpus_fs_audience,
+                purpose="corpus-fs",
+            )
+        except CorpusDelegationError as exc:
+            raise CorpusFsError("delegation is required") from exc
+        if dataset_id not in delegation.dataset_ids:
+            raise CorpusFsError("dataset is not delegated")
+        actor_ref = delegation.actor_id
+    return CorpusFsService(tenant_id, dataset_id, _actor_digest(actor_ref), actor_ref=actor_ref)
 
 
 def _error(error: Exception):
@@ -246,7 +261,7 @@ def tree(tenant_id: str, dataset_id: str):
 async def create_folder(tenant_id: str, dataset_id: str):
     try:
         payload = _body(await request.get_json() or {}, {"parent_path", "name"})
-        service = _service(tenant_id, dataset_id)
+        service = _service(tenant_id, dataset_id, require_delegation=True)
         with service.content_mutation(_expected_revision()):
             entry = service.create_folder(_body_string(payload, "parent_path", "/files", 1024), _body_string(payload, "name", maximum=256))
         return _success(service, entry)
@@ -259,7 +274,7 @@ async def create_folder(tenant_id: str, dataset_id: str):
 @add_tenant_id_to_kwargs
 async def upload(tenant_id: str, dataset_id: str):
     try:
-        service = _service(tenant_id, dataset_id)
+        service = _service(tenant_id, dataset_id, require_delegation=True)
         form = await request.form
         parent_path = form.get("parent_path", "/files")
         files = await request.files
@@ -297,7 +312,7 @@ async def move(tenant_id: str, dataset_id: str):
         source_paths = payload.get("source_paths")
         if not isinstance(source_paths, list) or not source_paths or not all(isinstance(path, str) for path in source_paths):
             raise CorpusFsError("source_paths is invalid")
-        service = _service(tenant_id, dataset_id)
+        service = _service(tenant_id, dataset_id, require_delegation=True)
         with service.content_mutation(_expected_revision()):
             count = service.move(source_paths, _body_string(payload, "destination_path", maximum=1024), payload.get("new_name"))
         return _success(service, {"success_count": count, "failed_paths": []})
@@ -314,7 +329,7 @@ async def delete_preview(tenant_id: str, dataset_id: str):
         paths = sorted(set(payload.get("paths") or []))
         if not paths or not all(isinstance(path, str) for path in paths):
             raise CorpusFsError("paths is invalid")
-        service = _service(tenant_id, dataset_id)
+        service = _service(tenant_id, dataset_id, require_delegation=True)
         target_ids, file_count, folder_count = service.deletion_targets(paths)
         return _success(service, {"file_count": file_count, "folder_count": folder_count, "confirmation_token": _issue_delete_token(service, paths, target_ids)})
     except (CorpusFsError, CorpusPathError) as error:
@@ -330,7 +345,7 @@ async def delete_entries(tenant_id: str, dataset_id: str):
         paths = sorted(set(payload.get("paths") or []))
         if not paths or not all(isinstance(path, str) for path in paths):
             raise CorpusFsError("paths is invalid")
-        service = _service(tenant_id, dataset_id)
+        service = _service(tenant_id, dataset_id, require_delegation=True)
         token = _parse_delete_token(service, paths, _body_string(payload, "confirmation_token", maximum=4096))
         with service.content_mutation(_expected_revision()):
             target_ids, _, _ = service.deletion_targets(paths)
@@ -493,9 +508,10 @@ async def preview_citation(tenant_id: str, dataset_id: str):
 @add_tenant_id_to_kwargs
 async def derived_content(tenant_id: str, dataset_id: str):
     try:
-        service = _service(tenant_id, dataset_id)
         if request.method == "GET":
+            service = _service(tenant_id, dataset_id)
             return _success(service, service.markdown_current(request.args.get("path", "")))
+        service = _service(tenant_id, dataset_id, require_delegation=True)
         payload = _body(await request.get_json() or {}, {"path", "content", "expected_version"})
         path = _body_string(payload, "path", maximum=1024)
         content_value = payload.get("content")
@@ -526,13 +542,43 @@ def derived_content_versions(tenant_id: str, dataset_id: str):
 async def restore_derived_content(tenant_id: str, dataset_id: str):
     try:
         payload = _body(await request.get_json() or {}, {"path", "version", "expected_version"})
-        service = _service(tenant_id, dataset_id)
+        service = _service(tenant_id, dataset_id, require_delegation=True)
         path = _body_string(payload, "path", maximum=1024)
         version = _int(payload.get("version"), "version", 1, 2147483647)
         expected_version = _int(payload.get("expected_version"), "expected_version", 1, 2147483647)
         with service.content_mutation(_expected_revision()):
             result = service.restore_markdown(path, version, expected_version)
         return _success(service, result)
+    except (ValueError, CorpusFsError, CorpusPathError) as error:
+        return _error(error)
+
+
+@manager.route("/datasets/<dataset_id>/fs/derived-content/publish", methods=["POST"])  # noqa: F821
+@login_required
+@add_tenant_id_to_kwargs
+async def publish_derived_content(tenant_id: str, dataset_id: str):
+    try:
+        payload = _body(await request.get_json() or {}, {"path", "version", "expected_version"})
+        service = _service(tenant_id, dataset_id, require_delegation=True)
+        path = _body_string(payload, "path", maximum=1024)
+        version = _int(payload.get("version"), "version", 1, 2147483647)
+        expected_version = _int(payload.get("expected_version"), "expected_version", 1, 2147483647)
+        with service.content_mutation(_expected_revision()):
+            result = service.publish_markdown(path, version, expected_version)
+        return _success(service, result)
+    except (ValueError, CorpusFsError, CorpusPathError) as error:
+        return _error(error)
+
+
+@manager.route("/datasets/<dataset_id>/fs/derived-content/publish-status", methods=["GET"])  # noqa: F821
+@login_required
+@add_tenant_id_to_kwargs
+def derived_content_publish_status(tenant_id: str, dataset_id: str):
+    try:
+        service = _service(tenant_id, dataset_id)
+        path = request.args.get("path", "")
+        version = _int(int(request.args.get("version", "")), "version", 1, 2147483647)
+        return _success(service, service.markdown_publish_status(path, version))
     except (ValueError, CorpusFsError, CorpusPathError) as error:
         return _error(error)
 
@@ -556,7 +602,7 @@ async def mutate_parse(tenant_id: str, dataset_id: str):
         payload = _body(await request.get_json() or {}, {"action", "paths"})
         action = _body_string(payload, "action", maximum=16)
         paths = _body_paths(payload)
-        service = _service(tenant_id, dataset_id)
+        service = _service(tenant_id, dataset_id, require_delegation=True)
         with service.content_mutation(_expected_revision()):
             result = service.parse_documents(paths, action)
         return _success(service, result)

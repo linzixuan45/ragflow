@@ -43,6 +43,7 @@ from rag.svr.task_executor_refactor.task_context import TaskContext
 from rag.utils.base64_image import image2id
 
 from api.db.services.task_service import TaskService
+from api.db.services.document_service import DocumentService
 from rag.svr.task_executor_refactor.constants import GRAPH_RAPTOR_FAKE_DOC_ID
 
 # Re-export for backward compatibility
@@ -278,6 +279,11 @@ class ChunkService:
             True if all chunks were inserted successfully, False otherwise.
         """
         doc_bulk_size = doc_bulk_size or settings.DOC_BULK_SIZE
+
+        shadow_ids = DocumentService.shadow_document_ids({chunk.get("doc_id") for chunk in chunks if chunk.get("doc_id")})
+        for chunk in chunks:
+            if chunk.get("doc_id") in shadow_ids:
+                chunk["available_int"] = 0
 
         # Create mother chunks (summary chunks)
         mothers = self._create_mother_chunks(chunks)

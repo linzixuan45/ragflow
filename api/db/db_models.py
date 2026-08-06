@@ -936,6 +936,7 @@ class Document(DataBaseModel):
 
     run = CharField(max_length=1, null=True, help_text="start to run processing or cancel.(1: run it; 2: cancel)", default="0", index=True)
     status = CharField(max_length=1, null=True, help_text="is it validate(0: wasted, 1: validate)", default="1", index=True)
+    is_shadow = BooleanField(null=False, default=False, index=True)
 
     class Meta:
         db_table = "document"
@@ -963,17 +964,23 @@ class DocumentMarkdownVersion(DataBaseModel):
     """Immutable Markdown derivative version for an uploaded document."""
 
     id = CharField(max_length=32, primary_key=True)
+    file_id = CharField(max_length=32, null=True, index=True)
     document_id = CharField(max_length=32, null=False, index=True)
     dataset_id = CharField(max_length=32, null=False, index=True)
     revision = IntegerField(null=False)
     content_sha256 = CharField(max_length=64, null=False)
     object_name = CharField(max_length=512, null=False)
     created_by = CharField(max_length=32, null=False, index=True)
+    actor_ref = CharField(max_length=255, null=True, index=True)
     restored_from_revision = IntegerField(null=True)
+    publish_status = CharField(max_length=16, null=False, default="SAVED", index=True)
+    published_document_id = CharField(max_length=32, null=True, index=True)
+    replaced_document_id = CharField(max_length=32, null=True, index=True)
+    publish_error = TextField(null=True)
 
     class Meta:
         db_table = "document_markdown_version"
-        indexes = ((('document_id', 'revision'), True),)
+        indexes = ((('dataset_id', 'file_id', 'revision'), True),)
 
 
 class File(DataBaseModel):
@@ -986,6 +993,7 @@ class File(DataBaseModel):
     size = BigIntegerField(default=0, index=True)
     type = CharField(max_length=32, null=False, help_text="file extension", index=True)
     source_type = CharField(max_length=128, null=False, default="", help_text="where dose this document come from", index=True)
+    active_document_id = CharField(max_length=32, null=True, index=True)
 
     class Meta:
         db_table = "file"
@@ -1594,6 +1602,46 @@ def alter_db_rename_column(migrator, table_name, old_column_name, new_column_nam
         pass
 
 
+def migrate_logical_file_versions(migrator):
+    """Backfill stable file ownership and install the file-scoped revision key."""
+    try:
+        DB.execute_sql(
+            """
+            UPDATE document_markdown_version
+            SET file_id = (
+                SELECT file2document.file_id
+                FROM file2document
+                WHERE file2document.document_id = document_markdown_version.document_id
+                LIMIT 1
+            )
+            WHERE file_id IS NULL
+            """
+        )
+        DB.execute_sql(
+            """
+            UPDATE file
+            SET active_document_id = (
+                SELECT file2document.document_id
+                FROM file2document
+                WHERE file2document.file_id = file.id
+                LIMIT 1
+            )
+            WHERE active_document_id IS NULL
+            """
+        )
+    except Exception as ex:
+        logging.critical("Failed to backfill logical file version ownership: %s", ex)
+
+    try:
+        migrate(migrator.add_index("document_markdown_version", ("dataset_id", "file_id", "revision"), unique=True))
+    except (OperationalError, ProgrammingError) as ex:
+        msg = str(ex).lower()
+        if "1061" not in msg and "duplicate key name" not in msg and "already exists" not in msg:
+            logging.critical("Failed to add file-scoped Markdown revision index: %s", ex)
+    except Exception as ex:
+        logging.critical("Failed to add file-scoped Markdown revision index: %s", ex)
+
+
 def migrate_add_unique_email(migrator):
     """Deduplicates user emails and add UNIQUE constraint to email column (idempotent)"""
     # step 0: check existing index state on user.email and prepare for unique constraint
@@ -1804,6 +1852,15 @@ def migrate_db():
     logging.disable(logging.ERROR)
     migrator = DatabaseMigrator[settings.DATABASE_TYPE.upper()].value(DB)
     alter_db_add_column(migrator, "file", "source_type", CharField(max_length=128, null=False, default="", help_text="where dose this document come from", index=True))
+    alter_db_add_column(migrator, "file", "active_document_id", CharField(max_length=32, null=True, index=True))
+    alter_db_add_column(migrator, "document", "is_shadow", BooleanField(null=False, default=False, index=True))
+    alter_db_add_column(migrator, "document_markdown_version", "file_id", CharField(max_length=32, null=True, index=True))
+    alter_db_add_column(migrator, "document_markdown_version", "actor_ref", CharField(max_length=255, null=True, index=True))
+    alter_db_add_column(migrator, "document_markdown_version", "publish_status", CharField(max_length=16, null=False, default="SAVED", index=True))
+    alter_db_add_column(migrator, "document_markdown_version", "published_document_id", CharField(max_length=32, null=True, index=True))
+    alter_db_add_column(migrator, "document_markdown_version", "replaced_document_id", CharField(max_length=32, null=True, index=True))
+    alter_db_add_column(migrator, "document_markdown_version", "publish_error", TextField(null=True))
+    migrate_logical_file_versions(migrator)
     alter_db_add_column(migrator, "tenant", "rerank_id", CharField(max_length=128, null=False, default="BAAI/bge-reranker-v2-m3", help_text="default rerank model ID"))
     alter_db_add_column(migrator, "dialog", "rerank_id", CharField(max_length=128, null=False, default="", help_text="default rerank model ID"))
     alter_db_column_type(migrator, "dialog", "top_k", IntegerField(default=1024))

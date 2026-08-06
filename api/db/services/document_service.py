@@ -43,6 +43,19 @@ class DocumentService(CommonService):
     model = Document
 
     @classmethod
+    @DB.connection_context()
+    def shadow_document_ids(cls, document_ids) -> set[str]:
+        ids = [document_id for document_id in document_ids if document_id]
+        if not ids:
+            return set()
+        return {
+            row.id
+            for row in cls.model.select(cls.model.id).where(
+                (cls.model.id.in_(ids)) & (cls.model.is_shadow == True)  # noqa: E712
+            )
+        }
+
+    @classmethod
     def get_cls_model_fields(cls):
         return [
             cls.model.id,
@@ -457,15 +470,9 @@ class DocumentService(CommonService):
     @DB.connection_context()
     def remove_document(cls, doc, tenant_id):
         from api.db.services.task_service import TaskService, cancel_all_task_of
-        from api.apps.services.document_markdown_service import DocumentMarkdownService
 
         if not cls.delete_document_and_update_kb_counts(doc.id):
             return True
-
-        try:
-            DocumentMarkdownService.delete_all(doc.id)
-        except Exception as e:
-            logging.warning(f"Failed to delete Markdown derivatives for document {doc.id}: {e}")
 
         chunk_index_name = search.index_name(tenant_id)
         chunk_index_exists = settings.docStoreConn.index_exist(chunk_index_name, doc.kb_id)

@@ -82,6 +82,59 @@ def _unwrapped_upload_document():
     return FileService.upload_document.__func__.__wrapped__
 
 
+def _unwrapped_new_a_file_from_kb():
+    return FileService.new_a_file_from_kb.__func__.__wrapped__
+
+
+@pytest.mark.p2
+def test_new_dataset_folder_does_not_require_an_active_document(monkeypatch):
+    class _Field:
+        def __eq__(self, _other):
+            return self
+
+        def __and__(self, _other):
+            return self
+
+        def asc(self):
+            return self
+
+    class _Query:
+        def where(self, *_expressions):
+            return self
+
+        def order_by(self, *_expressions):
+            return []
+
+    class _Model:
+        tenant_id = _Field()
+        parent_id = _Field()
+        name = _Field()
+        create_time = _Field()
+
+        @classmethod
+        def select(cls):
+            return _Query()
+
+    saved = {}
+    monkeypatch.setattr(FileService, "model", _Model)
+    monkeypatch.setattr(
+        FileService,
+        "save",
+        classmethod(lambda cls, **values: saved.update(values)),
+    )
+
+    created = _unwrapped_new_a_file_from_kb()(
+        FileService,
+        "tenant-1",
+        "temporary-dataset",
+        "knowledgebase-root",
+    )
+
+    assert created == saved
+    assert created["type"] == file_service_module.FileType.FOLDER.value
+    assert "active_document_id" not in created
+
+
 @pytest.mark.p2
 def test_upload_document_skips_cross_kb_document_id_collision(monkeypatch):
     kb = SimpleNamespace(
