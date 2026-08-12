@@ -29,6 +29,11 @@ from api.db.services.task_service import TaskService, queue_tasks
 from api.utils.api_utils import add_tenant_id_to_kwargs, get_error_data_result, get_result
 from common.constants import TaskStatus
 
+# Hybrid retrieval candidate pool size for semantic search: embed + bm25
+# recall this many candidates, then the reranker re-ranks them and the top
+# ``top_k`` requested by the caller are returned.
+_RECALL_TOP_K = 50
+
 
 def _actor_digest(tenant_id: str) -> str:
     return hashlib.sha256(tenant_id.encode()).hexdigest()
@@ -714,7 +719,7 @@ async def semantic_search(tenant_id: str, dataset_id: str):
             "question": query,
             "doc_ids": doc_ids,
             "size": top_k,
-            "top_k": top_k,
+            "top_k": _RECALL_TOP_K,
             "similarity_threshold": similarity_threshold,
             "vector_similarity_weight": service.search_vector_weight(mode, vector_similarity_weight),
         }

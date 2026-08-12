@@ -1053,7 +1053,22 @@ async def search(dataset_id: str, tenant_id: str, req: dict):
 
     rerank_mdl = None
     rerank_id = search_config.get("rerank_id") or req.get("rerank_id")
-    if rerank_id:
+    if not rerank_id:
+        # Default to the system-configured rerank model
+        # (user_default_llm.default_models.rerank_model, i.e. LOCAL_RERANK_MODEL=Qwen3-Reranker-4B)
+        # so retrieval paths without an explicit rerank_id still get reranking.
+        # The system default is resolved by get_model_config_from_provider_instance
+        # (its _configured_system_default branch), so no per-tenant model
+        # registration is required. A missing/broken configuration simply skips
+        # reranking, preserving the previous behaviour.
+        if settings.RERANK_MDL:
+            try:
+                default_rerank_config = get_model_config_from_provider_instance(kb.tenant_id, LLMType.RERANK.value, settings.RERANK_MDL)
+                rerank_mdl = LLMBundle(kb.tenant_id, default_rerank_config)
+            except Exception:
+                logging.warning("Default rerank model unavailable, skipping rerank", exc_info=True)
+                rerank_mdl = None
+    else:
         rerank_model_config = get_model_config_from_provider_instance(kb.tenant_id, LLMType.RERANK.value, rerank_id)
         rerank_mdl = LLMBundle(kb.tenant_id, rerank_model_config)
 
