@@ -3,8 +3,18 @@ from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
+import xxhash
 
-from api.apps.services.corpus_fs_service import CorpusFsError, CorpusFsService, EntryConflictError, MoveCycleError, NotFoundError, PreconditionRequiredError, RevisionConflictError, VersionNotFoundError
+from api.apps.services.corpus_fs_service import (
+    CorpusFsError,
+    CorpusFsService,
+    EntryConflictError,
+    MoveCycleError,
+    NotFoundError,
+    PreconditionRequiredError,
+    RevisionConflictError,
+    VersionNotFoundError,
+)
 from api.apps.services.document_markdown_service import DocumentMarkdownService, MarkdownVersionConflict, MarkdownVersionNotFound
 from api.apps.services.source_projection_service import SourceProjectionService
 from api.db.services.document_service import DocumentService
@@ -82,6 +92,69 @@ def test_uploaded_entries_are_resolved_by_document_id_after_automatic_rename(mon
             "size_bytes": 12,
         }
     ]
+
+
+def test_replace_original_requires_matching_hash_and_updates_source(monkeypatch):
+    service = CorpusFsService("tenant-1", "dataset-1", "actor")
+    source = b"old workbook"
+    replacement = b"new workbook"
+    current_hash = xxhash.xxh128(source).hexdigest()
+    entry = {
+        "kind": "file",
+        "path": "/files/report.xlsx",
+        "name": "report.xlsx",
+        "_file_id": "file-1",
+        "_document_id": "doc-1",
+        "_content_hash": current_hash,
+    }
+    document = {
+        "id": "doc-1",
+        "name": "report.xlsx",
+        "run": TaskStatus.DONE.value,
+    }
+    stored = {("bucket", "report.xlsx"): source}
+    updates = []
+
+    monkeypatch.setattr(service, "resolve_document", lambda _path: (entry, document))
+    monkeypatch.setattr(
+        File2DocumentService,
+        "get_storage_address",
+        classmethod(lambda _cls, **_kwargs: ("bucket", "report.xlsx")),
+    )
+    monkeypatch.setattr(
+        DocumentService,
+        "update_by_id",
+        classmethod(lambda _cls, document_id, values: updates.append((document_id, values))),
+    )
+    monkeypatch.setattr(
+        FileService,
+        "update_by_id",
+        classmethod(lambda _cls, file_id, values: updates.append((file_id, values))),
+    )
+
+    class Storage:
+        @staticmethod
+        def get(bucket, name):
+            return stored[(bucket, name)]
+
+        @staticmethod
+        def put(bucket, name, data):
+            stored[(bucket, name)] = data
+
+    monkeypatch.setattr(settings, "STORAGE_IMPL", Storage())
+
+    with pytest.raises(RevisionConflictError):
+        service.replace_original("/files/report.xlsx", replacement, "stale")
+
+    result = service.replace_original(
+        "/files/report.xlsx", replacement, current_hash
+    )
+
+    assert stored[("bucket", "report.xlsx")] == replacement
+    assert result["path"] == "/files/report.xlsx"
+    assert result["content_hash"] == xxhash.xxh128(replacement).hexdigest()
+    assert ("doc-1", {"size": len(replacement), "content_hash": result["content_hash"]}) in updates
+    assert ("file-1", {"size": len(replacement)}) in updates
 
 
 def test_projection_has_one_canonical_files_root(monkeypatch):

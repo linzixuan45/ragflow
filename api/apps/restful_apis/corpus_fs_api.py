@@ -308,6 +308,35 @@ async def upload(tenant_id: str, dataset_id: str):
         return _error(error)
 
 
+@manager.route("/datasets/<dataset_id>/fs/entries/file", methods=["PUT"])  # noqa: F821
+@login_required
+@add_tenant_id_to_kwargs
+async def replace_file(tenant_id: str, dataset_id: str):
+    try:
+        service = _service(tenant_id, dataset_id, require_delegation=True)
+        form = await request.form
+        path = form.get("path")
+        expected_content_hash = form.get("expected_content_hash")
+        files = await request.files
+        file_obj = files.get("file") if "file" in files else None
+        if not path or not expected_content_hash or file_obj is None:
+            raise CorpusFsError("path, expected_content_hash and file are required")
+        content = file_obj.read()
+        if not content:
+            raise CorpusFsError("file is empty")
+        with service.content_mutation(_expected_revision()):
+            entry = service.replace_original(path, content, expected_content_hash)
+            try:
+                parse = service.retry_parse(path)
+                entry["parse_status"] = parse["status"]
+            except Exception as exc:  # noqa: BLE001 - the source save succeeds even if any queue backend fails
+                entry["parse_status"] = "FAILED"
+                entry["parse_message"] = str(exc)
+        return _success(service, entry)
+    except (CorpusFsError, CorpusPathError) as error:
+        return _error(error)
+
+
 @manager.route("/datasets/<dataset_id>/fs/entries/move", methods=["POST"])  # noqa: F821
 @login_required
 @add_tenant_id_to_kwargs

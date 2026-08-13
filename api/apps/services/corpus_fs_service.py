@@ -10,11 +10,12 @@ from collections import defaultdict
 from contextlib import contextmanager
 from typing import Any
 
+import xxhash
 from peewee import OperationalError, ProgrammingError
 
 from api.apps.services.corpus_path_service import AmbiguousPathError, CorpusPathRegistry, CorpusPathResolver
-from api.apps.services.document_markdown_service import DocumentMarkdownService, MarkdownVersionConflict, MarkdownVersionNotFound
 from api.apps.services.corpus_secret_service import corpus_secret
+from api.apps.services.document_markdown_service import DocumentMarkdownService, MarkdownVersionConflict, MarkdownVersionNotFound
 from api.apps.services.source_projection_service import SourceProjectionService
 from api.common.check_team_permission import check_file_team_permission, check_kb_team_permission
 from api.db import FileType
@@ -375,6 +376,41 @@ class CorpusFsService:
                 raise CorpusFsError("uploaded document is not visible")
             uploaded.append(self.public_entry(entry))
         return uploaded
+
+    def replace_original(
+        self, path: str, content: bytes, expected_content_hash: str
+    ) -> dict:
+        entry, document = self.resolve_document(path)
+        current_hash = str(entry.get("_content_hash") or "")
+        if not expected_content_hash or current_hash != expected_content_hash:
+            raise RevisionConflictError("source file changed")
+        if str(document.get("run")) == TaskStatus.RUNNING.value:
+            raise EntryConflictError("document is being parsed")
+
+        bucket, object_name = File2DocumentService.get_storage_address(
+            file_id=entry["_file_id"]
+        )
+        previous = settings.STORAGE_IMPL.get(bucket, object_name)
+        if previous is None:
+            raise NotFoundError("source object not found")
+        content_hash = xxhash.xxh128(content).hexdigest()
+        try:
+            settings.STORAGE_IMPL.put(bucket, object_name, content)
+            DocumentService.update_by_id(
+                document["id"],
+                {"size": len(content), "content_hash": content_hash},
+            )
+            FileService.update_by_id(entry["_file_id"], {"size": len(content)})
+        except Exception:
+            settings.STORAGE_IMPL.put(bucket, object_name, previous)
+            raise
+        return {
+            "kind": "file",
+            "path": entry["path"],
+            "name": entry["name"],
+            "size_bytes": len(content),
+            "content_hash": content_hash,
+        }
 
     @staticmethod
     def _file_entry(path: str, name: str, doc: dict, file: dict | None) -> dict:
