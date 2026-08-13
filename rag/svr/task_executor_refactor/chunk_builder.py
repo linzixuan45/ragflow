@@ -33,9 +33,10 @@ from rag.svr.task_executor_refactor.task_context import TaskContext
 from api.db.services.doc_metadata_service import DocMetadataService
 from common.metadata_utils import update_metadata_to
 from rag.utils.table_es_metadata import merge_table_parser_config_from_kb
+from rag.app.parser_router import effective_parser_id
 
 
-def get_parser(parser_id: str):
+def get_parser(parser_id: str, filename: str = ""):
     """Get parser module by ID.
 
     Args:
@@ -64,7 +65,7 @@ def get_parser(parser_id: str):
         ParserType.KG.value: naive,
         ParserType.TAG.value: tag,
     }
-    return factory[parser_id.lower()]
+    return factory[effective_parser_id(parser_id, filename).lower()]
 
 
 async def run_chunking(

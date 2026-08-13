@@ -667,6 +667,12 @@ class FileService(CommonService):
 
     @staticmethod
     def get_parser(doc_type, filename, default):
+        from common.mineru_formats import is_mineru_file
+        from rag.app.parser_router import effective_parser_id
+
+        parser_id = effective_parser_id(default, filename)
+        if is_mineru_file(filename):
+            return parser_id
         if doc_type == FileType.VISUAL:
             return ParserType.PICTURE.value
         if doc_type == FileType.AURAL:
@@ -675,7 +681,7 @@ class FileService(CommonService):
             return ParserType.PRESENTATION.value
         if re.search(r"\.(msg|eml)$", filename):
             return ParserType.EMAIL.value
-        return default
+        return parser_id
 
     @staticmethod
     def get_blob(user_id, location):

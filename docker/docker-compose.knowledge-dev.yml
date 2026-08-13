@@ -63,6 +63,7 @@ services:
       - ../api/db/services/file_service.py:/ragflow/api/db/services/file_service.py:ro
       - ../api/db/db_models.py:/ragflow/api/db/db_models.py:ro
       - ../common/misc_utils.py:/ragflow/common/misc_utils.py:ro
+      - ../common/mineru_formats.py:/ragflow/common/mineru_formats.py:ro
       - ../common/onnx_utils.py:/ragflow/common/onnx_utils.py:ro
       - ../common/settings.py:/ragflow/common/settings.py:ro
       - ../deepdoc/parser/mineru_parser.py:/ragflow/deepdoc/parser/mineru_parser.py:ro
@@ -76,9 +77,11 @@ services:
       - ../rag/utils/mineru_adapter.py:/ragflow/rag/utils/mineru_adapter.py:ro
       - ../rag/utils/source_projection.py:/ragflow/rag/utils/source_projection.py:ro
       - ../rag/app/naive.py:/ragflow/rag/app/naive.py:ro
+      - ../rag/app/parser_router.py:/ragflow/rag/app/parser_router.py:ro
       - ../rag/flow/parser/parser.py:/ragflow/rag/flow/parser/parser.py:ro
       - ../rag/flow/parser/utils.py:/ragflow/rag/flow/parser/utils.py:ro
       - ../rag/svr/task_executor.py:/ragflow/rag/svr/task_executor.py:ro
+      - ../rag/svr/task_executor_refactor/chunk_builder.py:/ragflow/rag/svr/task_executor_refactor/chunk_builder.py:ro
       - ../rag/svr/task_executor_refactor/chunk_service.py:/ragflow/rag/svr/task_executor_refactor/chunk_service.py:ro
       - ../rag/svr/task_executor_refactor/task_handler.py:/ragflow/rag/svr/task_executor_refactor/task_handler.py:ro
       - ../rag/svr/task_executor_refactor/dataflow_service.py:/ragflow/rag/svr/task_executor_refactor/dataflow_service.py:ro

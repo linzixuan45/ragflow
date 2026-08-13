@@ -109,7 +109,7 @@ func (ParserParam) Defaults() ParserParam {
 		},
 		Setups: map[string]ParserSetup{
 			"pdf": {
-				"parse_method":          "deepdoc",
+				"parse_method":          "MinerU",
 				"lang":                  "Chinese",
 				"flatten_media_to_text": false,
 				"remove_toc":            false,
@@ -130,6 +130,7 @@ func (ParserParam) Defaults() ParserParam {
 				"output_format":        "json",
 			},
 			"docx": {
+				"parse_method":          "MinerU",
 				"flatten_media_to_text": false,
 				"remove_toc":            false,
 				"remove_header_footer":  false,
@@ -161,11 +162,11 @@ func (ParserParam) Defaults() ParserParam {
 				"output_format": "json",
 			},
 			"image": {
-				"parse_method":  "ocr",
+				"parse_method":  "MinerU",
 				"llm_id":        "",
 				"lang":          "Chinese",
 				"system_prompt": "",
-				"suffix":        []string{"jpg", "jpeg", "png", "gif"},
+				"suffix":        []string{"png", "jpeg", "jp2", "webp", "gif", "bmp", "jpg", "tiff"},
 				"output_format": "json",
 			},
 			"email": {

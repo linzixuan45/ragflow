@@ -498,6 +498,81 @@ def test_mineru_request_uses_high_quality_structured_image_output(monkeypatch, t
     assert request_data["return_model_output"] is False
 
 
+@pytest.mark.parametrize(
+    ("suffix", "expected_mime"),
+    [
+        ("pdf", "application/pdf"),
+        ("png", "image/png"),
+        ("jpeg", "image/jpeg"),
+        ("jpg", "image/jpeg"),
+        ("jp2", "image/jp2"),
+        ("webp", "image/webp"),
+        ("gif", "image/gif"),
+        ("bmp", "image/bmp"),
+        ("tiff", "image/tiff"),
+        ("docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+        ("pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"),
+        ("xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+    ],
+)
+def test_mineru_request_preserves_input_filename_and_mime(monkeypatch, tmp_path, suffix, expected_mime):
+    module = _load_mineru_parser(monkeypatch)
+    parser = module.MinerUParser(mineru_api="http://mineru.example")
+    input_path = tmp_path / f"sample.{suffix}"
+    input_path.write_bytes(b"input")
+    uploaded = {}
+
+    class ZipResponse:
+        headers = {"Content-Type": "application/zip"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def raise_for_status(self):
+            return None
+
+        raw = __import__("io").BytesIO(b"zip")
+
+    def post(**kwargs):
+        filename, _stream, mime_type = kwargs["files"]["files"]
+        uploaded.update(filename=filename, mime_type=mime_type)
+        return ZipResponse()
+
+    monkeypatch.setattr(module.requests, "post", post)
+    monkeypatch.setattr(parser, "_extract_zip_no_root", lambda *_args, **_kwargs: None)
+
+    parser._run_mineru_api(input_path, tmp_path, module.MinerUParseOptions())
+
+    assert uploaded == {"filename": input_path.name, "mime_type": expected_mime}
+
+
+def test_parse_non_pdf_skips_pdf_only_processing(monkeypatch, tmp_path):
+    module = _load_mineru_parser(monkeypatch)
+    parser = module.MinerUParser()
+    captured = {}
+
+    monkeypatch.setattr(module, "extract_pdf_outlines", lambda *_args: (_ for _ in ()).throw(AssertionError("PDF outline extraction called")))
+    monkeypatch.setattr(parser, "__images__", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("PDF rendering called")))
+
+    def capture_run(input_path, output_dir, options, callback=None):
+        captured["suffix"] = input_path.suffix
+        captured["options"] = options
+        return output_dir
+
+    monkeypatch.setattr(parser, "_run_mineru", capture_run)
+    monkeypatch.setattr(parser, "_read_output", lambda *_args, **_kwargs: [])
+
+    parser.parse_pdf("report.docx", binary=b"PK", output_dir=str(tmp_path))
+
+    assert captured["suffix"] == ".docx"
+    assert parser.outlines == []
+    assert parser.page_images is None
+    assert parser.page_sizes == []
+
+
 def test_transfer_to_tables_preserves_mineru_image_and_global_position(monkeypatch, tmp_path):
     module = _load_mineru_parser(monkeypatch)
     parser = module.MinerUParser()

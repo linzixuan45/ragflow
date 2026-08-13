@@ -16,24 +16,25 @@
 import logging
 import os
 import random
-import xxhash
 from datetime import datetime
 
-from api.db.db_utils import bulk_insert_into_db
-from deepdoc.parser import PdfParser
+import xxhash
 from peewee import JOIN
-from api.db.db_models import DB, File2Document, File
+
 from api.db import FileType
-from api.db.db_models import Task, Document, Knowledgebase, Tenant
+from api.db.db_models import DB, Document, File, File2Document, Knowledgebase, Task, Tenant
+from api.db.db_utils import bulk_insert_into_db
 from api.db.services.common_service import CommonService
 from api.db.services.document_service import DocumentService
+from common import settings
+from common.constants import MAXIMUM_PAGE_NUMBER, MAXIMUM_TASK_PAGE_NUMBER, StatusEnum, TaskStatus
 from common.misc_utils import get_uuid
 from common.time_utils import current_timestamp, get_format_time
-from common.constants import StatusEnum, TaskStatus, MAXIMUM_PAGE_NUMBER, MAXIMUM_TASK_PAGE_NUMBER
+from deepdoc.parser import PdfParser
 from deepdoc.parser.excel_parser import RAGFlowExcelParser
-from rag.utils.redis_conn import REDIS_CONN
-from common import settings
+from rag.app.parser_router import uses_table_row_tasks
 from rag.nlp import search
+from rag.utils.redis_conn import REDIS_CONN
 
 CANVAS_DEBUG_DOC_ID = "dataflow_x"
 GRAPH_RAPTOR_FAKE_DOC_ID = "graph_raptor_x"
@@ -482,7 +483,7 @@ def queue_tasks(doc: dict, bucket: str, name: str, priority: int):
                 task["to_page"] = min(p + page_size, e)
                 parse_task_array.append(task)
 
-    elif doc["parser_id"] == "table":
+    elif uses_table_row_tasks(doc["parser_id"], doc["name"]):
         file_bin = settings.STORAGE_IMPL.get(bucket, name)
         rn = RAGFlowExcelParser.row_number(doc["name"], file_bin)
         for i in range(0, rn, 3000):

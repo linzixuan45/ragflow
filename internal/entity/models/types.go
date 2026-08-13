@@ -205,6 +205,7 @@ type OCRConfig struct {
 }
 
 type ParseFileConfig struct {
+	Filename      string
 	Effort        string
 	ImageAnalysis *bool
 }

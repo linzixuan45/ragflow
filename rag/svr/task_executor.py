@@ -108,6 +108,7 @@ from rag.utils.table_es_metadata import (
 )
 from rag.nlp import search as nlp_search
 from rag.utils.chunk_metrics import summarize_chunk_tokens
+from rag.app.parser_router import effective_parser_id
 
 BATCH_SIZE = 64
 
@@ -287,7 +288,7 @@ async def build_chunks(task, progress_callback):
     get_recording_context().record("file_size_exceeded", False)
     get_recording_context().record("parser_id", task["parser_id"])
 
-    chunker = FACTORY[task["parser_id"].lower()]
+    chunker = FACTORY[effective_parser_id(task["parser_id"], task["name"]).lower()]
     try:
         st = timer()
         bucket, name = File2DocumentService.get_storage_address(doc_id=task["doc_id"])

@@ -26,12 +26,23 @@ package component
 import (
 	"fmt"
 	"maps"
+	"path/filepath"
 	"strings"
 
 	"ragflow/internal/ingestion/component/schema"
 	"ragflow/internal/parser/parser"
 	"ragflow/internal/utility"
 )
+
+var minerUInputSuffixes = map[string]struct{}{
+	".pdf": {}, ".png": {}, ".jpeg": {}, ".jp2": {}, ".webp": {}, ".gif": {},
+	".bmp": {}, ".jpg": {}, ".tiff": {}, ".docx": {}, ".pptx": {}, ".xlsx": {},
+}
+
+func isMinerUInput(filename string) bool {
+	_, ok := minerUInputSuffixes[strings.ToLower(filepath.Ext(filename))]
+	return ok
+}
 
 // parserDispatchResult is the typed outcome of dispatchParse. The
 // component's Invoke translates it into the runtime output map.
@@ -157,6 +168,24 @@ func resolveLibType(fileType utility.FileType, setups map[string]schema.ParserSe
 // supply a filename; the dispatch then takes text-page mode
 // without consulting parser.GetParser.
 func dispatchParse(fileType utility.FileType, filename string, data []byte, setups map[string]schema.ParserSetup) parserDispatchResult {
+	if isMinerUInput(filename) {
+		p := parser.NewPDFParser()
+		if setup, ok := setups["pdf"]; ok {
+			p.ConfigureFromSetup(map[string]any(setup))
+		}
+		p.ParseMethod = "mineru"
+		p.OutputFormat = "json"
+		res := p.ParseWithResult(filename, data)
+		if res.Err != nil {
+			return parserDispatchResult{Err: fmt.Errorf("Parser: MinerU %q: %w", filename, res.Err)}
+		}
+		return parserDispatchResult{
+			OutputFormat: res.OutputFormat,
+			File:         res.File,
+			JSON:         res.JSON,
+			Markdown:     res.Markdown,
+		}
+	}
 	if fileType == utility.FileTypeOTHER {
 		// Unknown / unset family. The component treats the bytes
 		// as text pages; the existing logic

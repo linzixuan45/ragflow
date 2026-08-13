@@ -62,6 +62,12 @@ class TestGetParser:
         parser = get_parser(ParserType.KG.value)
         assert parser is not None
 
+    @pytest.mark.parametrize("filename", ["scan.png", "slides.pptx", "sheet.xlsx", "report.pdf"])
+    def test_mineru_inputs_use_naive_chunker(self, filename):
+        from rag.app import naive
+
+        assert get_parser("picture", filename) is naive
+
 
 class TestRunChunking:
     """Tests for run_chunking function."""

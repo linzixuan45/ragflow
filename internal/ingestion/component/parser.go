@@ -302,7 +302,7 @@ func (c *ParserComponent) Invoke(ctx context.Context, inputs map[string]any) (ma
 	}
 	// Known/supported families must fail loudly when dispatch or
 	// parsing breaks. Only unknown families keep the raw-text fallback.
-	if dispatched.Err != nil && fileTypeExt != utility.FileTypeOTHER {
+	if dispatched.Err != nil && (fileTypeExt != utility.FileTypeOTHER || isMinerUInput(filename)) {
 		return nil, dispatched.Err
 	}
 

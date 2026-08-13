@@ -37,6 +37,7 @@ from api.db.services.file_service import FileService
 from api.db.services.llm_service import LLMBundle
 from common import settings
 from common.constants import LLMType
+from common.mineru_formats import IMAGE_SUFFIXES, is_mineru_file
 from common.misc_utils import get_uuid, thread_pool_exec
 from deepdoc.parser import ExcelParser, HtmlParser, TxtParser
 from deepdoc.parser.docling_parser import DoclingParser
@@ -120,7 +121,7 @@ class ParserParam(ProcessParamBase):
 
         self.setups = {
             "pdf": {
-                "parse_method": "deepdoc",  # deepdoc/plain_text/tcadp_parser/vlm
+                "parse_method": "MinerU",
                 "lang": "Chinese",
                 "flatten_media_to_text": False,
                 "remove_toc": False,
@@ -131,7 +132,7 @@ class ParserParam(ProcessParamBase):
                 "output_format": "json",
             },
             "spreadsheet": {
-                "parse_method": "deepdoc",  # deepdoc/tcadp_parser
+                "parse_method": "deepdoc",  # xlsx is intercepted by MinerU; xls/csv stay here
                 "flatten_media_to_text": False,
                 "output_format": "html",
                 "suffix": [
@@ -149,6 +150,7 @@ class ParserParam(ProcessParamBase):
                 "output_format": "json",
             },
             "docx": {
+                "parse_method": "MinerU",
                 "flatten_media_to_text": False,
                 "remove_toc": False,
                 "remove_header_footer": False,
@@ -189,7 +191,7 @@ class ParserParam(ProcessParamBase):
                 "output_format": "json",
             },
             "slides": {
-                "parse_method": "deepdoc",  # deepdoc/tcadp_parser
+                "parse_method": "deepdoc",  # pptx is intercepted by MinerU; ppt stays here
                 "suffix": [
                     "pptx",
                     "ppt",
@@ -197,11 +199,11 @@ class ParserParam(ProcessParamBase):
                 "output_format": "json",
             },
             "image": {
-                "parse_method": "ocr",
+                "parse_method": "MinerU",
                 "llm_id": "",
                 "lang": "Chinese",
                 "system_prompt": "",
-                "suffix": ["jpg", "jpeg", "png", "gif"],
+                "suffix": list(IMAGE_SUFFIXES),
                 "output_format": "json",
             },
             "email": {
@@ -327,6 +329,59 @@ class ParserParam(ProcessParamBase):
 
 class Parser(ProcessBase):
     component_name = "Parser"
+
+    def _mineru(self, name, blob, **kwargs):
+        """Parse every MinerU-supported input into the shared JSON block contract."""
+        self.callback(random.randint(1, 5) / 100.0, "Start to parse with MinerU.")
+        conf = self._param.setups["pdf"]
+
+        configured = conf.get("mineru_llm_name")
+        suffix = name.rsplit(".", 1)[-1].lower()
+        family_conf = next((setup for setup in self._param.setups.values() if suffix in setup.get("suffix", [])), conf)
+        for setup in (family_conf, conf):
+            parse_method = setup.get("parse_method")
+            if isinstance(parse_method, str) and parse_method.lower().endswith("@mineru"):
+                configured = parse_method
+                break
+
+        tenant_id = self._canvas._tenant_id
+        mineru_llm_name = configured
+        if not mineru_llm_name and tenant_id:
+            mineru_llm_name = get_first_provider_model_name(tenant_id, "MinerU", LLMType.OCR) or ensure_mineru_from_env(tenant_id)
+        if not mineru_llm_name:
+            raise RuntimeError("MinerU model not configured. Please add MinerU in Model Providers or set MINERU_* env.")
+
+        ocr_model_config = get_model_config_from_provider_instance(tenant_id, LLMType.OCR, mineru_llm_name)
+        mineru_parser = LLMBundle(tenant_id, ocr_model_config, lang=conf.get("lang", "Chinese")).mdl
+        lines, media = mineru_parser.parse_pdf(
+            filepath=name,
+            binary=blob,
+            callback=self.callback,
+            parse_method="pipeline",
+            lang=conf.get("lang", "Chinese"),
+        )
+        boxes = mineru_pipeline_boxes(mineru_parser, lines, media)
+        for box in boxes:
+            layout = re.sub(r"\s+", " ", str(box.get("layout_type") or "text").strip()) or "text"
+            box["layout_type"] = "figure" if layout == "image" else layout
+            if box["layout_type"] == "table":
+                box["doc_type_kwd"] = "table"
+            elif box["layout_type"] == "figure":
+                box["doc_type_kwd"] = "image"
+            else:
+                box["doc_type_kwd"] = "text"
+
+        enhance_media_sections_with_vision(
+            boxes,
+            tenant_id,
+            conf.get("vlm"),
+            callback=self.callback,
+        )
+        if name.lower().endswith(".pdf"):
+            normalize_pdf_items_metadata(boxes)
+        self.set_output("output_format", "json")
+        self.set_output("file", {**kwargs.get("file", {}), "outlines": getattr(mineru_parser, "outlines", [])})
+        self.set_output("json", boxes)
 
     def _pdf(self, name, blob, **kwargs):
         """Parse PDF files into structured boxes or markdown/json output."""
@@ -1315,15 +1370,12 @@ class Parser(ProcessBase):
     async def _invoke(self, **kwargs):
         """Dispatch the current file to the matching parser branch by suffix."""
         function_map = {
-            "pdf": self._pdf,
             "markdown": self._markdown,
             "text&code": self._code,
             "html": self._html,
             "spreadsheet": self._spreadsheet,
             "slides": self._slides,
             "doc": self._doc,
-            "docx": self._docx,
-            "image": self._image,
             "audio": self._audio,
             "video": self._video,
             "email": self._email,
@@ -1343,17 +1395,28 @@ class Parser(ProcessBase):
         else:
             blob = FileService.get_blob(from_upstream.file["created_by"], from_upstream.file["id"])
 
-        done = False
-        for p_type, conf in self._param.setups.items():
-            if from_upstream.name.split(".")[-1].lower() not in conf.get("suffix", []):
-                continue
+        if is_mineru_file(name):
             call_kwargs = dict(kwargs)
             call_kwargs.pop("name", None)
             call_kwargs.pop("blob", None)
-
-            await thread_pool_exec(function_map[p_type], name, blob, **call_kwargs)
+            await thread_pool_exec(self._mineru, name, blob, **call_kwargs)
             done = True
-            break
+        else:
+            done = False
+
+            for p_type, conf in self._param.setups.items():
+                function = function_map.get(p_type)
+                if function is None:
+                    continue
+                if from_upstream.name.split(".")[-1].lower() not in conf.get("suffix", []):
+                    continue
+                call_kwargs = dict(kwargs)
+                call_kwargs.pop("name", None)
+                call_kwargs.pop("blob", None)
+
+                await thread_pool_exec(function, name, blob, **call_kwargs)
+                done = True
+                break
 
         if not done:
             raise Exception("No suitable for file extension: `.%s`" % from_upstream.name.split(".")[-1].lower())

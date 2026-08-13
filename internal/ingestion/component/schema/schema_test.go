@@ -141,8 +141,8 @@ func TestParserParamDefaults(t *testing.T) {
 			t.Errorf("default Setups missing key %q", key)
 		}
 	}
-	if got := p.Setups["pdf"]["parse_method"]; got != "deepdoc" {
-		t.Errorf("default pdf parse_method = %v, want deepdoc", got)
+	if got := p.Setups["pdf"]["parse_method"]; got != "MinerU" {
+		t.Errorf("default pdf parse_method = %v, want MinerU", got)
 	}
 	if got := p.AllowedOutputFormat["pdf"]; len(got) != 2 || got[0] != "json" || got[1] != "markdown" {
 		t.Errorf("default pdf allowed_output_format = %v, want [json markdown]", got)
@@ -162,7 +162,7 @@ func TestParserParamJSONRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if decoded.Setups["pdf"]["parse_method"] != "deepdoc" {
+	if decoded.Setups["pdf"]["parse_method"] != "MinerU" {
 		t.Errorf("round-trip lost default pdf parse_method: got %v", decoded.Setups["pdf"]["parse_method"])
 	}
 }

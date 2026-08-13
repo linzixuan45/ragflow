@@ -14,7 +14,7 @@ func (p *PDFParser) ParseWithResult(filename string, data []byte) ParseResult {
 	case "plain_text":
 		return parsePDFWithPlainText(filename, data, p)
 	case "mineru":
-		return parsePDFWithMinerU(filename, data, p)
+		return parseWithMinerU(filename, data, p)
 	case "paddleocr":
 		return parsePDFWithPaddleOCR(filename, data, p)
 	case "docling":

@@ -21,10 +21,8 @@ from functools import reduce
 from io import BytesIO
 from timeit import default_timer as timer
 from docx import Document
-from docx.opc.pkgreader import _SerializedRelationships, _SerializedRelationship
 from docx.table import Table as DocxTable
 from docx.text.paragraph import Paragraph
-from docx.opc.oxml import parse_xml
 from markdown import markdown
 from PIL import Image
 from common.token_utils import num_tokens_from_string
@@ -42,22 +40,21 @@ from api.db.joint_services.tenant_model_service import (
 from rag.utils.file_utils import extract_embed_file, extract_links_from_pdf, extract_links_from_docx, extract_html
 from rag.utils.source_projection import source_projection_blocks as build_source_projection_blocks
 from deepdoc.parser import DocxParser, EpubParser, ExcelParser, HtmlParser, JsonParser, MarkdownElementExtractor, MarkdownParser, PdfParser, TxtParser
-from deepdoc.parser.figure_parser import VisionFigureParser, vision_figure_parser_docx_wrapper_naive, vision_figure_parser_pdf_wrapper
+from deepdoc.parser.figure_parser import VisionFigureParser, vision_figure_parser_pdf_wrapper
 from deepdoc.parser.pdf_parser import PlainParser, VisionParser
 from deepdoc.parser.docling_parser import DoclingParser
 from deepdoc.parser.tcadp_parser import TCADPParser
 from common.float_utils import normalize_overlapped_percent
 from common.parser_config_utils import normalize_layout_recognizer
+from common.mineru_formats import file_suffix, is_mineru_file
 from common.text_utils import normalize_arabic_presentation_forms
 from rag.nlp import (
     concat_img,
     find_codec,
     naive_merge,
     naive_merge_with_images,
-    naive_merge_docx,
     rag_tokenizer,
     tokenize_chunks,
-    doc_tokenize_chunks_with_images,
     tokenize_table,
     append_context2table_image4pdf,
     tokenize_chunks_with_images,
@@ -192,7 +189,7 @@ def by_mineru(
 
     if callback:
         callback(-1, failure_reason)
-    return None, None, None
+    raise RuntimeError(failure_reason)
 
 
 def by_docling(filename, binary=None, from_page=0, to_page=MAXIMUM_PAGE_NUMBER, lang="Chinese", callback=None, pdf_cls=None, **kwargs):
@@ -895,22 +892,6 @@ class Markdown(MarkdownParser):
         return sections, tbls
 
 
-def load_from_xml_v2(baseURI, rels_item_xml):
-    """
-    Return |_SerializedRelationships| instance loaded with the
-    relationships contained in *rels_item_xml*. Returns an empty
-    collection if *rels_item_xml* is |None|.
-    """
-    srels = _SerializedRelationships()
-    if rels_item_xml is not None:
-        rels_elm = parse_xml(rels_item_xml)
-        for rel_elm in rels_elm.Relationship_lst:
-            if rel_elm.target_ref in ("../NULL", "NULL") or rel_elm.target_ref.startswith("#"):
-                continue
-            srels._srels.append(_SerializedRelationship(baseURI, rel_elm))
-    return srels
-
-
 def chunk(filename, binary=None, from_page=0, to_page=MAXIMUM_PAGE_NUMBER, lang="Chinese", callback=None, **kwargs):
     """
     Supported file formats are docx, pdf, excel, txt.
@@ -965,96 +946,49 @@ def chunk(filename, binary=None, from_page=0, to_page=MAXIMUM_PAGE_NUMBER, lang=
                     callback(0.05, error_msg)
                 continue
 
-    if re.search(r"\.docx$", filename, re.IGNORECASE):
-        callback(0.1, "Start to parse.")
+    if is_mineru_file(filename):
+        suffix = file_suffix(filename)
         if parser_config.get("analyze_hyperlink", False) and is_root:
-            urls = extract_links_from_docx(binary)
-            for index, url in enumerate(urls):
-                html_bytes, metadata = extract_html(url)
-                if not html_bytes:
-                    continue
-                try:
-                    sub_url_res = chunk(url, html_bytes, callback=callback, lang=lang, is_root=False, **kwargs)
-                except Exception as e:
-                    logging.info(f"Failed to chunk url in registered file type {url}: {e}")
-                    sub_url_res = chunk(f"{index}.html", html_bytes, callback=callback, lang=lang, is_root=False, **kwargs)
-                url_res.extend(sub_url_res)
+            if suffix == "pdf":
+                urls = extract_links_from_pdf(binary)
+            elif suffix == "docx":
+                urls = extract_links_from_docx(binary)
 
-        # fix "There is no item named 'word/NULL' in the archive", referring to https://github.com/python-openxml/python-docx/issues/1105#issuecomment-1298075246
-        _SerializedRelationships.load_from_xml = load_from_xml_v2
+        layout_recognizer, parser_model_name = normalize_layout_recognizer(parser_config.get("layout_recognize", "MinerU"))
+        if layout_recognizer == "MinerU":
+            mineru_llm_name = parser_model_name
+        else:
+            mineru_llm_name = None
 
-        # sections = (text, image, tables)
-        sections = Docx()(filename, binary)
-        sections = _normalize_section_text_for_rtl_presentation_forms(sections)
-
-        # chunks list[dict]
-        # images list - index of image chunk in chunks
-        chunks, images = naive_merge_docx(sections, int(parser_config.get("chunk_token_num", 128)), parser_config.get("delimiter", "\n!?。；！？"), table_context_size, image_context_size)
-
-        vision_figure_parser_docx_wrapper_naive(chunks=chunks, idx_lst=images, callback=callback, **kwargs)
-
-        callback(0.8, "Finish parsing.")
-        st = timer()
-
-        res.extend(doc_tokenize_chunks_with_images(chunks, doc, is_english, child_delimiters_pattern=child_deli, language=lang))
-        logging.info("naive_merge({}): {}".format(filename, timer() - st))
-        res.extend(embed_res)
-        res.extend(url_res)
-        return res
-
-    elif re.search(r"\.pdf$", filename, re.IGNORECASE):
-        layout_recognizer, parser_model_name = normalize_layout_recognizer(parser_config.get("layout_recognize", "DeepDOC"))
-        opendataloader_llm_name = kwargs.pop("opendataloader_llm_name", None)
-        if layout_recognizer == "OpenDataLoader" and parser_model_name:
-            opendataloader_llm_name = parser_model_name
-
-        if parser_config.get("analyze_hyperlink", False) and is_root:
-            urls = extract_links_from_pdf(binary)
-
-        if isinstance(layout_recognizer, bool):
-            layout_recognizer = "DeepDOC" if layout_recognizer else "PlainText"
-
-        name = layout_recognizer.strip().lower()
-        parser = PARSERS.get(name, by_plaintext)
-        callback(0.1, "Start to parse.")
-
-        sections, tables, pdf_parser = parser(
+        callback(0.1, "Start to parse with MinerU.")
+        sections, tables, pdf_parser = by_mineru(
             filename=filename,
             binary=binary,
             from_page=from_page,
             to_page=to_page,
             lang=lang,
             callback=callback,
-            layout_recognizer=layout_recognizer,
-            mineru_llm_name=parser_model_name,
-            paddleocr_llm_name=parser_model_name,
-            opendataloader_llm_name=opendataloader_llm_name,
-            somark_llm_name=parser_model_name,
+            mineru_llm_name=mineru_llm_name,
             **kwargs,
         )
         sections = _normalize_section_text_for_rtl_presentation_forms(sections)
         projection_sections = _normalize_section_text_for_rtl_presentation_forms(
             getattr(pdf_parser, "source_projection_sections", sections)
         )
-
         if not sections and not tables:
             return []
 
         source_projection_blocks = build_source_projection_blocks(
             projection_sections,
             tables,
-            section_page_offset=from_page if name in {"deepdoc", "mineru"} else 0,
+            section_page_offset=from_page,
         )
-
         if table_context_size or image_context_size:
             tables = append_context2table_image4pdf(sections, tables, image_context_size)
-
-        if name in ["tcadp", "docling", "mineru", "paddleocr", "opendataloader", "somark"]:
-            if int(parser_config.get("chunk_token_num", 0)) <= 0:
-                parser_config["chunk_token_num"] = 0
-
+        if int(parser_config.get("chunk_token_num", 0)) <= 0:
+            parser_config["chunk_token_num"] = 0
         res = tokenize_table(tables, doc, is_english, language=lang)
-        callback(0.8, "Finish parsing.")
+        callback(0.8, "Finish parsing with MinerU.")
 
     elif re.search(r"\.(csv|xlsx?)$", filename, re.IGNORECASE):
         callback(0.1, "Start to parse.")

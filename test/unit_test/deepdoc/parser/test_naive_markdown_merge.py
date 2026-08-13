@@ -129,18 +129,36 @@ def test_by_mineru_reports_parser_failure():
         "LLMBundle": lambda **_kwargs: Bundle(),
         "get_tenant_default_model_by_type": lambda *_args: (_ for _ in ()).throw(LookupError("not configured")),
     }
-    exec(compile(ast.Module(body=[function], type_ignores=[]), str(source_path), "exec"), namespace)
+    exec(compile(ast.Module(body=[function], type_ignores=[]), str(source_path), "exec"), namespace)  # noqa: S102
     progress = []
 
-    result = namespace["by_mineru"](
-        "sample.pdf",
-        binary=b"%PDF",
-        tenant_id="tenant",
-        callback=lambda progress_value, message: progress.append((progress_value, message)),
-    )
+    with pytest.raises(RuntimeError, match="MinerU API returned 400: invalid hybrid backend"):
+        namespace["by_mineru"](
+            "sample.pdf",
+            binary=b"%PDF",
+            tenant_id="tenant",
+            callback=lambda progress_value, message: progress.append((progress_value, message)),
+        )
 
-    assert result == (None, None, None)
     assert progress[-1] == (-1, "MinerU API returned 400: invalid hybrid backend")
+
+
+def test_by_mineru_raises_when_model_is_not_configured():
+    source_path = _REPO / "rag" / "app" / "naive.py"
+    parsed = ast.parse(source_path.read_text(encoding="utf-8"))
+    function = next(node for node in parsed.body if isinstance(node, ast.FunctionDef) and node.name == "by_mineru")
+    namespace = {"logging": logging, "MAXIMUM_PAGE_NUMBER": 100000}
+    exec(compile(ast.Module(body=[function], type_ignores=[]), str(source_path), "exec"), namespace)  # noqa: S102
+    progress = []
+
+    with pytest.raises(RuntimeError, match="MinerU model not configured"):
+        namespace["by_mineru"](
+            "sample.pdf",
+            binary=b"%PDF",
+            callback=lambda progress_value, message: progress.append((progress_value, message)),
+        )
+
+    assert progress[-1] == (-1, "MinerU model not configured.")
 
 
 def test_by_mineru_forwards_page_window():

@@ -12,7 +12,7 @@ import (
 const minerUPollTimeout = 30 * time.Minute
 const minerUPollInterval = 200 * time.Millisecond
 
-func parsePDFWithMinerU(filename string, data []byte, parser *PDFParser) ParseResult {
+func parseWithMinerU(filename string, data []byte, parser *PDFParser) ParseResult {
 	if len(data) == 0 {
 		return emptyPDFResult(filename)
 	}
@@ -51,6 +51,7 @@ func parsePDFWithMinerU(filename string, data []byte, parser *PDFParser) ParseRe
 	}
 
 	task, err := driver.ParseFile(&backend, data, nil, apiConfig, &models.ParseFileConfig{
+		Filename:      filename,
 		Effort:        parser.MinerUEffort,
 		ImageAnalysis: &parser.MinerUImageAnalysis,
 	})
@@ -127,7 +128,7 @@ func parseMinerUTaskResult(filename string, task *models.TaskResponse, outputFor
 	case "markdown":
 		return ParseResult{OutputFormat: "markdown", File: pdfFileMeta(filename, pageCount), Markdown: task.Content}
 	default:
-		return ParseResult{Err: fmt.Errorf("parser: unsupported PDF output_format %q", outputFormat)}
+		return ParseResult{Err: fmt.Errorf("parser: unsupported MinerU output_format %q", outputFormat)}
 	}
 }
 
@@ -152,6 +153,6 @@ func parseMinerUMarkdownResult(filename, markdown, outputFormat string, pageCoun
 			Markdown:     markdown,
 		}
 	default:
-		return ParseResult{Err: fmt.Errorf("parser: unsupported PDF output_format %q", outputFormat)}
+		return ParseResult{Err: fmt.Errorf("parser: unsupported MinerU output_format %q", outputFormat)}
 	}
 }

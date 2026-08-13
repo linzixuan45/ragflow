@@ -547,6 +547,63 @@ func TestDispatch_PDFMinerUMarkdown_UsesConfiguredBackend(t *testing.T) {
 	}
 }
 
+func TestDispatch_MinerUInputSuffixesMatchContract(t *testing.T) {
+	want := map[string]bool{
+		"pdf": true, "png": true, "jpeg": true, "jp2": true, "webp": true, "gif": true,
+		"bmp": true, "jpg": true, "tiff": true, "docx": true, "pptx": true, "xlsx": true,
+		"tif": false, "ppt": false, "xls": false, "svg": false,
+	}
+	for suffix, expected := range want {
+		if got := isMinerUInput("sample." + suffix); got != expected {
+			t.Errorf("isMinerUInput(%q) = %v, want %v", suffix, got, expected)
+		}
+	}
+}
+
+func TestDispatch_DOCXUsesMinerUWithOriginalFilename(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/tasks":
+			if err := r.ParseMultipartForm(1 << 20); err != nil {
+				t.Errorf("ParseMultipartForm: %v", err)
+				http.Error(w, "invalid multipart", http.StatusBadRequest)
+				return
+			}
+			file, header, err := r.FormFile("files")
+			if err != nil {
+				t.Errorf("FormFile: %v", err)
+				http.Error(w, "missing file", http.StatusBadRequest)
+				return
+			}
+			_ = file.Close()
+			if got, want := header.Filename, "report.docx"; got != want {
+				t.Errorf("filename = %q, want %q", got, want)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":{"task_id":"task-docx"}}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/tasks/task-docx/result":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"results":{"report":{"md_content":"Body","content_list":"[{\"type\":\"text\",\"text\":\"Body\",\"page_idx\":0,\"bbox\":[0,0,10,10]}]"}}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	setups := schema.ParserParam{}.Defaults().Setups
+	setups["pdf"]["mineru_apiserver"] = server.URL
+	result := dispatchParse(utility.FileTypeDOCX, "report.docx", []byte("docx"), setups)
+	if result.Err != nil {
+		t.Fatalf("dispatchParse: %v", result.Err)
+	}
+	if got, want := result.OutputFormat, "json"; got != want {
+		t.Fatalf("OutputFormat = %q, want %q", got, want)
+	}
+	if len(result.JSON) != 1 || result.JSON[0]["text"] != "Body" {
+		t.Fatalf("JSON = %#v, want MinerU text block", result.JSON)
+	}
+}
+
 func TestDispatch_PDFPaddleOCRMarkdown_UsesConfiguredBackend(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/layout-parsing" {

@@ -40,6 +40,7 @@ import requests
 from PIL import Image
 
 from common.constants import MAXIMUM_PAGE_NUMBER
+from common.mineru_formats import file_suffix, is_mineru_file, mineru_mime_type
 from deepdoc.parser.pdf_parser import RAGFlowPdfParser
 from deepdoc.parser.utils import extract_pdf_outlines
 
@@ -360,13 +361,14 @@ class MinerUParser(RAGFlowPdfParser):
         return self._run_mineru_api(input_path, output_dir, options, callback)
 
     def _run_mineru_api(self, input_path: Path, output_dir: Path, options: MinerUParseOptions, callback: Optional[Callable] = None) -> Path:
-        pdf_file_path = str(input_path)
+        input_file_path = str(input_path)
 
-        if not os.path.exists(pdf_file_path):
-            raise RuntimeError(f"[MinerU] PDF file not exists: {pdf_file_path}")
+        if not os.path.exists(input_file_path):
+            raise RuntimeError(f"[MinerU] Input file does not exist: {input_file_path}")
 
-        pdf_file_name = Path(pdf_file_path).stem.strip()
-        output_path = tempfile.mkdtemp(prefix=f"{pdf_file_name}_{options.method}_", dir=str(output_dir))
+        input_file = Path(input_file_path)
+        file_stem = input_file.stem.strip()
+        output_path = tempfile.mkdtemp(prefix=f"{file_stem}_{options.method}_", dir=str(output_dir))
         output_zip_path = os.path.join(str(output_dir), f"{Path(output_path).name}.zip")
 
         data = {
@@ -401,8 +403,8 @@ class MinerUParser(RAGFlowPdfParser):
             self.logger.info(f"[MinerU] invoke api: {self.mineru_api}/file_parse backend={options.backend} server_url={data.get('server_url')}")
             if callback:
                 callback(0.20, f"[MinerU] invoke api: {self.mineru_api}/file_parse")
-            with open(pdf_file_path, "rb") as pdf_file:
-                files = {"files": (pdf_file_name + ".pdf", pdf_file, "application/pdf")}
+            with open(input_file_path, "rb") as input_stream:
+                files = {"files": (input_file.name, input_stream, mineru_mime_type(input_file.name))}
                 with requests.post(
                     url=f"{self.mineru_api}/file_parse",
                     files=files,
@@ -422,7 +424,7 @@ class MinerUParser(RAGFlowPdfParser):
                         response.raw.decode_content = True
                         shutil.copyfileobj(response.raw, f)
                     self.logger.info(f"[MinerU] Unzip to {output_path}...")
-                    self._extract_zip_no_root(output_zip_path, output_path, pdf_file_name + "/")
+                    self._extract_zip_no_root(output_zip_path, output_path, file_stem + "/")
                     if callback:
                         callback(0.40, f"[MinerU] Unzip to {output_path}...")
             self.logger.info("[MinerU] Api completed successfully.")
@@ -932,15 +934,18 @@ class MinerUParser(RAGFlowPdfParser):
         to_page: int = MAXIMUM_PAGE_NUMBER,
         **kwargs,
     ) -> tuple:
-        import shutil
-
         if from_page < 0:
             raise ValueError("from_page must be non-negative")
         if to_page <= from_page:
             raise ValueError("to_page must be greater than from_page")
 
-        self.outlines = extract_pdf_outlines(binary if binary is not None else filepath)
-        temp_pdf = None
+        if not is_mineru_file(str(filepath)):
+            raise ValueError(f"Unsupported MinerU input format: {file_suffix(str(filepath)) or '<none>'}")
+
+        suffix = file_suffix(str(filepath))
+        is_pdf = suffix == "pdf"
+        self.outlines = extract_pdf_outlines(binary if binary is not None else filepath) if is_pdf else []
+        temp_input = None
         created_tmp_dir = False
 
         parser_cfg = kwargs.get("parser_config", {})
@@ -952,42 +957,43 @@ class MinerUParser(RAGFlowPdfParser):
         mineru_effort = parser_cfg.get("mineru_effort", "high")
         enable_image_analysis = parser_cfg.get("mineru_image_analysis", True)
 
-        # remove spaces, or mineru crash, and _read_output fail too
         file_path = Path(filepath)
-        pdf_file_name = file_path.stem.replace(" ", "") + ".pdf"
-        pdf_file_path_valid = os.path.join(file_path.parent, pdf_file_name)
+        input_file_name = file_path.stem.replace(" ", "") + file_path.suffix.lower()
 
         if binary:
-            temp_dir = Path(tempfile.mkdtemp(prefix="mineru_bin_pdf_"))
-            temp_pdf = temp_dir / pdf_file_name
-            with open(temp_pdf, "wb") as f:
+            temp_dir = Path(tempfile.mkdtemp(prefix="mineru_input_"))
+            temp_input = temp_dir / input_file_name
+            with open(temp_input, "wb") as f:
                 f.write(binary)
-            pdf = temp_pdf
-            self.logger.info(f"[MinerU] Received binary PDF -> {temp_pdf}")
+            input_file = temp_input
+            self.logger.info(f"[MinerU] Received binary input -> {temp_input}")
             if callback:
-                callback(0.15, f"[MinerU] Received binary PDF -> {temp_pdf}")
+                callback(0.15, f"[MinerU] Received binary input -> {temp_input}")
         else:
-            if pdf_file_path_valid != filepath:
-                self.logger.info(f"[MinerU] Remove all space in file name: {pdf_file_path_valid}")
-                shutil.move(filepath, pdf_file_path_valid)
-            pdf = Path(pdf_file_path_valid)
-            if not pdf.exists():
+            input_file = file_path
+            if not input_file.exists():
                 if callback:
-                    callback(-1, f"[MinerU] PDF not found: {pdf}")
-                raise FileNotFoundError(f"[MinerU] PDF not found: {pdf}")
+                    callback(-1, f"[MinerU] Input file not found: {input_file}")
+                raise FileNotFoundError(f"[MinerU] Input file not found: {input_file}")
 
         if output_dir:
             out_dir = Path(output_dir)
             out_dir.mkdir(parents=True, exist_ok=True)
         else:
-            out_dir = Path(tempfile.mkdtemp(prefix="mineru_pdf_"))
+            out_dir = Path(tempfile.mkdtemp(prefix="mineru_output_"))
             created_tmp_dir = True
 
         self.logger.info(f"[MinerU] Output directory: {out_dir} backend={backend} api={self.mineru_api} server_url={server_url or self.mineru_server_url}")
         if callback:
             callback(0.15, f"[MinerU] Output directory: {out_dir}")
 
-        self.__images__(pdf, zoomin=1, page_from=from_page, page_to=to_page)
+        if is_pdf:
+            self.__images__(input_file, zoomin=1, page_from=from_page, page_to=to_page)
+        else:
+            self.page_from = from_page
+            self.page_to = to_page
+            self.page_images = None
+            self.page_sizes = []
 
         try:
             options = MinerUParseOptions(
@@ -1004,11 +1010,11 @@ class MinerUParser(RAGFlowPdfParser):
                 start_page_id=from_page,
                 end_page_id=to_page - 1,
             )
-            final_out_dir = self._run_mineru(pdf, out_dir, options, callback=callback)
-            outputs = self._read_output(final_out_dir, pdf.stem, method=mineru_method_raw_str, backend=backend)
-            self.logger.info(f"[MinerU] Parsed {len(outputs)} blocks from PDF.")
+            final_out_dir = self._run_mineru(input_file, out_dir, options, callback=callback)
+            outputs = self._read_output(final_out_dir, input_file.stem, method=mineru_method_raw_str, backend=backend)
+            self.logger.info(f"[MinerU] Parsed {len(outputs)} blocks from input.")
             if callback:
-                callback(0.75, f"[MinerU] Parsed {len(outputs)} blocks from PDF.")
+                callback(0.75, f"[MinerU] Parsed {len(outputs)} blocks from input.")
 
             vision_model = kwargs.get("vision_model")
             if vision_model is not None:
@@ -1019,10 +1025,10 @@ class MinerUParser(RAGFlowPdfParser):
 
             return self._transfer_to_sections(outputs, parse_method, enable_table), self._transfer_to_tables(outputs)
         finally:
-            if temp_pdf and temp_pdf.exists():
+            if temp_input and temp_input.exists():
                 try:
-                    temp_pdf.unlink()
-                    temp_pdf.parent.rmdir()
+                    temp_input.unlink()
+                    temp_input.parent.rmdir()
                 except Exception:
                     pass
             if delete_output and created_tmp_dir and out_dir.exists():

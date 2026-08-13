@@ -22,12 +22,30 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
 	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
+
+var minerUUploadContentTypes = map[string]string{
+	".pdf":  "application/pdf",
+	".png":  "image/png",
+	".jpeg": "image/jpeg",
+	".jpg":  "image/jpeg",
+	".jp2":  "image/jp2",
+	".webp": "image/webp",
+	".gif":  "image/gif",
+	".bmp":  "image/bmp",
+	".tiff": "image/tiff",
+	".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+	".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+	".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+}
 
 type MinerULocalModel struct {
 	baseModel BaseModel
@@ -118,8 +136,22 @@ func (m *MinerULocalModel) ParseFile(modelName *string, content []byte, document
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 
-	// Get file
-	part, err := writer.CreateFormFile("files", "upload_document.pdf")
+	filename := "upload_document.pdf"
+	if parseFileConfig != nil && strings.TrimSpace(parseFileConfig.Filename) != "" {
+		filename = filepath.Base(strings.TrimSpace(parseFileConfig.Filename))
+	}
+	contentType := minerUUploadContentTypes[strings.ToLower(filepath.Ext(filename))]
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	header := make(textproto.MIMEHeader)
+	disposition := mime.FormatMediaType("form-data", map[string]string{"name": "files", "filename": filename})
+	if disposition == "" {
+		return nil, fmt.Errorf("failed to encode multipart filename %q", filename)
+	}
+	header.Set("Content-Disposition", disposition)
+	header.Set("Content-Type", contentType)
+	part, err := writer.CreatePart(header)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create multipart file field: %w", err)
 	}

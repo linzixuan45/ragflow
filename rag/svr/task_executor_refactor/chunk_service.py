@@ -118,7 +118,7 @@ class ChunkService:
         ctx.recording_context.record("parser_id", ctx.parser_id)
 
         # Get parser
-        chunker = get_parser(ctx.parser_id)
+        chunker = get_parser(ctx.parser_id, ctx.name)
 
         # record config for compare
         chunk_config = {

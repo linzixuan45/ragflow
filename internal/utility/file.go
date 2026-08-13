@@ -94,6 +94,8 @@ func GetFileType(filename string) FileType {
 		return FileTypeMarkdown
 	case "txt":
 		return FileTypeTXT
+	case "png", "jpeg", "jp2", "webp", "gif", "bmp", "jpg", "tiff":
+		return FileTypeVISUAL
 	default:
 		return FileTypeOTHER
 	}
@@ -131,7 +133,7 @@ func FilenameType(filename string) FileType {
 	}
 
 	visualExtensions := []string{
-		"jpg", "jpeg", "png", "tif", "gif", "pcx", "tga", "exif", "fpx", "svg", "psd", "cdr",
+		"jpg", "jpeg", "jp2", "png", "tif", "tiff", "gif", "bmp", "pcx", "tga", "exif", "fpx", "svg", "psd", "cdr",
 		"pcd", "dxf", "ufo", "eps", "ai", "raw", "WMF", "webp", "avif", "apng", "icon", "ico",
 		"mpg", "mpeg", "avi", "rm", "rmvb", "mov", "wmv", "asf", "dat", "asx", "wvx", "mpe",
 		"mpa", "mp4", "mkv",
@@ -217,6 +219,7 @@ var CONTENT_TYPE_MAP = map[string]string{
 	"png":  "image/png",
 	"jpg":  "image/jpeg",
 	"jpeg": "image/jpeg",
+	"jp2":  "image/jp2",
 	"gif":  "image/gif",
 	"bmp":  "image/bmp",
 	"tiff": "image/tiff",
