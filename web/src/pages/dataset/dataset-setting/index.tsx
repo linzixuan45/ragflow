@@ -13,6 +13,7 @@ import Divider from '@/components/ui/divider';
 import { Form } from '@/components/ui/form';
 import { FormLayout } from '@/constants/form';
 import { DocumentParserType, ParseType } from '@/constants/knowledge';
+import { DefaultParseDocumentType } from '@/constants/parser';
 import { PermissionRole } from '@/constants/permission';
 import { IConnector, IDataset } from '@/interfaces/database/dataset';
 import { useDataSourceInfo } from '@/pages/user-setting/data-source/constant';
@@ -37,10 +38,6 @@ import { formSchema } from './form-schema';
 import { GeneralForm } from './general-form';
 import { useFetchKnowledgeConfigurationOnMount } from './hooks';
 import { SavingButton } from './saving-button';
-const enum DocumentType {
-  DeepDOC = 'DeepDOC',
-  PlainText = 'Plain Text',
-}
 export const DataSetContext = createContext<{
   loading: boolean;
   knowledgeDetails: IDataset;
@@ -71,7 +68,7 @@ export default function DatasetSettings() {
       permission: PermissionRole.Me,
       language: 'English',
       parser_config: {
-        layout_recognize: DocumentType.DeepDOC,
+        layout_recognize: DefaultParseDocumentType,
         chunk_token_num: 512,
         delimiter: `\n`,
         enable_children: false,

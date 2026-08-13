@@ -1634,6 +1634,7 @@ NER：使用 spaCy NER 和基于规则的关键词提取来抽取实体和关系
       local: '本地上传',
       s3: 'S3 上传',
       preview: '预览',
+      previewUnsupported: '当前格式不支持浏览器预览，请下载原文件查看。',
       fileError: '文件错误',
       uploadLimit: '文件大小不能超过10M，文件总数不超过128个',
       destinationFolder: '目标文件夹',

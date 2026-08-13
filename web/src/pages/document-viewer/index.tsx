@@ -1,4 +1,4 @@
-import { Images } from '@/constants/common';
+import { PreviewableImages } from '@/constants/common';
 import { restAPIv1 } from '@/utils/api';
 import { useParams, useSearchParams } from 'react-router';
 // import Docx from './docx';
@@ -39,7 +39,7 @@ const DocumentViewer = () => {
 
   return (
     <section className="w-full h-full">
-      {Images.includes(ext!) && (
+      {PreviewableImages.includes(ext!) && (
         <div className="flex w-full h-full items-center justify-center">
           {/* <Image src={api} preview={false}></Image> */}
           <ImagePreviewer className="w-full !h-dvh p-5" url={api} />

@@ -1,6 +1,7 @@
 import { useTranslate } from '@/hooks/common-hooks';
 import { useFetchAllAddedModels } from '@/hooks/use-llm-request';
 import { cn } from '@/lib/utils';
+import { ParseDocumentType } from '@/constants/parser';
 import { camelCase } from 'lodash';
 import { ReactNode, useMemo } from 'react';
 import { useFormContext } from 'react-hook-form';
@@ -16,14 +17,7 @@ import {
   FormMessage,
 } from './ui/form';
 
-export const enum ParseDocumentType {
-  DeepDOC = 'DeepDOC',
-  PlainText = 'Plain Text',
-  MinerU = 'MinerU',
-  Docling = 'Docling',
-  OpenDataLoader = 'OpenDataLoader',
-  TCADPParser = 'TCADP Parser',
-}
+export { ParseDocumentType } from '@/constants/parser';
 
 export function LayoutRecognizeFormField({
   name = 'parser_config.layout_recognize',

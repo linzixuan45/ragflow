@@ -1,6 +1,7 @@
 import { memo } from 'react';
 
-import { Images } from '@/constants/common';
+import { PreviewableImages } from '@/constants/common';
+import { useTranslate } from '@/hooks/common-hooks';
 import CSVFileViewer from './csv-preview';
 import { DocPreviewer } from './doc-preview';
 import { ExcelCsvPreviewer } from './excel-preview';
@@ -24,9 +25,28 @@ const DocumentPreview = function ({
   url,
 }: PreviewProps & Partial<IProps>) {
   const isPdf = fileType === 'pdf';
+  const { t } = useTranslate('fileManager');
+  const isPreviewSupported = [
+    'csv',
+    'doc',
+    'docx',
+    'md',
+    'mdx',
+    'pdf',
+    'ppt',
+    'pptx',
+    'txt',
+    'xlsx',
+    ...PreviewableImages,
+  ].includes(fileType);
 
   return (
     <>
+      {!isPreviewSupported && (
+        <div className="flex h-full min-h-40 items-center justify-center p-6 text-center text-sm text-text-secondary">
+          {t('previewUnsupported')}
+        </div>
+      )}
       {isPdf && (
         <section className="h-full">
           <PdfPreviewer
@@ -47,7 +67,7 @@ const DocumentPreview = function ({
           <TxtPreviewer className={className} url={url} />
         </section>
       )}
-      {Images.indexOf(fileType) > -1 && (
+      {PreviewableImages.indexOf(fileType) > -1 && (
         <section>
           <ImagePreviewer className={className} url={url} />
         </section>

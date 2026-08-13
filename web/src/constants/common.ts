@@ -161,11 +161,13 @@ export enum FileMimeType {
   Html = 'text/html',
   Jpg = 'image/jpg',
   Jpeg = 'image/jpeg',
+  Jp2 = 'image/jp2',
   Pdf = 'application/pdf',
   Png = 'image/png',
   Ppt = 'application/vnd.ms-powerpoint',
   Pptx = 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
   Tiff = 'image/tiff',
+  Webp = 'image/webp',
   Txt = 'text/plain',
   Xls = 'application/vnd.ms-excel',
   Xlsx = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -184,12 +186,17 @@ export const Images = [
   'png',
   'gif',
   'bmp',
+  'jp2',
   'tif',
   'tiff',
   'webp',
   // 'svg',
   'ico',
 ];
+
+export const PreviewableImages = Images.filter(
+  (extension) => !['jp2', 'tif', 'tiff'].includes(extension),
+);
 
 // Without FileViewer
 export const ExceptiveType = [
@@ -199,7 +206,7 @@ export const ExceptiveType = [
   'docx',
   'md',
   'mdx',
-  ...Images,
+  ...PreviewableImages,
 ];
 
 export const SupportedPreviewDocumentTypes = [...ExceptiveType];

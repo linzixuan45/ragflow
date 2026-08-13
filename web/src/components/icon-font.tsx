@@ -38,6 +38,7 @@ export function FileIcon({
 }: IconFontType & { type?: string }) {
   const isFolder = type === 'folder';
   const isSkills = type === 'skills';
+  const extension = getExtension(name) as keyof typeof FileIconMap;
   if (isSkills) {
     return (
       <span className={cn('size-4', className)}>
@@ -48,7 +49,7 @@ export function FileIcon({
   return (
     <span className={cn('size-4', className)}>
       <IconFont
-        name={isFolder ? 'file-sub' : FileIconMap[getExtension(name)]}
+        name={isFolder ? 'file-sub' : (FileIconMap[extension] ?? 'file')}
       ></IconFont>
     </span>
   );

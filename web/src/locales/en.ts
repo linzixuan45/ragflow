@@ -1972,6 +1972,8 @@ Example: Virtual Hosted Style`,
       local: 'Local uploads',
       s3: 'S3 uploads',
       preview: 'Preview',
+      previewUnsupported:
+        'Preview is not supported for this format. Download the original file to view it.',
       fileError: 'File error',
       uploadLimit:
         'Each file must not exceed 10MB, and the total number of files must not exceed 128.',

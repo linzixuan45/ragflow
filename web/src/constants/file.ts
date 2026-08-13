@@ -1,4 +1,5 @@
 export const FileIconMap = {
+  bmp: 'file',
   doc: 'doc',
   docx: 'doc',
   pdf: 'pdf',
@@ -8,7 +9,12 @@ export const FileIconMap = {
   pptx: 'ppt',
   jpg: 'jpg',
   jpeg: 'jpg',
+  jp2: 'file',
+  gif: 'file',
   png: 'png',
+  tif: 'file',
+  tiff: 'file',
+  webp: 'file',
   txt: 'text',
   csv: 'excel',
   md: 'md',
