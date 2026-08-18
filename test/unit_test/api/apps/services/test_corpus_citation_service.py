@@ -5,7 +5,7 @@ from api.apps.services.corpus_citation_service import CorpusCitationError, Corpu
 
 def _target():
     return {
-        "path": "/files/manual.pdf",
+        "path": "/manual.pdf",
         "content_revision": 7,
         "projection_revision": 3,
         "page": 12,

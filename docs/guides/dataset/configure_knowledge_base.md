@@ -136,13 +136,13 @@ See [Run retrieval test](./run_retrieval_test.md) for details.
 ### Make a dataset available to an Agent through Corpus FS
 
 Corpus FS is the preferred boundary when an external Agent must browse and
-retrieve dataset content. It exposes a dataset-scoped `/files` tree while
+retrieve dataset content. It exposes a dataset-scoped tree rooted at `/` while
 keeping document IDs, file IDs, chunk IDs, and object storage locations on the
 server. See [Corpus FS API](./corpus_fs_api.md) for the HTTP contract.
 
 Before marking a dataset as Agent-ready, verify all of the following:
 
-- Intended files are under the dataset's `/files` projection and have stable,
+- Intended files are under the dataset root and have stable,
   meaningful paths.
 - Parsing has reached `DONE`; clients must inspect `/fs/parse-status` instead of
   waiting for a fixed delay.
@@ -170,7 +170,7 @@ Expose a small read-only tool set from the Agent host and map it to Corpus FS:
 | Retrieve semantically related evidence | `POST /fs/search` |
 
 Keep the upstream `dataset_id` in the Agent host. The model should use a stable
-mount path such as `/knowledge/hr-handbook/files/policies/leave.md`; the host
+mount path such as `/knowledge/hr-handbook/policies/leave.md`; the host
 resolves `hr-handbook` to a dataset only after checking the current user's
 access. Do not let the model construct RAGFlow URLs or handle a RAGFlow API key.
 
@@ -183,10 +183,10 @@ For a multi-dataset Agent host, separate the model-visible path from the
 upstream route. A useful pattern is:
 
 ```text
-DisplayPath /knowledge/{mount_key}/files/{relative_path}
+DisplayPath /knowledge/{mount_key}/{relative_path}
     -> MountRegistry resolves mount_key to an authorized dataset
-    -> PathResolver validates /files and the current conversation scope
-    -> Corpus FS receives dataset_id plus /files/{relative_path}
+    -> PathResolver validates the current conversation scope
+    -> Corpus FS receives dataset_id plus /{relative_path}
 ```
 
 `mount_key` should be stable and unique within the host tenant. Do not use a

@@ -268,7 +268,7 @@ async def create_folder(tenant_id: str, dataset_id: str):
         payload = _body(await request.get_json() or {}, {"parent_path", "name"})
         service = _service(tenant_id, dataset_id, require_delegation=True)
         with service.content_mutation(_expected_revision()):
-            entry = service.create_folder(_body_string(payload, "parent_path", "/files", 1024), _body_string(payload, "name", maximum=256))
+            entry = service.create_folder(_body_string(payload, "parent_path", "/", 1024), _body_string(payload, "name", maximum=256))
         return _success(service, entry)
     except (CorpusFsError, CorpusPathError) as error:
         return _error(error)
@@ -281,7 +281,7 @@ async def upload(tenant_id: str, dataset_id: str):
     try:
         service = _service(tenant_id, dataset_id, require_delegation=True)
         form = await request.form
-        parent_path = form.get("parent_path", "/files")
+        parent_path = form.get("parent_path", "/")
         files = await request.files
         file_objs = files.getlist("file") if "file" in files else []
         if not file_objs or any(not item.filename for item in file_objs):
@@ -767,7 +767,15 @@ async def semantic_search(tenant_id: str, dataset_id: str):
                 if context is None:
                     context = citation_contexts[document["id"]] = service.citation_context(document)
                 target = service.citation_target(entry, document, content_revision, chunk=chunk, context=context)
-                items.append({"path": entry["path"], "snippet": chunk.get("content_with_weight", ""), "citation_ref": _issue_citation(service, document, target), "page": target["page"]})
+                items.append(
+                    {
+                        "path": entry["path"],
+                        "snippet": chunk.get("content_with_weight", ""),
+                        "citation_ref": _issue_citation(service, document, target),
+                        "page": target["page"],
+                        "images": service.search_images(document["id"], chunk),
+                    }
+                )
         return _success(service, {"items": items, "total": len(items)})
     except NotImplementedError:
         response = get_error_data_result(message="SEARCH_UNAVAILABLE")

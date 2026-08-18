@@ -4,8 +4,8 @@ title: Corpus FS API
 
 # Corpus FS API
 
-Corpus FS exposes one dataset-scoped, path-only namespace. The only visible
-content root is `/files`; document IDs, file IDs, chunk IDs, and object storage
+Corpus FS exposes one dataset-scoped, path-only namespace. Dataset content is
+rooted directly at `/`; document IDs, file IDs, chunk IDs, and object storage
 locations remain server-side details.
 
 All routes use the prefix `/api/v1/datasets/{dataset_id}/fs` and require an
@@ -15,7 +15,7 @@ authenticated caller with access to the dataset.
 
 | Method and path | Purpose |
 | --- | --- |
-| `GET /tree?path=/files` | List one directory with cursor pagination. |
+| `GET /tree?path=/` | List one directory with cursor pagination. |
 | `GET /find` | Find files by name below a path. |
 | `GET /stat` | Read metadata for one path. |
 | `GET /usage` | Aggregate document, byte, chunk, and token usage. |
@@ -91,7 +91,7 @@ The resolved `data` contains this public contract:
 ```json
 {
   "dataset_id": "dataset-id-from-the-route",
-  "path": "/files/manual.pdf",
+  "path": "/manual.pdf",
   "content_revision": 42,
   "projection_revision": 7,
   "page": 12,
@@ -148,7 +148,7 @@ uploads report per-file errors while preserving and revising successful files.
 | `DELETE /entries` | Delete the confirmed snapshot. |
 | `POST /parse` | Apply `retry` or `cancel` to up to 100 paths and return per-path outcomes. |
 
-The request body is `{"action":"retry|cancel","paths":["/files/a.pdf"]}`.
+The request body is `{"action":"retry|cancel","paths":["/a.pdf"]}`.
 The response reports `success_count`, `skipped_count`, `failed_count`, and an
 `items` result for every unique normalized path. The whole request uses one
 `If-Match` content revision.

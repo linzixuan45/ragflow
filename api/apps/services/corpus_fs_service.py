@@ -170,16 +170,17 @@ class CorpusFsService:
             if active is not None and all(candidate["id"] != active["id"] for candidate in file_docs[file["id"]]):
                 file_docs[file["id"]].append(active)
 
-        entries: dict[str, dict] = {"/": {"kind": "directory", "name": "/", "path": "/"}, "/files": {"kind": "directory", "name": "files", "path": "/files", "_file_id": root["id"]}}
+        entries: dict[str, dict] = {
+            "/": {"kind": "directory", "name": "/", "path": "/", "_file_id": root["id"]}
+        }
         children: dict[str, list[dict]] = defaultdict(list)
-        children["/"].append(entries["/files"])
         by_parent: dict[str, list[dict]] = defaultdict(list)
         for file in files.values():
             by_parent[file["parent_id"]].append(file)
 
         def project(parent_id: str, parent_path: str) -> None:
             for file in by_parent.get(parent_id, []):
-                path = parent_path + "/" + file["name"]
+                path = parent_path.rstrip("/") + "/" + file["name"]
                 if file.get("type") == FileType.FOLDER.value:
                     entry = {"kind": "directory", "name": file["name"], "path": path, "_file_id": file["id"]}
                     entries[path] = entry
@@ -204,7 +205,7 @@ class CorpusFsService:
                 entries[path] = entry
                 children[display_parent].append(entry)
 
-        project(root["id"], "/files")
+        project(root["id"], "/")
         for path, values in list(children.items()):
             try:
                 children[path] = CorpusPathResolver.display_names(path, values)
@@ -216,8 +217,6 @@ class CorpusFsService:
 
     def resolve_writable(self, path: str, *, folder: bool | None = None) -> dict:
         path = CorpusPathResolver.normalize(path)
-        if path != "/files" and not path.startswith("/files/"):
-            raise CorpusFsError("path is outside writable /files tree")
         entries, _ = self._projection()
         entry = entries.get(path)
         if entry is None or not entry.get("_file_id"):
@@ -242,8 +241,8 @@ class CorpusFsService:
             raise CorpusFsError("new_name requires one source")
         destination = self.resolve_writable(destination_path, folder=True)
         sources = [self.resolve_writable(path) for path in source_paths]
-        if any(source["path"] == "/files" for source in sources):
-            raise CorpusFsError("/files cannot be moved")
+        if any(source["path"] == "/" for source in sources):
+            raise CorpusFsError("dataset root cannot be moved")
         for source in sources:
             if destination_path == source["path"] or destination_path.startswith(source["path"].rstrip("/") + "/"):
                 raise MoveCycleError("cannot move into descendant")
@@ -272,8 +271,8 @@ class CorpusFsService:
 
     def deletion_targets(self, paths: list[str]) -> tuple[list[str], int, int]:
         entries = [self.resolve_writable(path) for path in paths]
-        if any(entry["path"] == "/files" for entry in entries):
-            raise CorpusFsError("/files cannot be deleted")
+        if any(entry["path"] == "/" for entry in entries):
+            raise CorpusFsError("dataset root cannot be deleted")
         ids: list[str] = []
         file_count = 0
         folder_count = 0
@@ -694,6 +693,12 @@ class CorpusFsService:
     def _image_ref(self, document_id: str, image_id: str) -> str:
         value = f"{self.tenant_id}:{self.dataset_id}:{document_id}:{image_id}".encode()
         return hmac.new(self._image_ref_secret(), value, hashlib.sha256).hexdigest()
+
+    def search_images(self, document_id: str, chunk: dict) -> list[dict[str, str]]:
+        image_id = chunk.get("image_id") or chunk.get("img_id")
+        if not isinstance(image_id, str) or not image_id:
+            return []
+        return [{"image_ref": self._image_ref(document_id, image_id)}]
 
     def _chunk_ref(self, document_id: str, chunk_id: str) -> str:
         value = f"chunk:{self.tenant_id}:{self.dataset_id}:{document_id}:{chunk_id}".encode()

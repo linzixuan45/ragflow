@@ -27,7 +27,7 @@ from common.constants import TaskStatus
 def test_public_entry_never_exposes_internal_identifiers_or_storage_fields():
     entry = {
         "kind": "file",
-        "path": "/files/handbook.md",
+        "path": "/handbook.md",
         "name": "handbook.md",
         "size_bytes": 12,
         "_document_id": "internal-document-id",
@@ -38,12 +38,12 @@ def test_public_entry_never_exposes_internal_identifiers_or_storage_fields():
 
     result = CorpusFsService.public_entry(entry)
 
-    assert result == {"kind": "file", "path": "/files/handbook.md", "name": "handbook.md", "size_bytes": 12}
+    assert result == {"kind": "file", "path": "/handbook.md", "name": "handbook.md", "size_bytes": 12}
 
 
 def test_create_folder_returns_path_only_entry(monkeypatch):
     service = CorpusFsService("tenant-1", "dataset-1", "actor")
-    monkeypatch.setattr(service, "resolve_writable", lambda path, folder=None: {"path": "/files", "kind": "directory", "_file_id": "private-root"})
+    monkeypatch.setattr(service, "resolve_writable", lambda path, folder=None: {"path": "/", "kind": "directory", "_file_id": "private-root"})
     monkeypatch.setattr(FileService, "query", classmethod(lambda _cls, **_kwargs: []))
 
     class Inserted:
@@ -51,9 +51,9 @@ def test_create_folder_returns_path_only_entry(monkeypatch):
 
     monkeypatch.setattr(FileService, "insert", classmethod(lambda _cls, _value: Inserted()))
 
-    result = service.create_folder("/files", "policies")
+    result = service.create_folder("/", "policies")
 
-    assert result == {"kind": "directory", "name": "policies", "path": "/files/policies", "child_count": 0}
+    assert result == {"kind": "directory", "name": "policies", "path": "/policies", "child_count": 0}
     assert "private-root" not in str(result)
 
 
@@ -61,7 +61,7 @@ def test_uploaded_entries_are_resolved_by_document_id_after_automatic_rename(mon
     service = CorpusFsService("tenant-1", "dataset-1", "actor")
     renamed = {
         "kind": "file",
-        "path": "/files/resume(1).pdf",
+        "path": "/resume(1).pdf",
         "name": "resume(1).pdf",
         "_document_id": "doc-new",
         "_file_id": "file-new",
@@ -72,9 +72,9 @@ def test_uploaded_entries_are_resolved_by_document_id_after_automatic_rename(mon
         "_projection",
         lambda: (
             {
-                "/files/resume.pdf": {
+                "/resume.pdf": {
                     "kind": "file",
-                    "path": "/files/resume.pdf",
+                    "path": "/resume.pdf",
                     "name": "resume.pdf",
                     "_document_id": "doc-existing",
                 },
@@ -87,7 +87,7 @@ def test_uploaded_entries_are_resolved_by_document_id_after_automatic_rename(mon
     assert service.uploaded_entries(["doc-new"]) == [
         {
             "kind": "file",
-            "path": "/files/resume(1).pdf",
+            "path": "/resume(1).pdf",
             "name": "resume(1).pdf",
             "size_bytes": 12,
         }
@@ -101,7 +101,7 @@ def test_replace_original_requires_matching_hash_and_updates_source(monkeypatch)
     current_hash = xxhash.xxh128(source).hexdigest()
     entry = {
         "kind": "file",
-        "path": "/files/report.xlsx",
+        "path": "/report.xlsx",
         "name": "report.xlsx",
         "_file_id": "file-1",
         "_document_id": "doc-1",
@@ -144,20 +144,20 @@ def test_replace_original_requires_matching_hash_and_updates_source(monkeypatch)
     monkeypatch.setattr(settings, "STORAGE_IMPL", Storage())
 
     with pytest.raises(RevisionConflictError):
-        service.replace_original("/files/report.xlsx", replacement, "stale")
+        service.replace_original("/report.xlsx", replacement, "stale")
 
     result = service.replace_original(
-        "/files/report.xlsx", replacement, current_hash
+        "/report.xlsx", replacement, current_hash
     )
 
     assert stored[("bucket", "report.xlsx")] == replacement
-    assert result["path"] == "/files/report.xlsx"
+    assert result["path"] == "/report.xlsx"
     assert result["content_hash"] == xxhash.xxh128(replacement).hexdigest()
     assert ("doc-1", {"size": len(replacement), "content_hash": result["content_hash"]}) in updates
     assert ("file-1", {"size": len(replacement)}) in updates
 
 
-def test_projection_has_one_canonical_files_root(monkeypatch):
+def test_projection_uses_dataset_root_as_canonical_root(monkeypatch):
     service = CorpusFsService("tenant-1", "dataset-1", "actor")
     monkeypatch.setattr(service, "_documents", list)
     monkeypatch.setattr(service, "_dataset_file_root", lambda: {"id": "root"})
@@ -165,8 +165,8 @@ def test_projection_has_one_canonical_files_root(monkeypatch):
 
     entries, children = service._projection()
 
-    assert set(entries) == {"/", "/files"}
-    assert [entry["path"] for entry in children["/"]] == ["/files"]
+    assert set(entries) == {"/"}
+    assert children["/"] == []
 
 
 def test_projection_document_selection_prefers_explicit_file_active_pointer():
@@ -239,31 +239,30 @@ def test_content_mutation_increments_revision_only_after_success(monkeypatch):
 def test_move_rejects_destination_inside_source(monkeypatch):
     service = CorpusFsService("tenant-1", "dataset-1", "actor")
     entries = {
-        "/files/policies": {"path": "/files/policies", "name": "policies", "kind": "directory", "_file_id": "source-id"},
-        "/files/policies/archive": {"path": "/files/policies/archive", "name": "archive", "kind": "directory", "_file_id": "destination-id"},
+        "/policies": {"path": "/policies", "name": "policies", "kind": "directory", "_file_id": "source-id"},
+        "/policies/archive": {"path": "/policies/archive", "name": "archive", "kind": "directory", "_file_id": "destination-id"},
     }
     monkeypatch.setattr(service, "resolve_writable", lambda path, folder=None: entries[path])
 
     with pytest.raises(MoveCycleError):
-        service.move(["/files/policies"], "/files/policies/archive")
+        service.move(["/policies"], "/policies/archive")
 
 
 def test_search_scope_rejects_missing_paths_and_keeps_empty_directories_empty(monkeypatch):
     service = CorpusFsService("tenant-1", "dataset-1", "actor")
     entries = {
         "/": {"kind": "directory", "path": "/"},
-        "/files": {"kind": "directory", "path": "/files"},
-        "/files/empty": {"kind": "directory", "path": "/files/empty"},
-        "/files/other.md": {"kind": "file", "path": "/files/other.md", "_document_id": "doc-other"},
-        "/files/scoped": {"kind": "directory", "path": "/files/scoped"},
-        "/files/scoped/inside.md": {"kind": "file", "path": "/files/scoped/inside.md", "_document_id": "doc-inside"},
+        "/empty": {"kind": "directory", "path": "/empty"},
+        "/other.md": {"kind": "file", "path": "/other.md", "_document_id": "doc-other"},
+        "/scoped": {"kind": "directory", "path": "/scoped"},
+        "/scoped/inside.md": {"kind": "file", "path": "/scoped/inside.md", "_document_id": "doc-inside"},
     }
     monkeypatch.setattr(service, "_projection", lambda: (entries, {}))
 
-    assert service.search_scope("/files/empty") == {}
-    assert set(service.search_scope("/files/scoped")) == {"doc-inside"}
+    assert service.search_scope("/empty") == {}
+    assert set(service.search_scope("/scoped")) == {"doc-inside"}
     with pytest.raises(NotFoundError, match="path not found"):
-        service.search_scope("/files/missing")
+        service.search_scope("/missing")
 
 
 def test_find_rejects_a_missing_scope(monkeypatch):
@@ -271,16 +270,38 @@ def test_find_rejects_a_missing_scope(monkeypatch):
     monkeypatch.setattr(
         service,
         "_projection",
-        lambda: ({"/files": {"kind": "directory", "path": "/files"}}, {}),
+        lambda: ({"/": {"kind": "directory", "path": "/"}}, {}),
     )
 
     with pytest.raises(NotFoundError, match="path not found"):
-        service.find("report", "/files/missing", 20)
+        service.find("report", "/missing", 20)
 
 
 def test_search_mode_controls_vector_weight():
     assert CorpusFsService.search_vector_weight("semantic", 0.3) == 1.0
     assert CorpusFsService.search_vector_weight("hybrid", 0.3) == 0.3
+
+
+def test_search_images_project_internal_image_id_to_opaque_reference():
+    service = CorpusFsService("tenant-1", "dataset-1", "actor")
+
+    images = service.search_images(
+        "document-1",
+        {
+            "image_id": "dataset-1-source-projections/document-1/3/images/0.png",
+        },
+    )
+
+    assert images == [
+        {
+            "image_ref": service._image_ref(
+                "document-1",
+                "dataset-1-source-projections/document-1/3/images/0.png",
+            )
+        }
+    ]
+    assert "source-projections" not in str(images)
+    assert service.search_images("document-1", {"image_id": ""}) == []
 
 
 def test_parsed_content_projects_opaque_image_reference_without_image_id(monkeypatch):
@@ -463,7 +484,7 @@ def test_content_text_reuses_the_citation_projection_snapshot(monkeypatch):
         citation_context=snapshot,
     )
     target = service.citation_target(
-        {"path": "/files/report.pdf"},
+        {"path": "/report.pdf"},
         {"id": "doc-1", "type": "pdf"},
         11,
         block=blocks[0],
@@ -488,14 +509,14 @@ def test_citation_target_maps_search_chunk_to_versioned_projection_block(monkeyp
     monkeypatch.setattr(SourceProjectionService, "active", classmethod(lambda _cls, _document: projection))
 
     target = service.citation_target(
-        {"path": "/files/report.pdf"},
+        {"path": "/report.pdf"},
         {"id": "doc-1", "type": "pdf"},
         11,
         chunk={"id": "chunk-1", "content_with_weight": "matched evidence", "page_num_int": [2], "position_int": [[2, 10, 100, 80, 120]]},
     )
 
     assert target == {
-        "path": "/files/report.pdf",
+        "path": "/report.pdf",
         "content_revision": 11,
         "projection_revision": 4,
         "page": 2,
@@ -517,7 +538,7 @@ def test_citation_target_accepts_retrieval_chunk_fields(monkeypatch):
     monkeypatch.setattr(SourceProjectionService, "active", classmethod(lambda _cls, _document: projection))
 
     target = service.citation_target(
-        {"path": "/files/report.pdf"},
+        {"path": "/report.pdf"},
         {"id": "doc-1", "type": "pdf"},
         11,
         chunk={"chunk_id": "chunk-1", "content_with_weight": "matched evidence", "positions": [[2, 10, 100, 80, 120]]},
@@ -537,7 +558,7 @@ def test_citation_target_uses_retrieval_chunk_id_when_projection_does_not_match(
     monkeypatch.setattr(SourceProjectionService, "active", classmethod(lambda _cls, _document: projection))
 
     target = service.citation_target(
-        {"path": "/files/report.pdf"},
+        {"path": "/report.pdf"},
         {"id": "doc-1", "type": "pdf"},
         11,
         chunk={"chunk_id": "chunk-1", "content_with_weight": "matched evidence", "positions": []},
@@ -556,7 +577,7 @@ def test_citation_target_falls_back_to_chunk_when_projection_blocks_do_not_match
     monkeypatch.setattr(SourceProjectionService, "active", classmethod(lambda _cls, _document: projection))
 
     target = service.citation_target(
-        {"path": "/files/report.pdf"},
+        {"path": "/report.pdf"},
         {"id": "doc-1", "type": "pdf"},
         11,
         chunk={"id": "chunk-1", "content_with_weight": "matched evidence", "page_num_int": [2], "position_int": [[2, 200, 300, 80, 120]]},
@@ -574,7 +595,7 @@ def test_citation_preview_reads_the_cited_projection_revision(monkeypatch):
     monkeypatch.setattr(
         service,
         "_projection",
-        lambda: ({"/files/current.pdf": {"kind": "file", "path": "/files/current.pdf", "_document_id": "doc-1"}}, {}),
+        lambda: ({"/current.pdf": {"kind": "file", "path": "/current.pdf", "_document_id": "doc-1"}}, {}),
     )
     calls = []
 
@@ -587,7 +608,7 @@ def test_citation_preview_reads_the_cited_projection_revision(monkeypatch):
 
     monkeypatch.setattr(SourceProjectionService, "revision", classmethod(revision))
     target = {
-        "path": "/files/old-name.pdf",
+        "path": "/old-name.pdf",
         "content_revision": 9,
         "projection_revision": 3,
         "page": 7,
@@ -599,7 +620,7 @@ def test_citation_preview_reads_the_cited_projection_revision(monkeypatch):
     preview = service.citation_preview("doc-1", target)
 
     assert calls == [("doc-1", 3, "b" * 64)]
-    assert preview["current_path"] == "/files/current.pdf"
+    assert preview["current_path"] == "/current.pdf"
     assert preview["content"] == "versioned"
     assert preview["blocks"][0]["block_ref"] == "5"
 
@@ -611,7 +632,7 @@ def test_raw_text_citation_preview_uses_the_source_hash_and_byte_range(monkeypat
     monkeypatch.setattr(
         service,
         "_projection",
-        lambda: ({"/files/note.txt": {"kind": "file", "path": "/files/note.txt", "_document_id": "doc-1"}}, {}),
+        lambda: ({"/note.txt": {"kind": "file", "path": "/note.txt", "_document_id": "doc-1"}}, {}),
     )
     monkeypatch.setattr("api.apps.services.corpus_fs_service.File2DocumentService.get_storage_address", classmethod(lambda _cls, **_kwargs: ("bucket", "note.txt")))
 
@@ -623,7 +644,7 @@ def test_raw_text_citation_preview_uses_the_source_hash_and_byte_range(monkeypat
     monkeypatch.setattr(settings, "STORAGE_IMPL", Storage())
     source_hash = hashlib.sha256("前言 evidence 后记".encode()).hexdigest()
     target = {
-        "path": "/files/note.txt",
+        "path": "/note.txt",
         "content_revision": 3,
         "projection_revision": None,
         "page": None,
@@ -648,7 +669,7 @@ def test_raw_text_citation_preview_uses_the_source_hash_and_byte_range(monkeypat
 )
 def test_file_entry_exposes_complete_parse_lifecycle(run, expected):
     entry = CorpusFsService._file_entry(
-        "/files/report.pdf",
+        "/report.pdf",
         "report.pdf",
         {"id": "doc-1", "run": run, "progress": 0.25, "progress_msg": "working"},
         {"id": "file-1"},
@@ -661,7 +682,7 @@ def test_file_entry_exposes_complete_parse_lifecycle(run, expected):
 
 def test_original_data_resolves_storage_without_exposing_internal_ids(monkeypatch):
     service = CorpusFsService("tenant-1", "dataset-1", "actor")
-    entry = {"path": "/files/report.pdf", "name": "report.pdf", "mime_type": "application/pdf"}
+    entry = {"path": "/report.pdf", "name": "report.pdf", "mime_type": "application/pdf"}
     document = {"id": "active-shadow"}
     entry["_file_id"] = "file-1"
     monkeypatch.setattr(service, "resolve_document", lambda _path: (entry, document))
@@ -680,7 +701,7 @@ def test_original_data_resolves_storage_without_exposing_internal_ids(monkeypatc
 
     monkeypatch.setattr(settings, "STORAGE_IMPL", Storage())
 
-    assert service.original_data("/files/report.pdf") == (entry, b"source", "object")
+    assert service.original_data("/report.pdf") == (entry, b"source", "object")
 
 
 def test_delete_logical_file_removes_source_shadow_versions_and_objects(monkeypatch):
@@ -713,7 +734,7 @@ def test_delete_logical_file_removes_source_shadow_versions_and_objects(monkeypa
 
     monkeypatch.setattr(settings, "STORAGE_IMPL", Storage())
 
-    assert service.delete(["/files/report.pdf"]) == {
+    assert service.delete(["/report.pdf"]) == {
         "success_count": 1,
         "error_count": 0,
         "failed_paths": [],
@@ -752,10 +773,10 @@ def test_delete_logical_file_keeps_source_link_when_version_cleanup_fails(monkey
     monkeypatch.setattr(DocumentService, "get_tenant_id", classmethod(lambda _cls, _doc_id: "tenant-1"))
     monkeypatch.setattr(DocumentService, "remove_document", classmethod(lambda _cls, doc, _tenant_id: events.append(("document", doc.id)) or True))
 
-    assert service.delete(["/files/report.pdf"]) == {
+    assert service.delete(["/report.pdf"]) == {
         "success_count": 0,
         "error_count": 1,
-        "failed_paths": ["/files/report.pdf"],
+        "failed_paths": ["/report.pdf"],
     }
     assert events == []
 
@@ -786,19 +807,19 @@ def test_delete_logical_file_keeps_metadata_when_source_object_cleanup_fails(mon
 
     monkeypatch.setattr(settings, "STORAGE_IMPL", Storage())
 
-    result = service.delete(["/files/report.pdf"])
+    result = service.delete(["/report.pdf"])
 
     assert result == {
         "success_count": 0,
         "error_count": 1,
-        "failed_paths": ["/files/report.pdf"],
+        "failed_paths": ["/report.pdf"],
     }
     assert events == [("version-objects", "file-1")]
 
 
 def test_save_markdown_maps_version_conflict_to_corpus_revision_conflict(monkeypatch):
     service = CorpusFsService("tenant-1", "dataset-1", "actor")
-    monkeypatch.setattr(service, "resolve_document", lambda _path: ({"path": "/files/report.pdf", "_file_id": "file-1"}, {"id": "doc-1"}))
+    monkeypatch.setattr(service, "resolve_document", lambda _path: ({"path": "/report.pdf", "_file_id": "file-1"}, {"id": "doc-1"}))
 
     def conflict(*_args, **_kwargs):
         raise MarkdownVersionConflict("changed")
@@ -806,12 +827,12 @@ def test_save_markdown_maps_version_conflict_to_corpus_revision_conflict(monkeyp
     monkeypatch.setattr(DocumentMarkdownService, "save", conflict)
 
     with pytest.raises(RevisionConflictError):
-        service.save_markdown("/files/report.pdf", "updated", 2)
+        service.save_markdown("/report.pdf", "updated", 2)
 
 
 def test_publish_markdown_uses_stable_file_and_maps_missing_version(monkeypatch):
     service = CorpusFsService("tenant-1", "dataset-1", "actor", actor_ref="deer-user")
-    entry = {"path": "/files/report.pdf", "_file_id": "file-1"}
+    entry = {"path": "/report.pdf", "_file_id": "file-1"}
     document = {"id": "doc-active"}
     file = SimpleNamespace(to_dict=lambda: {"id": "file-1", "active_document_id": "doc-active"})
     monkeypatch.setattr(service, "resolve_document", lambda _path: (entry, document))
@@ -823,15 +844,15 @@ def test_publish_markdown_uses_stable_file_and_maps_missing_version(monkeypatch)
     monkeypatch.setattr(DocumentMarkdownService, "begin_publish", missing)
 
     with pytest.raises(VersionNotFoundError):
-        service.publish_markdown("/files/report.pdf", 3, 3)
+        service.publish_markdown("/report.pdf", 3, 3)
 
 
 def test_retry_parse_rejects_an_already_running_document(monkeypatch):
     service = CorpusFsService("tenant-1", "dataset-1", "actor")
-    monkeypatch.setattr(service, "resolve_document", lambda _path: ({"path": "/files/report.pdf"}, {"id": "doc-1", "run": TaskStatus.RUNNING.value}))
+    monkeypatch.setattr(service, "resolve_document", lambda _path: ({"path": "/report.pdf"}, {"id": "doc-1", "run": TaskStatus.RUNNING.value}))
 
     with pytest.raises(EntryConflictError):
-        service.retry_parse("/files/report.pdf")
+        service.retry_parse("/report.pdf")
 
 
 def test_parse_documents_reports_partial_batch_outcomes(monkeypatch):
@@ -839,9 +860,9 @@ def test_parse_documents_reports_partial_batch_outcomes(monkeypatch):
     retried = []
 
     def retry(path):
-        if path == "/files/running.pdf":
+        if path == "/running.pdf":
             raise EntryConflictError("document is already being parsed")
-        if path == "/files/missing.pdf":
+        if path == "/missing.pdf":
             raise NotFoundError("path not found")
         retried.append(path)
         return {"path": path, "status": "RUNNING"}
@@ -849,26 +870,26 @@ def test_parse_documents_reports_partial_batch_outcomes(monkeypatch):
     monkeypatch.setattr(service, "retry_parse", retry)
 
     result = service.parse_documents(
-        ["/files/failed.pdf", "/files/running.pdf", "/files/missing.pdf"],
+        ["/failed.pdf", "/running.pdf", "/missing.pdf"],
         "retry",
     )
 
-    assert retried == ["/files/failed.pdf"]
+    assert retried == ["/failed.pdf"]
     assert result == {
         "action": "retry",
         "success_count": 1,
         "skipped_count": 1,
         "failed_count": 1,
         "items": [
-            {"path": "/files/failed.pdf", "status": "RUNNING", "outcome": "succeeded"},
+            {"path": "/failed.pdf", "status": "RUNNING", "outcome": "succeeded"},
             {
-                "path": "/files/running.pdf",
+                "path": "/running.pdf",
                 "status": "UNCHANGED",
                 "outcome": "skipped",
                 "message": "document is already being parsed",
             },
             {
-                "path": "/files/missing.pdf",
+                "path": "/missing.pdf",
                 "status": "UNCHANGED",
                 "outcome": "failed",
                 "message": "path not found",
@@ -883,7 +904,7 @@ def test_parse_documents_rejects_invalid_action_and_empty_batch():
     with pytest.raises(CorpusFsError):
         service.parse_documents([], "retry")
     with pytest.raises(CorpusFsError):
-        service.parse_documents(["/files/report.pdf"], "pause")
+        service.parse_documents(["/report.pdf"], "pause")
 
 
 def test_pdf_content_keeps_active_projection_readable_during_reparse(monkeypatch):

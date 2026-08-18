@@ -47,7 +47,7 @@ def test_replace_file_route_forwards_revision_hash_and_parse_status(monkeypatch)
     service = _Service()
     request = SimpleNamespace(
         form=_AwaitableDict(
-            path="/files/report.xlsx", expected_content_hash="source-hash"
+            path="/report.xlsx", expected_content_hash="source-hash"
         ),
         files=_AwaitableDict(
             file=SimpleNamespace(read=lambda: b"replacement-xlsx")
@@ -66,8 +66,8 @@ def test_replace_file_route_forwards_revision_hash_and_parse_status(monkeypatch)
     assert result["parse_status"] == "RUNNING"
     assert service.calls == [
         ("revision", 7),
-        ("replace", "/files/report.xlsx", b"replacement-xlsx", "source-hash"),
-        ("parse", "/files/report.xlsx"),
+        ("replace", "/report.xlsx", b"replacement-xlsx", "source-hash"),
+        ("parse", "/report.xlsx"),
     ]
 
 
@@ -77,7 +77,7 @@ def test_replace_file_route_reports_parse_queue_failure_after_source_save(monkey
     service = _Service(parse_error=RuntimeError("queue unavailable"))
     request = SimpleNamespace(
         form=_AwaitableDict(
-            path="/files/report.xlsx", expected_content_hash="source-hash"
+            path="/report.xlsx", expected_content_hash="source-hash"
         ),
         files=_AwaitableDict(
             file=SimpleNamespace(read=lambda: BytesIO(b"replacement-xlsx").read())

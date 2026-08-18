@@ -81,7 +81,7 @@ curl --request GET \
 
 ```bash
 curl --request GET \
-  --url 'http://{address}/api/v1/datasets/{dataset_id}/fs/blob?path=/files/reports/report.pdf' \
+  --url 'http://{address}/api/v1/datasets/{dataset_id}/fs/blob?path=/reports/report.pdf' \
   --header 'Authorization: Bearer <RAGFLOW_API_KEY>' \
   --output source-file
 ```
@@ -94,7 +94,7 @@ curl --request GET \
 
 ```bash
 curl --request GET \
-  --url 'http://{address}/api/v1/datasets/{dataset_id}/fs/content?path=/files/reports/report.pdf&max_bytes=32768' \
+  --url 'http://{address}/api/v1/datasets/{dataset_id}/fs/content?path=/reports/report.pdf&max_bytes=32768' \
   --header 'Authorization: Bearer <RAGFLOW_API_KEY>'
 ```
 
@@ -145,7 +145,7 @@ curl --request GET \
 
 ```bash
 curl --request GET \
-  --url 'http://{address}/api/v1/datasets/{dataset_id}/fs/image?path=/files/reports/report.pdf&image_ref={image_ref}' \
+  --url 'http://{address}/api/v1/datasets/{dataset_id}/fs/image?path=/reports/report.pdf&image_ref={image_ref}' \
   --header 'Authorization: Bearer <RAGFLOW_API_KEY>' \
   --output extracted-image
 ```
@@ -158,7 +158,7 @@ curl --request GET \
 上传文档
   -> POST /datasets/{dataset_id}/documents/parse
   -> 轮询 GET /datasets/{dataset_id}/documents 或 GET /fs/tree，直到 DONE
-  -> 左侧：GET /fs/blob?path=/files/... 显示源 PDF
+  -> 左侧：GET /fs/blob?path=/... 显示源 PDF
   -> 右侧：GET /fs/content 分页读取解析文本；按需 GET /fs/image 获取图片
 ```
 
@@ -169,7 +169,7 @@ curl --request GET \
 当前版本提供按路径读写的独立派生稿接口：
 
 ```http
-GET /api/v1/datasets/{dataset_id}/fs/derived-content?path=/files/reports/report.pdf
+GET /api/v1/datasets/{dataset_id}/fs/derived-content?path=/reports/report.pdf
 PUT /api/v1/datasets/{dataset_id}/fs/derived-content
 ```
 
