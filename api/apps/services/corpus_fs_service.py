@@ -106,6 +106,10 @@ class CorpusFsService:
         self._dataset()
         return list(Document.select().where((Document.kb_id == self.dataset_id) & (Document.status == "1")).dicts())
 
+    def search_context(self, path: str) -> tuple[dict[str, dict], dict[str, dict[str, Any]], int]:
+        documents = {document["id"]: document for document in self._documents()}
+        return self.search_scope(path), documents, self.revision(self._dataset())["content_revision"]
+
     @staticmethod
     def _select_active_document(file: dict, linked: list[dict]) -> dict:
         active_document_id = file.get("active_document_id")

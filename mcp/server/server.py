@@ -21,6 +21,7 @@ import time
 from collections import OrderedDict
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from enum import StrEnum
 from functools import wraps
 from typing import Any
 
@@ -32,7 +33,6 @@ from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Mount, Route
-from enum import StrEnum
 
 
 class LaunchMode(StrEnum):
@@ -93,6 +93,98 @@ class RAGFlowConnector:
         client = await self._get_client()
         res = await client.get(url=self.api_url + path, params=params, headers={"Authorization": f"Bearer {api_key}"})
         return res
+
+    @staticmethod
+    def _tool_content(data: Any) -> list[types.TextContent]:
+        return [types.TextContent(type="text", text=json.dumps(data, ensure_ascii=False))]
+
+    @staticmethod
+    def _response_data(response: Any, operation: str) -> Any:
+        if not response or response.status_code != 200:
+            raise Exception([types.TextContent(type="text", text=f"Cannot {operation}.")])
+        payload = response.json()
+        if payload.get("code") != 0:
+            raise Exception([types.TextContent(type="text", text=payload.get("message", f"Cannot {operation}."))])
+        return payload.get("data", {})
+
+    async def _corpus_get(self, path: str, *, api_key: str, params: dict[str, Any]) -> list[types.TextContent]:
+        response = await self._get(path, params=params, api_key=api_key)
+        return self._tool_content(self._response_data(response, "read Corpus FS"))
+
+    async def _corpus_post(self, path: str, *, api_key: str, body: dict[str, Any]) -> list[types.TextContent]:
+        response = await self._post(path, json=body, api_key=api_key)
+        return self._tool_content(self._response_data(response, "search Corpus FS"))
+
+    async def corpus_tree(self, *, api_key: str, dataset_id: str, path: str = "/", limit: int = 50):
+        return await self._corpus_get(
+            f"/datasets/{dataset_id}/fs/tree",
+            api_key=api_key,
+            params={"path": path, "limit": limit},
+        )
+
+    async def corpus_find(self, *, api_key: str, dataset_id: str, name: str, path: str = "/", limit: int = 20):
+        return await self._corpus_get(
+            f"/datasets/{dataset_id}/fs/find",
+            api_key=api_key,
+            params={"name": name, "path": path, "limit": limit},
+        )
+
+    async def corpus_read(self, *, api_key: str, dataset_id: str, path: str, max_bytes: int = 32768, page: int | None = None):
+        params = {"path": path, "max_bytes": max_bytes}
+        if page is not None:
+            params["page"] = page
+        return await self._corpus_get(
+            f"/datasets/{dataset_id}/fs/content",
+            api_key=api_key,
+            params=params,
+        )
+
+    async def corpus_grep(self, *, api_key: str, dataset_id: str, query: str, path: str = "/", limit: int = 20, match: str = "any"):
+        return await self._corpus_post(
+            f"/datasets/{dataset_id}/fs/grep",
+            api_key=api_key,
+            body={"query": query, "path": path, "limit": limit, "match": match},
+        )
+
+    async def corpus_search(
+        self,
+        *,
+        api_key: str,
+        scopes: list[dict[str, Any]],
+        query: str,
+        limit: int = 10,
+        per_document_limit: int = 3,
+        similarity_threshold: float = 0.0,
+        vector_similarity_weight: float = 0.3,
+        mode: str = "hybrid",
+    ):
+        return await self._corpus_post(
+            "/datasets/corpus-search",
+            api_key=api_key,
+            body={
+                "scopes": scopes,
+                "query": query,
+                "limit": limit,
+                "per_document_limit": per_document_limit,
+                "similarity_threshold": similarity_threshold,
+                "vector_similarity_weight": vector_similarity_weight,
+                "mode": mode,
+            },
+        )
+
+    async def corpus_stat(self, *, api_key: str, dataset_id: str, path: str):
+        return await self._corpus_get(
+            f"/datasets/{dataset_id}/fs/stat",
+            api_key=api_key,
+            params={"path": path},
+        )
+
+    async def corpus_citation_preview(self, *, api_key: str, dataset_id: str, citation_ref: str):
+        return await self._corpus_post(
+            f"/datasets/{dataset_id}/fs/citations/preview",
+            api_key=api_key,
+            body={"citation_ref": citation_ref},
+        )
 
     def _is_cache_valid(self, ts):
         return time.time() < ts
@@ -416,26 +508,20 @@ class RAGFlowConnector:
         return document_cache, dataset_cache
 
     def _map_chunk_fields(self, chunk_data, dataset_cache, document_cache):
-        """Preserve all original API fields and add per-chunk document metadata"""
-        # Start with ALL raw data from API (preserve everything like original version)
-        mapped = dict(chunk_data)
-
-        # Add dataset name enhancement
+        """Project retrieval chunks to a compact model-safe evidence shape."""
         dataset_id = chunk_data.get("dataset_id") or chunk_data.get("kb_id")
-        if dataset_id and dataset_id in dataset_cache:
-            mapped["dataset_name"] = dataset_cache[dataset_id]["name"]
-        else:
-            mapped["dataset_name"] = "Unknown"
-
-        # Add document name convenience field
-        mapped["document_name"] = chunk_data.get("document_keyword", "")
-
-        # Add per-chunk document metadata
-        document_id = chunk_data.get("document_id")
-        if document_id and document_id in document_cache:
-            mapped["document_metadata"] = document_cache[document_id]
-
-        return mapped
+        document_id = chunk_data.get("document_id") or chunk_data.get("doc_id")
+        document = document_cache.get(document_id, {}) if document_id else {}
+        return {
+            "content": chunk_data.get("content_with_weight") or chunk_data.get("content") or "",
+            "dataset_name": dataset_cache.get(dataset_id, {}).get("name", "Unknown"),
+            "document_name": chunk_data.get("document_keyword") or document.get("name", ""),
+            "page": chunk_data.get("page_num_int") or chunk_data.get("page"),
+            "positions": chunk_data.get("position_int") or chunk_data.get("positions") or [],
+            "score": chunk_data.get("score", chunk_data.get("similarity")),
+            "vector_similarity": chunk_data.get("vector_similarity"),
+            "term_similarity": chunk_data.get("term_similarity"),
+        }
 
 
 class RAGFlowCtx:
@@ -532,17 +618,104 @@ def with_api_key(required: bool = True):
     return decorator
 
 
+def _corpus_tools() -> list[types.Tool]:
+    dataset_id = {"type": "string", "description": "RAGFlow dataset identifier returned by ragflow_list_datasets."}
+    path = {"type": "string", "description": "Root-relative Corpus FS path.", "default": "/"}
+    limit = {"type": "integer", "minimum": 1, "maximum": 50, "default": 20}
+    return [
+        types.Tool(
+            name="ragflow_corpus_tree",
+            description="Browse one directory in a RAGFlow Corpus FS using readable root-relative paths.",
+            inputSchema={"type": "object", "properties": {"dataset_id": dataset_id, "path": path, "limit": limit}, "required": ["dataset_id"]},
+        ),
+        types.Tool(
+            name="ragflow_corpus_find",
+            description="Find Corpus FS files by name without exposing document or storage identifiers.",
+            inputSchema={
+                "type": "object",
+                "properties": {"dataset_id": dataset_id, "name": {"type": "string"}, "path": path, "limit": limit},
+                "required": ["dataset_id", "name"],
+            },
+        ),
+        types.Tool(
+            name="ragflow_corpus_read",
+            description="Read a bounded text projection from a Corpus FS path.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "dataset_id": dataset_id,
+                    "path": {"type": "string"},
+                    "max_bytes": {"type": "integer", "minimum": 1, "maximum": 262144, "default": 32768},
+                    "page": {"type": "integer", "minimum": 1},
+                },
+                "required": ["dataset_id", "path"],
+            },
+        ),
+        types.Tool(
+            name="ragflow_corpus_grep",
+            description="Search exact words or phrases inside one Corpus FS scope.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "dataset_id": dataset_id,
+                    "query": {"type": "string"},
+                    "path": path,
+                    "limit": limit,
+                    "match": {"type": "string", "enum": ["any", "all", "phrase"], "default": "any"},
+                },
+                "required": ["dataset_id", "query"],
+            },
+        ),
+        types.Tool(
+            name="ragflow_corpus_search",
+            description="Retrieve globally ranked, deduplicated path-only evidence across one or more Corpus FS scopes.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "scopes": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 50,
+                        "items": {
+                            "type": "object",
+                            "properties": {"scope": {"type": "string"}, "dataset_id": dataset_id, "path": path},
+                            "required": ["scope", "dataset_id"],
+                        },
+                    },
+                    "query": {"type": "string"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10},
+                    "per_document_limit": {"type": "integer", "minimum": 1, "maximum": 10, "default": 3},
+                    "similarity_threshold": {"type": "number", "minimum": 0, "maximum": 1, "default": 0},
+                    "vector_similarity_weight": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.3},
+                    "mode": {"type": "string", "enum": ["semantic", "hybrid"], "default": "hybrid"},
+                },
+                "required": ["scopes", "query"],
+            },
+        ),
+        types.Tool(
+            name="ragflow_corpus_stat",
+            description="Read metadata for one readable Corpus FS path.",
+            inputSchema={"type": "object", "properties": {"dataset_id": dataset_id, "path": {"type": "string"}}, "required": ["dataset_id", "path"]},
+        ),
+        types.Tool(
+            name="ragflow_corpus_citation_preview",
+            description="Resolve an opaque Corpus citation to an authenticated source preview.",
+            inputSchema={
+                "type": "object",
+                "properties": {"dataset_id": dataset_id, "citation_ref": {"type": "string"}},
+                "required": ["dataset_id", "citation_ref"],
+            },
+        ),
+    ]
+
+
 @app.list_tools()
 @with_api_key(required=True)
 async def list_tools(*, connector: RAGFlowConnector, api_key: str) -> list[types.Tool]:
-    dataset_description = await connector.list_datasets(api_key=api_key)
-    chat_description = await connector.list_chats(api_key=api_key)
-
     return [
         types.Tool(
             name="ragflow_retrieval",
-            description="Retrieve relevant chunks from the RAGFlow retrieve interface based on the question. You can optionally specify dataset_ids to search only specific datasets, or omit dataset_ids entirely to search across ALL available datasets. You can also optionally specify document_ids to search within specific documents. When dataset_ids is not provided or is empty, the system will automatically search across all available datasets. Below is the list of all available datasets, including their descriptions and IDs:"
-            + dataset_description,
+            description="Retrieve relevant evidence from accessible RAGFlow datasets. Use ragflow_list_datasets only when an explicit dataset scope is needed.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -603,8 +776,7 @@ async def list_tools(*, connector: RAGFlowConnector, api_key: str) -> list[types
         ),
         types.Tool(
             name="ragflow_list_datasets",
-            description="List all accessible datasets (knowledge bases) in RAGFlow. Returns dataset IDs, names, and descriptions. Use this tool to discover which datasets are available before performing retrieval."
-            + dataset_description,
+            description="List accessible RAGFlow datasets for explicit corpus scoping.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -626,8 +798,7 @@ async def list_tools(*, connector: RAGFlowConnector, api_key: str) -> list[types
         ),
         types.Tool(
             name="ragflow_list_chats",
-            description="List all accessible chat assistants in RAGFlow. Returns chat assistant IDs, names, and descriptions. Use this tool to discover available chat assistants that can be used for conversations."
-            + chat_description,
+            description="List accessible RAGFlow chat assistants.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -647,6 +818,7 @@ async def list_tools(*, connector: RAGFlowConnector, api_key: str) -> list[types
                 },
             },
         ),
+        *_corpus_tools(),
     ]
 
 
@@ -685,6 +857,68 @@ async def call_tool(
             top_k=top_k,
             rerank_id=rerank_id,
             force_refresh=force_refresh,
+        )
+
+    if name == "ragflow_corpus_tree":
+        return await connector.corpus_tree(
+            api_key=api_key,
+            dataset_id=arguments["dataset_id"],
+            path=arguments.get("path", "/"),
+            limit=arguments.get("limit", 20),
+        )
+
+    if name == "ragflow_corpus_find":
+        return await connector.corpus_find(
+            api_key=api_key,
+            dataset_id=arguments["dataset_id"],
+            name=arguments["name"],
+            path=arguments.get("path", "/"),
+            limit=arguments.get("limit", 20),
+        )
+
+    if name == "ragflow_corpus_read":
+        return await connector.corpus_read(
+            api_key=api_key,
+            dataset_id=arguments["dataset_id"],
+            path=arguments["path"],
+            max_bytes=arguments.get("max_bytes", 32768),
+            page=arguments.get("page"),
+        )
+
+    if name == "ragflow_corpus_grep":
+        return await connector.corpus_grep(
+            api_key=api_key,
+            dataset_id=arguments["dataset_id"],
+            query=arguments["query"],
+            path=arguments.get("path", "/"),
+            limit=arguments.get("limit", 20),
+            match=arguments.get("match", "any"),
+        )
+
+    if name == "ragflow_corpus_search":
+        return await connector.corpus_search(
+            api_key=api_key,
+            scopes=arguments["scopes"],
+            query=arguments["query"],
+            limit=arguments.get("limit", 10),
+            per_document_limit=arguments.get("per_document_limit", 3),
+            similarity_threshold=arguments.get("similarity_threshold", 0.0),
+            vector_similarity_weight=arguments.get("vector_similarity_weight", 0.3),
+            mode=arguments.get("mode", "hybrid"),
+        )
+
+    if name == "ragflow_corpus_stat":
+        return await connector.corpus_stat(
+            api_key=api_key,
+            dataset_id=arguments["dataset_id"],
+            path=arguments["path"],
+        )
+
+    if name == "ragflow_corpus_citation_preview":
+        return await connector.corpus_citation_preview(
+            api_key=api_key,
+            dataset_id=arguments["dataset_id"],
+            citation_ref=arguments["citation_ref"],
         )
 
     if name == "ragflow_list_datasets":

@@ -14,7 +14,7 @@
 #
 # The overlay is intentionally thin and only changes:
 #   1. Forces the GPU server and removes CPU server from the default flow.
-#   2. Publishes the RAGFlow Web UI and API only on loopback addresses.
+#   2. Keeps the Web UI on loopback and publishes the API locally and on LAN.
 #   3. Clears host port mappings for MySQL / MinIO. Elasticsearch and Redis
 #      are additionally published on loopback for host-side Python tests.
 #   4. Drops the AdMindev-only flag from the GPU server command.
@@ -37,6 +37,7 @@ services:
     ports: !override
       - "127.0.0.1:80:80"
       - "127.0.0.1:9380:9380"
+      - "172.16.20.102:9380:9380"
     volumes:
       # Keep the development container on the published runtime image while
       # loading the local Corpus FS implementation for restart-safe testing.
@@ -49,6 +50,7 @@ services:
       - ../api/apps/services/corpus_cursor_service.py:/ragflow/api/apps/services/corpus_cursor_service.py:ro
       - ../api/apps/services/corpus_delegation_service.py:/ragflow/api/apps/services/corpus_delegation_service.py:ro
       - ../api/apps/services/corpus_fs_service.py:/ragflow/api/apps/services/corpus_fs_service.py:ro
+      - ../api/apps/services/corpus_tool_service.py:/ragflow/api/apps/services/corpus_tool_service.py:ro
       - ../api/apps/services/document_markdown_service.py:/ragflow/api/apps/services/document_markdown_service.py:ro
       - ../api/apps/services/corpus_path_service.py:/ragflow/api/apps/services/corpus_path_service.py:ro
       - ../api/apps/services/corpus_secret_service.py:/ragflow/api/apps/services/corpus_secret_service.py:ro

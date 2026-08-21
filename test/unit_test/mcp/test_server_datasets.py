@@ -43,6 +43,110 @@ def _datasets(count):
     return [{"id": f"dataset-{idx}", "description": f"description-{idx}"} for idx in range(count)]
 
 
+def test_retrieval_chunk_mapping_drops_internal_ids_and_raw_fields(mcp_server):
+    connector = mcp_server.RAGFlowConnector(base_url=mcp_server.BASE_URL)
+
+    mapped = connector._map_chunk_fields(
+        {
+            "id": "chunk-secret",
+            "doc_id": "document-secret",
+            "dataset_id": "dataset-secret",
+            "content_with_weight": "approved evidence",
+            "document_keyword": "handbook.pdf",
+            "similarity": 0.9,
+            "vector_similarity": 0.8,
+            "term_similarity": 0.7,
+            "page_num_int": [2],
+            "position_int": [[1, 2, 3, 4]],
+            "untrusted_extra": "must not leak",
+        },
+        {"dataset-secret": {"name": "Handbook"}},
+        {"document-secret": {"name": "handbook.pdf", "document_id": "document-secret"}},
+    )
+
+    assert mapped == {
+        "content": "approved evidence",
+        "dataset_name": "Handbook",
+        "document_name": "handbook.pdf",
+        "page": [2],
+        "positions": [[1, 2, 3, 4]],
+        "score": 0.9,
+        "vector_similarity": 0.8,
+        "term_similarity": 0.7,
+    }
+
+
+def test_corpus_toolbox_exposes_read_only_path_tools(mcp_server):
+    assert {tool.name for tool in mcp_server._corpus_tools()} == {
+        "ragflow_corpus_tree",
+        "ragflow_corpus_find",
+        "ragflow_corpus_read",
+        "ragflow_corpus_grep",
+        "ragflow_corpus_search",
+        "ragflow_corpus_stat",
+        "ragflow_corpus_citation_preview",
+    }
+
+
+@pytest.mark.asyncio
+async def test_tool_discovery_does_not_embed_dynamic_dataset_catalog(mcp_server):
+    class Connector:
+        async def list_datasets(self, **_kwargs):
+            raise AssertionError("tool discovery must not fetch datasets")
+
+        async def list_chats(self, **_kwargs):
+            raise AssertionError("tool discovery must not fetch chats")
+
+    tools = await mcp_server.list_tools.__wrapped__(connector=Connector(), api_key="unit-key")
+
+    assert "ragflow_corpus_search" in {tool.name for tool in tools}
+    assert all("dataset-" not in tool.description for tool in tools)
+
+
+@pytest.mark.asyncio
+async def test_corpus_search_calls_path_only_batch_endpoint(monkeypatch, mcp_server):
+    connector = mcp_server.RAGFlowConnector(base_url=mcp_server.BASE_URL)
+    calls = []
+
+    async def _post(path, json=None, api_key="", **_kwargs):
+        calls.append((path, json, api_key))
+        return _FakeResponse(
+            {
+                "code": 0,
+                "data": {
+                    "schema": "ragflow.corpus.evidence.v1",
+                    "items": [{"scope": "handbook", "path": "/guide.pdf", "snippet": "evidence", "citation_ref": "cit1.opaque"}],
+                },
+            }
+        )
+
+    monkeypatch.setattr(connector, "_post", _post)
+
+    result = await connector.corpus_search(
+        api_key="unit-key",
+        scopes=[{"scope": "handbook", "dataset_id": "dataset-1", "path": "/"}],
+        query="VPN",
+        limit=8,
+    )
+
+    assert json.loads(result[0].text)["items"][0]["path"] == "/guide.pdf"
+    assert calls == [
+        (
+            "/datasets/corpus-search",
+            {
+                "scopes": [{"scope": "handbook", "dataset_id": "dataset-1", "path": "/"}],
+                "query": "VPN",
+                "limit": 8,
+                "per_document_limit": 3,
+                "similarity_threshold": 0.0,
+                "vector_similarity_weight": 0.3,
+                "mode": "hybrid",
+            },
+            "unit-key",
+        )
+    ]
+
+
 @pytest.fixture()
 def mcp_server():
     return _load_mcp_server()

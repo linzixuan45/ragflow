@@ -13,13 +13,13 @@ from urllib.parse import quote
 from quart import make_response, request
 
 from api.apps import login_required
-from api.apps.services import dataset_api_service
 from api.apps.services.corpus_citation_service import CorpusCitationError, CorpusCitationService
 from api.apps.services.corpus_cursor_service import CorpusCursorError, CorpusCursorService, CorpusPageCursorService
 from api.apps.services.corpus_delegation_service import CorpusDelegationError, CorpusDelegationService
 from api.apps.services.corpus_fs_service import CorpusFsError, CorpusFsService, InvalidConfirmationError, PreconditionRequiredError
 from api.apps.services.corpus_path_service import AmbiguousPathError, CorpusPathError
 from api.apps.services.corpus_secret_service import corpus_secret
+from api.apps.services.corpus_tool_service import CorpusToolService
 from api.apps.services.keyword_search_service import KeywordSearchService, SearchUnavailableError
 from api.db.db_models import Task
 from api.db.services.document_service import DocumentService
@@ -28,11 +28,6 @@ from api.db.services.file_service import FileService
 from api.db.services.task_service import TaskService, queue_tasks
 from api.utils.api_utils import add_tenant_id_to_kwargs, get_error_data_result, get_result
 from common.constants import TaskStatus
-
-# Hybrid retrieval candidate pool size for semantic search: embed + bm25
-# recall this many candidates, then the reranker re-ranks them and the top
-# ``top_k`` requested by the caller are returned.
-_RECALL_TOP_K = 50
 
 
 def _actor_digest(tenant_id: str) -> str:
@@ -726,13 +721,14 @@ async def grep(tenant_id: str, dataset_id: str):
 @add_tenant_id_to_kwargs
 async def semantic_search(tenant_id: str, dataset_id: str):
     try:
-        payload = _body(await request.get_json() or {}, {"query", "path", "top_k", "similarity_threshold", "vector_similarity_weight", "mode"})
+        payload = _body(await request.get_json() or {}, {"query", "path", "top_k", "per_document_limit", "similarity_threshold", "vector_similarity_weight", "mode"})
         query = _body_string(payload, "query")
         path = _body_string(payload, "path", default="/", maximum=1024)
         mode = payload.get("mode", "hybrid")
         if mode not in {"semantic", "hybrid"}:
             raise CorpusFsError("mode must be semantic or hybrid")
         top_k = _int(payload.get("top_k", 10), "top_k", 1, 50)
+        per_document_limit = _int(payload.get("per_document_limit", 3), "per_document_limit", 1, 10)
         similarity_threshold = payload.get("similarity_threshold", 0.0)
         vector_similarity_weight = payload.get("vector_similarity_weight", 0.3)
         if isinstance(similarity_threshold, bool) or not isinstance(similarity_threshold, (int, float)) or not 0 <= similarity_threshold <= 1:
@@ -740,46 +736,75 @@ async def semantic_search(tenant_id: str, dataset_id: str):
         if isinstance(vector_similarity_weight, bool) or not isinstance(vector_similarity_weight, (int, float)) or not 0 <= vector_similarity_weight <= 1:
             raise CorpusFsError("vector_similarity_weight is invalid")
         service = _service(tenant_id, dataset_id)
-        by_document = service.search_scope(path)
-        if not by_document:
-            return _success(service, {"items": [], "total": 0})
-        doc_ids = list(by_document)
-        request_payload = {
-            "question": query,
-            "doc_ids": doc_ids,
-            "size": top_k,
-            "top_k": _RECALL_TOP_K,
-            "similarity_threshold": similarity_threshold,
-            "vector_similarity_weight": service.search_vector_weight(mode, vector_similarity_weight),
-        }
-        ok, result = await dataset_api_service.search(dataset_id, tenant_id, request_payload)
-        if not ok:
-            raise NotImplementedError(result)
-        documents = {document["id"]: document for document in service._documents()}
-        content_revision = service.revision(service._dataset())["content_revision"]
-        citation_contexts = {}
-        items = []
-        for chunk in result.get("chunks", []):
-            entry = by_document.get(chunk.get("doc_id"))
-            document = documents.get(chunk.get("doc_id"))
-            if entry and document:
-                context = citation_contexts.get(document["id"])
-                if context is None:
-                    context = citation_contexts[document["id"]] = service.citation_context(document)
-                target = service.citation_target(entry, document, content_revision, chunk=chunk, context=context)
-                items.append(
-                    {
-                        "path": entry["path"],
-                        "snippet": chunk.get("content_with_weight", ""),
-                        "citation_ref": _issue_citation(service, document, target),
-                        "page": target["page"],
-                        "images": service.search_images(document["id"], chunk),
-                    }
-                )
-        return _success(service, {"items": items, "total": len(items)})
-    except NotImplementedError:
-        response = get_error_data_result(message="SEARCH_UNAVAILABLE")
-        response.status_code = 503
+        result = await CorpusToolService(
+            tenant_id,
+            service_factory=lambda _dataset_id: service,
+        ).search(
+            scopes=[{"scope": "dataset", "dataset_id": dataset_id, "path": path}],
+            query=query,
+            limit=top_k,
+            per_document_limit=per_document_limit,
+            similarity_threshold=similarity_threshold,
+            vector_similarity_weight=vector_similarity_weight,
+            mode=mode,
+        )
+        result["items"] = [
+            {key: value for key, value in item.items() if key != "scope"}
+            for item in result["items"]
+        ]
+        return _success(service, result)
+    except (ValueError, CorpusFsError, CorpusPathError) as error:
+        return _error(error)
+
+
+@manager.route("/datasets/corpus-search", methods=["POST"])  # noqa: F821
+@login_required
+@add_tenant_id_to_kwargs
+async def corpus_search(tenant_id: str):
+    try:
+        payload = _body(
+            await request.get_json() or {},
+            {
+                "scopes",
+                "query",
+                "limit",
+                "per_document_limit",
+                "similarity_threshold",
+                "vector_similarity_weight",
+                "mode",
+            },
+        )
+        scopes = payload.get("scopes")
+        actor_ref = tenant_id
+        delegation_token = request.headers.get("X-RAGFlow-Delegation")
+        if delegation_token:
+            delegation = CorpusDelegationService.verify(
+                delegation_token,
+                tenant_id,
+                audience=CorpusDelegationService.corpus_fs_audience,
+                purpose="corpus-fs",
+            )
+            requested_dataset_ids = {
+                scope.get("dataset_id")
+                for scope in scopes
+                if isinstance(scope, dict)
+            } if isinstance(scopes, list) else set()
+            if not requested_dataset_ids or not requested_dataset_ids.issubset(delegation.dataset_ids):
+                raise CorpusDelegationError("dataset is not delegated")
+            actor_ref = delegation.actor_id
+        result = await CorpusToolService(tenant_id, actor_ref).search(
+            scopes=scopes,
+            query=payload.get("query"),
+            limit=payload.get("limit", 10),
+            per_document_limit=payload.get("per_document_limit", 3),
+            similarity_threshold=payload.get("similarity_threshold", 0.0),
+            vector_similarity_weight=payload.get("vector_similarity_weight", 0.3),
+            mode=payload.get("mode", "hybrid"),
+        )
+        return get_result(data=result)
+    except CorpusDelegationError:
+        response = get_error_data_result(message="NOT_FOUND")
+        response.status_code = 404
         return response
     except (ValueError, CorpusFsError, CorpusPathError) as error:
         return _error(error)
