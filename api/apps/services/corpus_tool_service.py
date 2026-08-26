@@ -244,6 +244,14 @@ class CorpusToolService:
             document_counts[key] = count + 1
             document_limited.append(evidence)
 
+        # Expose a stable, reproducible global rank (1-based) so downstream
+        # evaluation can compute retrieval metrics (Hit@K / MRR / Recall@K)
+        # without re-deriving order from scores. Rank follows the dedup + per-
+        # document-limit pipeline order, which is deterministic for identical data
+        # revision and search parameters.
+        for rank, evidence in enumerate(document_limited, start=1):
+            evidence["rank"] = rank
+
         items = document_limited[:limit]
         return {
             "schema": CORPUS_EVIDENCE_SCHEMA,
@@ -258,5 +266,16 @@ class CorpusToolService:
                 "document_limited_count": len(document_limited),
                 "returned_count": len(items),
                 "ranking_mode": "score_then_source_rank",
+                "search_params": {
+                    "mode": mode,
+                    "limit": limit,
+                    "per_document_limit": per_document_limit,
+                    "similarity_threshold": similarity_threshold,
+                    "vector_similarity_weight": vector_similarity_weight,
+                },
+                "content_revisions": {
+                    str(context["scope"]): context["content_revision"]
+                    for context in contexts
+                },
             },
         }
