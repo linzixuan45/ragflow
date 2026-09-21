@@ -2,21 +2,25 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
 import mimetypes
 import re
 import time
+from collections.abc import Callable
+from typing import Any
 from urllib.parse import quote
 
+from peewee import InterfaceError, OperationalError
 from quart import make_response, request
 
 from api.apps import login_required
 from api.apps.services.corpus_citation_service import CorpusCitationError, CorpusCitationService
 from api.apps.services.corpus_cursor_service import CorpusCursorError, CorpusCursorService, CorpusPageCursorService
 from api.apps.services.corpus_delegation_service import CorpusDelegationError, CorpusDelegationService
-from api.apps.services.corpus_fs_service import CorpusFsError, CorpusFsService, InvalidConfirmationError, PreconditionRequiredError
+from api.apps.services.corpus_fs_service import CorpusFsError, CorpusFsService, CorpusUnavailableError, InvalidConfirmationError, PreconditionRequiredError
 from api.apps.services.corpus_path_service import AmbiguousPathError, CorpusPathError
 from api.apps.services.corpus_secret_service import corpus_secret
 from api.apps.services.corpus_tool_service import CorpusToolService
@@ -53,6 +57,8 @@ def _service(tenant_id: str, dataset_id: str, *, require_delegation: bool = Fals
 
 
 def _error(error: Exception):
+    if isinstance(error, (InterfaceError, OperationalError, OSError)):
+        error = CorpusUnavailableError(str(error))
     if isinstance(error, AmbiguousPathError):
         response = get_error_data_result(message="AMBIGUOUS_PATH")
         response.status_code = 409
@@ -67,8 +73,10 @@ def _error(error: Exception):
 
 
 def _success(service: CorpusFsService, data: dict):
-    revision = service.revision(service._dataset())
-    data["revision"] = revision
+    revision = data.get("revision")
+    if not isinstance(revision, dict) or not isinstance(revision.get("content_revision"), int):
+        revision = service.revision(service._dataset())
+        data["revision"] = revision
     response = get_result(data=data)
     response.headers["Cache-Control"] = "private, no-store"
     response.headers["ETag"] = f'"{revision["content_revision"]}"'
@@ -83,6 +91,32 @@ def _expected_revision() -> int:
     if not match or int(match.group(1)) < 1:
         raise CorpusFsError("If-Match must contain a positive content revision")
     return int(match.group(1))
+
+
+async def _run_sync_io(operation: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    """Run Corpus FS ORM/storage off the Quart event-loop thread.
+
+    Peewee connections are thread-local. Async routes that `await` and then
+    query MySQL on the loop thread share one socket with every other coroutine,
+    which collapses into OSError(9) and used to be returned as HTTP 400
+    INVALID_ARGUMENT.
+    """
+    try:
+        return await asyncio.to_thread(operation, *args, **kwargs)
+    except (InterfaceError, OperationalError, OSError) as exc:
+        raise CorpusUnavailableError(str(exc)) from exc
+
+
+async def _commit_content_mutation(service: CorpusFsService, mutate: Callable[[], dict]) -> Any:
+    expected_revision = _expected_revision()
+
+    def run() -> dict:
+        with service.content_mutation(expected_revision):
+            payload = mutate()
+        payload["revision"] = service.revision(service._dataset())
+        return payload
+
+    return _success(service, await _run_sync_io(run))
 
 
 async def _file_response(data: bytes, name: str, content_type: str, content_hash: str):
@@ -262,9 +296,13 @@ async def create_folder(tenant_id: str, dataset_id: str):
     try:
         payload = _body(await request.get_json() or {}, {"parent_path", "name"})
         service = _service(tenant_id, dataset_id, require_delegation=True)
-        with service.content_mutation(_expected_revision()):
-            entry = service.create_folder(_body_string(payload, "parent_path", "/", 1024), _body_string(payload, "name", maximum=256))
-        return _success(service, entry)
+        parent_path = _body_string(payload, "parent_path", "/", 1024)
+        name = _body_string(payload, "name", maximum=256)
+
+        def mutate():
+            return service.create_folder(parent_path, name)
+
+        return await _commit_content_mutation(service, mutate)
     except (CorpusFsError, CorpusPathError) as error:
         return _error(error)
 
@@ -281,7 +319,8 @@ async def upload(tenant_id: str, dataset_id: str):
         file_objs = files.getlist("file") if "file" in files else []
         if not file_objs or any(not item.filename for item in file_objs):
             raise CorpusFsError("file is required")
-        with service.content_mutation(_expected_revision()):
+
+        def mutate():
             service.resolve_writable(parent_path, folder=True)
             errors, uploaded = FileService.upload_document(service._dataset(), file_objs, tenant_id)
             if not uploaded:
@@ -298,7 +337,9 @@ async def upload(tenant_id: str, dataset_id: str):
                     value["tenant_id"] = tenant_id
                     bucket, name = File2DocumentService.get_storage_address(doc_id=document_id)
                     queue_tasks(value, bucket, name, 0)
-        return _success(service, {"items": uploaded_entries, "errors": errors})
+            return {"items": uploaded_entries, "errors": errors}
+
+        return await _commit_content_mutation(service, mutate)
     except (CorpusFsError, CorpusPathError) as error:
         return _error(error)
 
