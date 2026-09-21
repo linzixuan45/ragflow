@@ -721,7 +721,7 @@ async def grep(tenant_id: str, dataset_id: str):
 @add_tenant_id_to_kwargs
 async def semantic_search(tenant_id: str, dataset_id: str):
     try:
-        payload = _body(await request.get_json() or {}, {"query", "path", "top_k", "per_document_limit", "similarity_threshold", "vector_similarity_weight", "mode"})
+        payload = _body(await request.get_json() or {}, {"query", "path", "top_k", "per_document_limit", "similarity_threshold", "vector_similarity_weight", "mode", "use_kg"})
         query = _body_string(payload, "query")
         path = _body_string(payload, "path", default="/", maximum=1024)
         mode = payload.get("mode", "hybrid")
@@ -731,6 +731,7 @@ async def semantic_search(tenant_id: str, dataset_id: str):
         per_document_limit = _int(payload.get("per_document_limit", 3), "per_document_limit", 1, 10)
         similarity_threshold = payload.get("similarity_threshold", 0.0)
         vector_similarity_weight = payload.get("vector_similarity_weight", 0.3)
+        use_kg = _body_bool(payload, "use_kg", False)
         if isinstance(similarity_threshold, bool) or not isinstance(similarity_threshold, (int, float)) or not 0 <= similarity_threshold <= 1:
             raise CorpusFsError("similarity_threshold is invalid")
         if isinstance(vector_similarity_weight, bool) or not isinstance(vector_similarity_weight, (int, float)) or not 0 <= vector_similarity_weight <= 1:
@@ -747,6 +748,7 @@ async def semantic_search(tenant_id: str, dataset_id: str):
             similarity_threshold=similarity_threshold,
             vector_similarity_weight=vector_similarity_weight,
             mode=mode,
+            use_kg=use_kg,
         )
         result["items"] = [
             {key: value for key, value in item.items() if key != "scope"}
@@ -772,6 +774,7 @@ async def corpus_search(tenant_id: str):
                 "similarity_threshold",
                 "vector_similarity_weight",
                 "mode",
+                "use_kg",
             },
         )
         scopes = payload.get("scopes")
@@ -800,6 +803,7 @@ async def corpus_search(tenant_id: str):
             similarity_threshold=payload.get("similarity_threshold", 0.0),
             vector_similarity_weight=payload.get("vector_similarity_weight", 0.3),
             mode=payload.get("mode", "hybrid"),
+            use_kg=_body_bool(payload, "use_kg", False),
         )
         return get_result(data=result)
     except CorpusDelegationError:

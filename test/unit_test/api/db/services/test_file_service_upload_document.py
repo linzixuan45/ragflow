@@ -176,6 +176,44 @@ def test_upload_document_skips_cross_kb_document_id_collision(monkeypatch):
     assert "Existing document id collision with another knowledge base; skipping update." in err[0]
 
 
+@pytest.mark.p2
+def test_upload_document_does_not_swallow_closed_mysql_connection(monkeypatch):
+    kb = SimpleNamespace(
+        id="kb-target",
+        tenant_id="tenant-1",
+        name="Target KB",
+        parser_id="default",
+        pipeline_id=None,
+        parser_config={},
+    )
+
+    monkeypatch.setattr(FileService, "get_root_folder", classmethod(lambda cls, _uid: {"id": "root"}))
+    monkeypatch.setattr(FileService, "init_knowledgebase_docs", classmethod(lambda cls, _pf_id, _uid: None))
+    monkeypatch.setattr(FileService, "get_kb_folder", classmethod(lambda cls, _uid: {"id": "kb-root"}))
+    monkeypatch.setattr(
+        FileService,
+        "new_a_file_from_kb",
+        classmethod(lambda cls, _tenant_id, _name, _parent_id: {"id": "kb-folder"}),
+    )
+    monkeypatch.setattr(file_service_module.DocumentService, "get_by_id", lambda _doc_id: (False, None))
+    monkeypatch.setattr(
+        file_service_module.DocumentService,
+        "check_doc_health",
+        classmethod(lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError(9, "Bad file descriptor"))),
+    )
+
+    class _LegalDocx:
+        filename = "legal.docx"
+
+        def read(self):
+            raise AssertionError("closed MySQL connections must fail before the file body is read")
+
+    with pytest.raises(OSError) as failure:
+        _unwrapped_upload_document()(FileService, kb, [_LegalDocx()], "user-1")
+
+    assert failure.value.errno == 9
+
+
 # ---------------------------------------------------------------------------
 # Helpers shared by TestValidateUrlForCrawl
 # ---------------------------------------------------------------------------

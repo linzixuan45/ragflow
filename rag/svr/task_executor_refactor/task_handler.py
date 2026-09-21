@@ -489,7 +489,9 @@ class TaskHandler:
 
         graphrag_conf = kb_parser_config.get("graphrag", {})
         start_ts = timer()
-        chat_model_config = get_model_config_from_provider_instance(task_tenant_id, LLMType.CHAT, kb_task_llm_id)
+        from rag.graphrag.chat_llm import resolve_graphrag_chat_model_config
+
+        chat_model_config = resolve_graphrag_chat_model_config(task_tenant_id, kb_parser_config, kb_task_llm_id)
         with LLMBundle(task_tenant_id, chat_model_config, lang=task_language) as chat_model:
             with_resolution = graphrag_conf.get("resolution", False)
             with_community = graphrag_conf.get("community", False)

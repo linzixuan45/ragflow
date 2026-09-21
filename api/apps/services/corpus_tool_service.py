@@ -43,6 +43,27 @@ def _page(chunk: dict[str, Any]) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
+def _chunk_document_ids(chunk: dict[str, Any], by_document: dict[str, Any], *, use_kg: bool) -> list[str]:
+    candidates: list[str] = []
+    doc_id = chunk.get("doc_id")
+    if isinstance(doc_id, str) and doc_id:
+        candidates.append(doc_id)
+    source_id = chunk.get("source_id")
+    if isinstance(source_id, list):
+        candidates.extend(str(item) for item in source_id if item)
+    elif isinstance(source_id, str) and source_id:
+        candidates.append(source_id)
+    mapped = [item for item in candidates if item in by_document]
+    if mapped:
+        return [mapped[0]]
+    # KGSearch returns a synthetic chunk with an empty doc_id. Bind it to the
+    # first in-scope document so the graph summary still becomes a path /
+    # citation_ref hit instead of leaking upstream ids or being dropped.
+    if use_kg and not candidates and by_document and chunk.get("content_with_weight"):
+        return [next(iter(by_document))]
+    return []
+
+
 class CorpusToolService:
     """Own generic Corpus evidence shaping independently of any Agent runtime."""
 
@@ -113,6 +134,7 @@ class CorpusToolService:
         similarity_threshold: float = 0.0,
         vector_similarity_weight: float = 0.3,
         mode: str = "hybrid",
+        use_kg: bool = False,
     ) -> dict[str, Any]:
         normalized_scopes = self._normalize_scopes(scopes)
         if not isinstance(query, str) or not query or len(query.encode()) > 4096:
@@ -162,6 +184,7 @@ class CorpusToolService:
                     "top_k": _MAX_CANDIDATES_PER_SCOPE,
                     "similarity_threshold": similarity_threshold,
                     "vector_similarity_weight": context["service"].search_vector_weight(mode, vector_similarity_weight),
+                    "use_kg": bool(use_kg),
                 },
             )
             if not ok:
@@ -175,7 +198,10 @@ class CorpusToolService:
             service = context["service"]
             content_revision = context["content_revision"]
             for source_rank, chunk in enumerate(chunks):
-                document_id = chunk.get("doc_id")
+                document_ids = _chunk_document_ids(chunk, context["by_document"], use_kg=bool(use_kg))
+                if not document_ids:
+                    continue
+                document_id = document_ids[0]
                 entry = context["by_document"].get(document_id)
                 document = context["documents"].get(document_id)
                 if not entry or not document:
@@ -272,6 +298,7 @@ class CorpusToolService:
                     "per_document_limit": per_document_limit,
                     "similarity_threshold": similarity_threshold,
                     "vector_similarity_weight": vector_similarity_weight,
+                    "use_kg": bool(use_kg),
                 },
                 "content_revisions": {
                     str(context["scope"]): context["content_revision"]

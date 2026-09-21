@@ -43,4 +43,35 @@ def test_corpus_search_route_uses_shared_tool_service(monkeypatch):
         "similarity_threshold": 0.0,
         "vector_similarity_weight": 0.3,
         "mode": "hybrid",
+        "use_kg": False,
     }
+
+
+class _KgRequest(_Request):
+    async def get_json(self):
+        payload = await super().get_json()
+        payload["use_kg"] = True
+        return payload
+
+
+def test_corpus_search_route_forwards_use_kg(monkeypatch):
+    from api.apps.restful_apis import corpus_fs_api
+
+    captured = {}
+
+    class ToolService:
+        def __init__(self, tenant_id, actor_ref):
+            captured["identity"] = (tenant_id, actor_ref)
+
+        async def search(self, **kwargs):
+            captured["request"] = kwargs
+            return {"schema": "ragflow.corpus.evidence.v1", "items": []}
+
+    monkeypatch.setattr(corpus_fs_api, "request", _KgRequest())
+    monkeypatch.setattr(corpus_fs_api, "CorpusToolService", ToolService)
+    monkeypatch.setattr(corpus_fs_api, "get_result", lambda *, data: data)
+
+    route = corpus_fs_api.corpus_search.__wrapped__.__wrapped__
+    asyncio.run(route(tenant_id="tenant-1"))
+
+    assert captured["request"]["use_kg"] is True

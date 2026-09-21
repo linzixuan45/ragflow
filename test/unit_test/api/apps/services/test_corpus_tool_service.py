@@ -118,14 +118,13 @@ async def test_search_returns_ranked_path_only_evidence_across_scopes():
     ]
     assert result["items"][1]["score"] == 0.95
     assert result["items"][1]["vector_similarity"] == 0.91
-    assert result["search_meta"] == {
-        "scope_count": 2,
-        "raw_candidate_count": 6,
-        "deduplicated_count": 5,
-        "document_limited_count": 4,
-        "returned_count": 4,
-        "ranking_mode": "score_then_source_rank",
-    }
+    assert result["search_meta"]["scope_count"] == 2
+    assert result["search_meta"]["raw_candidate_count"] == 6
+    assert result["search_meta"]["deduplicated_count"] == 5
+    assert result["search_meta"]["document_limited_count"] == 4
+    assert result["search_meta"]["returned_count"] == 4
+    assert result["search_meta"]["ranking_mode"] == "score_then_source_rank"
+    assert result["search_meta"]["search_params"]["use_kg"] is False
     serialized = str(result)
     assert "chunk-a1" not in serialized
     assert "dataset-1-doc-a" not in serialized
@@ -197,3 +196,61 @@ async def test_search_maps_citation_io_failure_to_search_unavailable():
     assert failure.value.code == "SEARCH_UNAVAILABLE"
     assert failure.value.status == 503
     assert isinstance(failure.value.__cause__, OSError)
+
+
+@pytest.mark.asyncio
+async def test_search_defaults_use_kg_off_and_maps_graph_chunks_to_paths():
+    captured = {}
+
+    async def searcher(dataset_id, tenant_id, request):
+        captured[dataset_id] = request
+        chunks = [
+            {
+                "id": "chunk-a1",
+                "doc_id": "dataset-1-doc-a",
+                "content_with_weight": "alpha",
+                "page_num_int": [1],
+                "similarity": 0.80,
+            }
+        ]
+        if request.get("use_kg"):
+            chunks.insert(
+                0,
+                {
+                    "chunk_id": "kg-1",
+                    "doc_id": "",
+                    "content_with_weight": "entity-relation summary",
+                    "docnm_kwd": "Related content in Knowledge Graph",
+                    "similarity": 1.0,
+                },
+            )
+        return True, {"chunks": chunks}
+
+    service = CorpusToolService(
+        "tenant-1",
+        service_factory=lambda dataset_id: _CorpusService(dataset_id),
+        searcher=searcher,
+        citation_service=_CitationService(),
+    )
+
+    default_result = await service.search(
+        scopes=[{"scope": "handbook", "dataset_id": "dataset-1", "path": "/"}],
+        query="platform",
+    )
+    assert captured["dataset-1"]["use_kg"] is False
+    assert [item["snippet"] for item in default_result["items"]] == ["alpha"]
+
+    kg_result = await service.search(
+        scopes=[{"scope": "handbook", "dataset_id": "dataset-1", "path": "/"}],
+        query="platform",
+        use_kg=True,
+    )
+    assert captured["dataset-1"]["use_kg"] is True
+    assert [(item["path"], item["snippet"]) for item in kg_result["items"]] == [
+        ("/a.pdf", "entity-relation summary"),
+        ("/a.pdf", "alpha"),
+    ]
+    serialized = str(kg_result)
+    assert "dataset-1-doc-a" not in serialized
+    assert "kg-1" not in serialized
+    assert kg_result["search_meta"]["search_params"]["use_kg"] is True
