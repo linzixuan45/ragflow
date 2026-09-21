@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Union
 
 import xxhash
-from peewee import fn
+from peewee import fn, InterfaceError, OperationalError
 
 from api.db import KNOWLEDGEBASE_FOLDER_NAME, SKILLS_FOLDER_NAME, FileType
 from api.db.db_models import DB, Document, File, File2Document, Knowledgebase, Task
@@ -573,6 +573,8 @@ class FileService(CommonService):
                     DocumentService.update_by_id(doc["id"], doc)
                     if new_hash != old_hash:
                         files.append((doc, blob))
+                except (InterfaceError, OperationalError, OSError):
+                    raise
                 except Exception as exc:
                     logging.exception(f"Failed to update document {doc_id}: {exc}")
                     err.append(file.filename + ": " + str(exc))
@@ -620,6 +622,8 @@ class FileService(CommonService):
 
                 FileService.add_file_from_kb(doc, kb_folder["id"], kb.tenant_id)
                 files.append((doc, blob))
+            except (InterfaceError, OperationalError, OSError):
+                raise
             except Exception as e:
                 err.append(file.filename + ": " + str(e))
 

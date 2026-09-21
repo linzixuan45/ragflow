@@ -87,6 +87,13 @@ class PreconditionRequiredError(CorpusFsError):
     status = 428
 
 
+class CorpusUnavailableError(CorpusFsError):
+    """Transient Corpus FS I/O, not a client argument error."""
+
+    code = "UNAVAILABLE"
+    status = 503
+
+
 class CorpusFsService:
     registry = CorpusPathRegistry()
 
