@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import hmac
 import mimetypes
@@ -11,7 +12,7 @@ from contextlib import contextmanager
 from typing import Any
 
 import xxhash
-from peewee import OperationalError, ProgrammingError
+from peewee import InterfaceError, OperationalError, ProgrammingError
 
 from api.apps.services.corpus_path_service import AmbiguousPathError, CorpusPathRegistry, CorpusPathResolver
 from api.apps.services.corpus_secret_service import corpus_secret
@@ -92,6 +93,25 @@ class CorpusUnavailableError(CorpusFsError):
 
     code = "UNAVAILABLE"
     status = 503
+
+
+_UNAVAILABLE_ERRNOS = {
+    errno.EBADF,
+    errno.EPIPE,
+    errno.ECONNRESET,
+    errno.ECONNABORTED,
+    errno.ENOTCONN,
+    errno.ETIMEDOUT,
+}
+
+
+def is_unavailable_io(error: BaseException) -> bool:
+    """True for closed/reset MySQL sockets, not missing files or permission errors."""
+    if isinstance(error, (InterfaceError, OperationalError)):
+        return True
+    if isinstance(error, FileNotFoundError):
+        return False
+    return isinstance(error, OSError) and error.errno in _UNAVAILABLE_ERRNOS
 
 
 class CorpusFsService:

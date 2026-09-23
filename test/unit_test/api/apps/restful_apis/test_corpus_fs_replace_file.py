@@ -17,6 +17,12 @@ class _Service:
         self.parse_error = parse_error
         self.calls = []
 
+    def _dataset(self):
+        return SimpleNamespace(id="dataset-1")
+
+    def revision(self, _dataset):
+        return {"content_revision": 8}
+
     @contextmanager
     def content_mutation(self, revision):
         self.calls.append(("revision", revision))

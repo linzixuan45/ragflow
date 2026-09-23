@@ -13,14 +13,13 @@ from collections.abc import Callable
 from typing import Any
 from urllib.parse import quote
 
-from peewee import InterfaceError, OperationalError
 from quart import make_response, request
 
 from api.apps import login_required
 from api.apps.services.corpus_citation_service import CorpusCitationError, CorpusCitationService
 from api.apps.services.corpus_cursor_service import CorpusCursorError, CorpusCursorService, CorpusPageCursorService
 from api.apps.services.corpus_delegation_service import CorpusDelegationError, CorpusDelegationService
-from api.apps.services.corpus_fs_service import CorpusFsError, CorpusFsService, CorpusUnavailableError, InvalidConfirmationError, PreconditionRequiredError
+from api.apps.services.corpus_fs_service import CorpusFsError, CorpusFsService, CorpusUnavailableError, InvalidConfirmationError, PreconditionRequiredError, is_unavailable_io
 from api.apps.services.corpus_path_service import AmbiguousPathError, CorpusPathError
 from api.apps.services.corpus_secret_service import corpus_secret
 from api.apps.services.corpus_tool_service import CorpusToolService
@@ -57,7 +56,7 @@ def _service(tenant_id: str, dataset_id: str, *, require_delegation: bool = Fals
 
 
 def _error(error: Exception):
-    if isinstance(error, (InterfaceError, OperationalError, OSError)):
+    if is_unavailable_io(error):
         error = CorpusUnavailableError(str(error))
     if isinstance(error, AmbiguousPathError):
         response = get_error_data_result(message="AMBIGUOUS_PATH")
@@ -103,8 +102,17 @@ async def _run_sync_io(operation: Callable[..., Any], *args: Any, **kwargs: Any)
     """
     try:
         return await asyncio.to_thread(operation, *args, **kwargs)
-    except (InterfaceError, OperationalError, OSError) as exc:
-        raise CorpusUnavailableError(str(exc)) from exc
+    except Exception as exc:
+        if is_unavailable_io(exc):
+            raise CorpusUnavailableError(str(exc)) from exc
+        raise
+
+
+def _ensure_revision(service: CorpusFsService, payload: dict) -> dict:
+    revision = payload.get("revision")
+    if not isinstance(revision, dict) or not isinstance(revision.get("content_revision"), int):
+        payload["revision"] = service.revision(service._dataset())
+    return payload
 
 
 async def _commit_content_mutation(service: CorpusFsService, mutate: Callable[[], dict]) -> Any:
@@ -113,8 +121,14 @@ async def _commit_content_mutation(service: CorpusFsService, mutate: Callable[[]
     def run() -> dict:
         with service.content_mutation(expected_revision):
             payload = mutate()
-        payload["revision"] = service.revision(service._dataset())
-        return payload
+        return _ensure_revision(service, payload)
+
+    return _success(service, await _run_sync_io(run))
+
+
+async def _commit_read(service: CorpusFsService, load: Callable[[], dict]) -> Any:
+    def run() -> dict:
+        return _ensure_revision(service, load())
 
     return _success(service, await _run_sync_io(run))
 
@@ -360,7 +374,8 @@ async def replace_file(tenant_id: str, dataset_id: str):
         content = file_obj.read()
         if not content:
             raise CorpusFsError("file is empty")
-        with service.content_mutation(_expected_revision()):
+
+        def mutate():
             entry = service.replace_original(path, content, expected_content_hash)
             try:
                 parse = service.retry_parse(path)
@@ -368,7 +383,9 @@ async def replace_file(tenant_id: str, dataset_id: str):
             except Exception as exc:  # noqa: BLE001 - the source save succeeds even if any queue backend fails
                 entry["parse_status"] = "FAILED"
                 entry["parse_message"] = str(exc)
-        return _success(service, entry)
+            return entry
+
+        return await _commit_content_mutation(service, mutate)
     except (CorpusFsError, CorpusPathError) as error:
         return _error(error)
 
@@ -383,9 +400,14 @@ async def move(tenant_id: str, dataset_id: str):
         if not isinstance(source_paths, list) or not source_paths or not all(isinstance(path, str) for path in source_paths):
             raise CorpusFsError("source_paths is invalid")
         service = _service(tenant_id, dataset_id, require_delegation=True)
-        with service.content_mutation(_expected_revision()):
-            count = service.move(source_paths, _body_string(payload, "destination_path", maximum=1024), payload.get("new_name"))
-        return _success(service, {"success_count": count, "failed_paths": []})
+        destination_path = _body_string(payload, "destination_path", maximum=1024)
+        new_name = payload.get("new_name")
+
+        def mutate():
+            count = service.move(source_paths, destination_path, new_name)
+            return {"success_count": count, "failed_paths": []}
+
+        return await _commit_content_mutation(service, mutate)
     except (CorpusFsError, CorpusPathError) as error:
         return _error(error)
 
@@ -400,8 +422,16 @@ async def delete_preview(tenant_id: str, dataset_id: str):
         if not paths or not all(isinstance(path, str) for path in paths):
             raise CorpusFsError("paths is invalid")
         service = _service(tenant_id, dataset_id, require_delegation=True)
-        target_ids, file_count, folder_count = service.deletion_targets(paths)
-        return _success(service, {"file_count": file_count, "folder_count": folder_count, "confirmation_token": _issue_delete_token(service, paths, target_ids)})
+
+        def load():
+            target_ids, file_count, folder_count = service.deletion_targets(paths)
+            return {
+                "file_count": file_count,
+                "folder_count": folder_count,
+                "confirmation_token": _issue_delete_token(service, paths, target_ids),
+            }
+
+        return await _commit_read(service, load)
     except (CorpusFsError, CorpusPathError) as error:
         return _error(error)
 
@@ -417,12 +447,14 @@ async def delete_entries(tenant_id: str, dataset_id: str):
             raise CorpusFsError("paths is invalid")
         service = _service(tenant_id, dataset_id, require_delegation=True)
         token = _parse_delete_token(service, paths, _body_string(payload, "confirmation_token", maximum=4096))
-        with service.content_mutation(_expected_revision()):
+
+        def mutate():
             target_ids, _, _ = service.deletion_targets(paths)
             if not hmac.compare_digest(str(token.get("snapshot") or ""), _delete_snapshot(dataset_id, paths, target_ids)):
                 raise InvalidConfirmationError("delete targets changed after preview")
-            result = service.delete(paths)
-        return _success(service, result)
+            return service.delete(paths)
+
+        return await _commit_content_mutation(service, mutate)
     except (CorpusFsError, CorpusPathError) as error:
         return _error(error)
 
@@ -433,7 +465,8 @@ async def delete_entries(tenant_id: str, dataset_id: str):
 async def blob(tenant_id: str, dataset_id: str):
     try:
         service = _service(tenant_id, dataset_id)
-        entry, data, _ = service.original_data(request.args.get("path", ""))
+        path = request.args.get("path", "")
+        entry, data, _ = await _run_sync_io(service.original_data, path)
         return await _file_response(data, entry["name"], entry["mime_type"], entry.get("content_hash", ""))
     except (CorpusFsError, CorpusPathError) as error:
         return _error(error)
@@ -547,9 +580,13 @@ async def resolve_citation(tenant_id: str, dataset_id: str):
         payload = _body(await request.get_json() or {}, {"citation_ref"})
         citation_ref = _body_string(payload, "citation_ref", maximum=16384)
         service = _service(tenant_id, dataset_id)
-        document_id, target = _citation_service().resolve_locator(citation_ref, tenant_id, dataset_id)
-        service.authorize_citation(document_id)
-        return _success(service, {"dataset_id": dataset_id, **target})
+
+        def load():
+            document_id, target = _citation_service().resolve_locator(citation_ref, tenant_id, dataset_id)
+            service.authorize_citation(document_id)
+            return {"dataset_id": dataset_id, **target}
+
+        return await _commit_read(service, load)
     except CorpusCitationError:
         return _error(CorpusFsError("invalid citation"))
     except (CorpusFsError, CorpusPathError) as error:
@@ -564,9 +601,13 @@ async def preview_citation(tenant_id: str, dataset_id: str):
         payload = _body(await request.get_json() or {}, {"citation_ref"})
         citation_ref = _body_string(payload, "citation_ref", maximum=16384)
         service = _service(tenant_id, dataset_id)
-        document_id, target = _citation_service().resolve_locator(citation_ref, tenant_id, dataset_id)
-        preview = service.citation_preview(document_id, target)
-        return _success(service, {"citation": {"dataset_id": dataset_id, **target}, "preview": preview})
+
+        def load():
+            document_id, target = _citation_service().resolve_locator(citation_ref, tenant_id, dataset_id)
+            preview = service.citation_preview(document_id, target)
+            return {"citation": {"dataset_id": dataset_id, **target}, "preview": preview}
+
+        return await _commit_read(service, load)
     except CorpusCitationError:
         return _error(CorpusFsError("invalid citation"))
     except (CorpusFsError, CorpusPathError) as error:
@@ -580,7 +621,8 @@ async def derived_content(tenant_id: str, dataset_id: str):
     try:
         if request.method == "GET":
             service = _service(tenant_id, dataset_id)
-            return _success(service, service.markdown_current(request.args.get("path", "")))
+            path = request.args.get("path", "")
+            return await _commit_read(service, lambda: service.markdown_current(path))
         service = _service(tenant_id, dataset_id, require_delegation=True)
         payload = _body(await request.get_json() or {}, {"path", "content", "expected_version"})
         path = _body_string(payload, "path", maximum=1024)
@@ -588,9 +630,11 @@ async def derived_content(tenant_id: str, dataset_id: str):
         if not isinstance(content_value, str):
             raise CorpusFsError("content must be a string")
         expected_version = _int(payload.get("expected_version"), "expected_version", 0, 2147483647)
-        with service.content_mutation(_expected_revision()):
-            result = service.save_markdown(path, content_value, expected_version)
-        return _success(service, result)
+
+        def mutate():
+            return service.save_markdown(path, content_value, expected_version)
+
+        return await _commit_content_mutation(service, mutate)
     except (ValueError, CorpusFsError, CorpusPathError) as error:
         return _error(error)
 
@@ -616,9 +660,11 @@ async def restore_derived_content(tenant_id: str, dataset_id: str):
         path = _body_string(payload, "path", maximum=1024)
         version = _int(payload.get("version"), "version", 1, 2147483647)
         expected_version = _int(payload.get("expected_version"), "expected_version", 1, 2147483647)
-        with service.content_mutation(_expected_revision()):
-            result = service.restore_markdown(path, version, expected_version)
-        return _success(service, result)
+
+        def mutate():
+            return service.restore_markdown(path, version, expected_version)
+
+        return await _commit_content_mutation(service, mutate)
     except (ValueError, CorpusFsError, CorpusPathError) as error:
         return _error(error)
 
@@ -633,9 +679,11 @@ async def publish_derived_content(tenant_id: str, dataset_id: str):
         path = _body_string(payload, "path", maximum=1024)
         version = _int(payload.get("version"), "version", 1, 2147483647)
         expected_version = _int(payload.get("expected_version"), "expected_version", 1, 2147483647)
-        with service.content_mutation(_expected_revision()):
-            result = service.publish_markdown(path, version, expected_version)
-        return _success(service, result)
+
+        def mutate():
+            return service.publish_markdown(path, version, expected_version)
+
+        return await _commit_content_mutation(service, mutate)
     except (ValueError, CorpusFsError, CorpusPathError) as error:
         return _error(error)
 
@@ -673,9 +721,11 @@ async def mutate_parse(tenant_id: str, dataset_id: str):
         action = _body_string(payload, "action", maximum=16)
         paths = _body_paths(payload)
         service = _service(tenant_id, dataset_id, require_delegation=True)
-        with service.content_mutation(_expected_revision()):
-            result = service.parse_documents(paths, action)
-        return _success(service, result)
+
+        def mutate():
+            return service.parse_documents(paths, action)
+
+        return await _commit_content_mutation(service, mutate)
     except (CorpusFsError, CorpusPathError) as error:
         return _error(error)
 
@@ -686,11 +736,16 @@ async def mutate_parse(tenant_id: str, dataset_id: str):
 async def image(tenant_id: str, dataset_id: str):
     try:
         service = _service(tenant_id, dataset_id)
-        _, document = service.resolve_document(request.args.get("path", ""))
+        path = request.args.get("path", "")
         image_ref = request.args.get("image_ref", "")
         if not image_ref or len(image_ref) != 64:
             raise CorpusFsError("image_ref is invalid")
-        data, object_name = service.image_data(document, image_ref)
+
+        def load():
+            _, document = service.resolve_document(path)
+            return service.image_data(document, image_ref)
+
+        data, object_name = await _run_sync_io(load)
         response = await make_response(data)
         response.headers["Content-Type"] = _image_content_type(object_name, data)
         response.headers["Cache-Control"] = "private, no-store"
@@ -720,35 +775,38 @@ async def grep(tenant_id: str, dataset_id: str):
         if cursor is not None and not isinstance(cursor, str):
             raise CorpusFsError("cursor is invalid")
         service = _service(tenant_id, dataset_id)
-        offset, page_context = _page_offset(service, "grep", {"query": query, "path": path, "match": match, "exclude": exclude or [], "limit": limit, "highlight": highlight, "count_only": count_only}, cursor)
-        by_document = service.search_scope(path)
-        document_ids = list(by_document)
-        result = KeywordSearchService().search_authorized(tenant_id, [dataset_id], document_ids, query, match=match, exclude=exclude, offset=offset, limit=limit, highlight=highlight, count_only=count_only)
-        documents = {document["id"]: document for document in service._documents()}
-        content_revision = page_context["revision"]["content_revision"]
-        citation_contexts = {}
-        items = []
-        for chunk in result["chunks"]:
-            entry = by_document.get(chunk.get("doc_id"))
-            document = documents.get(chunk.get("doc_id"))
-            if entry and document:
-                citation_context = citation_contexts.get(document["id"])
-                if citation_context is None:
-                    citation_context = citation_contexts[document["id"]] = service.citation_context(document)
-                target = service.citation_target(entry, document, content_revision, chunk=chunk, context=citation_context)
-                items.append({"path": entry["path"], "snippet": chunk.get("content_with_weight", ""), "citation_ref": _issue_citation(service, document, target), "page": target["page"]})
-        page = KeywordSearchService.page_state(result, offset=offset, returned_count=len(items), count_only=count_only)
-        return _success(
-            service,
-            {
+        grep_scope = {"query": query, "path": path, "match": match, "exclude": exclude or [], "limit": limit, "highlight": highlight, "count_only": count_only}
+
+        def load():
+            offset, page_context = _page_offset(service, "grep", grep_scope, cursor)
+            by_document = service.search_scope(path)
+            document_ids = list(by_document)
+            result = KeywordSearchService().search_authorized(tenant_id, [dataset_id], document_ids, query, match=match, exclude=exclude, offset=offset, limit=limit, highlight=highlight, count_only=count_only)
+            documents = {document["id"]: document for document in service._documents()}
+            content_revision = page_context["revision"]["content_revision"]
+            citation_contexts = {}
+            items = []
+            for chunk in result["chunks"]:
+                entry = by_document.get(chunk.get("doc_id"))
+                document = documents.get(chunk.get("doc_id"))
+                if entry and document:
+                    citation_context = citation_contexts.get(document["id"])
+                    if citation_context is None:
+                        citation_context = citation_contexts[document["id"]] = service.citation_context(document)
+                    target = service.citation_target(entry, document, content_revision, chunk=chunk, context=citation_context)
+                    items.append({"path": entry["path"], "snippet": chunk.get("content_with_weight", ""), "citation_ref": _issue_citation(service, document, target), "page": target["page"]})
+            page = KeywordSearchService.page_state(result, offset=offset, returned_count=len(items), count_only=count_only)
+            return {
                 "total": page["total"],
                 "returned_count": page["returned_count"],
                 "consumed_count": page["consumed_count"],
                 "items": items,
                 "next_cursor": _next_page_cursor(page_context, page["next_offset"], page["truncated"]),
                 "truncated": page["truncated"],
-            },
-        )
+                "revision": page_context["revision"],
+            }
+
+        return await _commit_read(service, load)
     except SearchUnavailableError:
         response = get_error_data_result(message="SEARCH_UNAVAILABLE")
         response.status_code = 503
@@ -795,7 +853,7 @@ async def semantic_search(tenant_id: str, dataset_id: str):
             {key: value for key, value in item.items() if key != "scope"}
             for item in result["items"]
         ]
-        return _success(service, result)
+        return await _commit_read(service, lambda: result)
     except (ValueError, CorpusFsError, CorpusPathError) as error:
         return _error(error)
 

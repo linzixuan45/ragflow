@@ -14,6 +14,7 @@ from api.apps.services.corpus_fs_service import (
     PreconditionRequiredError,
     RevisionConflictError,
     VersionNotFoundError,
+    is_unavailable_io,
 )
 from api.apps.services.document_markdown_service import DocumentMarkdownService, MarkdownVersionConflict, MarkdownVersionNotFound
 from api.apps.services.source_projection_service import SourceProjectionService
@@ -937,3 +938,9 @@ def test_pdf_content_keeps_active_projection_readable_during_reparse(monkeypatch
 
     assert content == "previous active projection"
     assert source == "source_projection:7"
+
+
+def test_is_unavailable_io_maps_closed_sockets_not_missing_files():
+    assert is_unavailable_io(OSError(9, "Bad file descriptor")) is True
+    assert is_unavailable_io(FileNotFoundError("missing object")) is False
+    assert is_unavailable_io(OSError("storage unavailable")) is False

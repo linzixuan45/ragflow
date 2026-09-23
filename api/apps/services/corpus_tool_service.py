@@ -8,11 +8,9 @@ import math
 from collections.abc import Callable
 from typing import Any
 
-from peewee import InterfaceError, OperationalError
-
 from api.apps.services import dataset_api_service
 from api.apps.services.corpus_citation_service import CorpusCitationService
-from api.apps.services.corpus_fs_service import CorpusFsError, CorpusFsService
+from api.apps.services.corpus_fs_service import CorpusFsError, CorpusFsService, is_unavailable_io
 from api.apps.services.corpus_secret_service import corpus_secret
 
 CORPUS_EVIDENCE_SCHEMA = "ragflow.corpus.evidence.v1"
@@ -94,8 +92,10 @@ class CorpusToolService:
     async def _run_sync_io(operation: Callable[..., Any], *args: Any) -> Any:
         try:
             return await asyncio.to_thread(operation, *args)
-        except (InterfaceError, OperationalError, OSError) as exc:
-            raise CorpusSearchUnavailableError(str(exc)) from exc
+        except Exception as exc:
+            if is_unavailable_io(exc):
+                raise CorpusSearchUnavailableError(str(exc)) from exc
+            raise
 
     @staticmethod
     def _normalize_scopes(scopes: list[dict[str, Any]]) -> list[dict[str, str]]:

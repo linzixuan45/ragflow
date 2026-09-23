@@ -117,3 +117,43 @@ def test_upload_maps_closed_mysql_connection_to_unavailable(monkeypatch):
     assert result.status == 503
     assert isinstance(result.__cause__, OSError)
     assert result.__cause__.errno == 9
+
+
+def test_error_maps_closed_mysql_connection_to_http_503(monkeypatch):
+    from api.apps.restful_apis import corpus_fs_api
+
+    captured = {}
+
+    class _Response:
+        status_code = 200
+
+    def fake_get_error_data_result(message="Sorry! Data missing!", code=None, **_kwargs):
+        captured["message"] = message
+        return _Response()
+
+    monkeypatch.setattr(corpus_fs_api, "get_error_data_result", fake_get_error_data_result)
+
+    response = corpus_fs_api._error(OSError(9, "Bad file descriptor"))
+
+    assert captured["message"] == "UNAVAILABLE"
+    assert response.status_code == 503
+
+
+def test_error_does_not_map_file_not_found_to_unavailable(monkeypatch):
+    from api.apps.restful_apis import corpus_fs_api
+
+    captured = {}
+
+    class _Response:
+        status_code = 200
+
+    def fake_get_error_data_result(message="Sorry! Data missing!", code=None, **_kwargs):
+        captured["message"] = message
+        return _Response()
+
+    monkeypatch.setattr(corpus_fs_api, "get_error_data_result", fake_get_error_data_result)
+
+    response = corpus_fs_api._error(FileNotFoundError("missing object"))
+
+    assert captured["message"] == "INVALID_ARGUMENT"
+    assert response.status_code == 400
