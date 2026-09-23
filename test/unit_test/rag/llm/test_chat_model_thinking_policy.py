@@ -17,7 +17,11 @@
 import pytest
 
 from rag.llm import SupportedLiteLLMProvider
-from rag.llm.chat_model import _apply_model_family_policies, _move_litellm_provider_body_fields
+from rag.llm.chat_model import (
+    _apply_model_family_policies,
+    _move_litellm_provider_body_fields,
+    _overlay_instance_extra_body,
+)
 
 pytestmark = pytest.mark.p1
 
@@ -32,6 +36,7 @@ def test_qwen3_uses_system_disabled_default():
 
     assert gen_conf == {}
     assert kwargs["extra_body"]["enable_thinking"] is False
+    assert kwargs["extra_body"]["chat_template_kwargs"]["enable_thinking"] is False
 
 
 def test_qwen3_can_enable_thinking_explicitly():
@@ -43,7 +48,9 @@ def test_qwen3_can_enable_thinking_explicitly():
     )
 
     assert gen_conf == {"temperature": 0.2}
-    assert kwargs["extra_body"] == {"seed": 1, "enable_thinking": True}
+    assert kwargs["extra_body"]["seed"] == 1
+    assert kwargs["extra_body"]["enable_thinking"] is True
+    assert kwargs["extra_body"]["chat_template_kwargs"]["enable_thinking"] is True
 
 
 @pytest.mark.parametrize(
@@ -161,3 +168,43 @@ def test_litellm_provider_body_fields_preserve_existing_extra_body():
 
     assert completion_args["extra_body"] == {"seed": 1, "enable_thinking": False}
     assert "enable_thinking" not in completion_args
+
+
+def test_instance_extra_body_wins_over_qwen3_family_default():
+    _, kwargs = _apply_model_family_policies(
+        "Qwen3_32B_INT8",
+        backend="base",
+        gen_conf={"enable_thinking": False},
+        request_kwargs={},
+    )
+    assert kwargs["extra_body"]["enable_thinking"] is False
+
+    kwargs = _overlay_instance_extra_body(
+        kwargs,
+        {
+            "enable_thinking": True,
+            "chat_template_kwargs": {"enable_thinking": True},
+        },
+    )
+
+    assert kwargs["extra_body"]["enable_thinking"] is True
+    assert kwargs["extra_body"]["chat_template_kwargs"]["enable_thinking"] is True
+
+
+def test_instance_extra_body_can_force_vllm_thinking_off():
+    _, kwargs = _apply_model_family_policies(
+        "Qwen3_32B_INT8",
+        backend="base",
+        gen_conf={"enable_thinking": True},
+        request_kwargs={},
+    )
+    kwargs = _overlay_instance_extra_body(
+        kwargs,
+        {
+            "enable_thinking": False,
+            "chat_template_kwargs": {"enable_thinking": False},
+        },
+    )
+
+    assert kwargs["extra_body"]["enable_thinking"] is False
+    assert kwargs["extra_body"]["chat_template_kwargs"]["enable_thinking"] is False

@@ -140,3 +140,35 @@ async def test_concurrent_merges_do_not_raise_under_semaphore():
     # Both survivors must still share neighbour X
     assert graph.has_edge("A1", "X")
     assert graph.has_edge("B1", "X")
+
+
+@pytest.mark.p1
+@pytest.mark.asyncio
+async def test_merge_nodes_drops_extraction_thinking():
+    ext = _stub_extractor()
+    ext._language = "Chinese"
+    out = []
+    await ext._merge_nodes(
+        "安徽普仕德自动化科技有限公司",
+        [
+            {
+                "entity_type": "organization",
+                "description": "安徽普仕德自动化科技有限公司位于芜湖，向速博特采购焊缝检测设备。",
+                "source_id": ["s1"],
+            },
+            {
+                "entity_type": "organization",
+                "description": (
+                    "This entry is incorrect in type mapping in thought, but keeping entity name. "
+                    "Wait, already listed as organization. I will skip duplicate if name is identical, "
+                    "or merge. The prompt asks for entities. I have already captured the organization. "
+                    "I will not duplicate."
+                ),
+                "source_id": ["s2"],
+            },
+        ],
+        out,
+    )
+    assert len(out) == 1
+    assert out[0]["description"] == "安徽普仕德自动化科技有限公司位于芜湖，向速博特采购焊缝检测设备。"
+    assert "in thought" not in out[0]["description"]

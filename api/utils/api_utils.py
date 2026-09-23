@@ -371,6 +371,7 @@ def get_parser_config(chunk_method, parser_config):
                 "resolution_timeout_seconds": 1800,
                 "community_timeout_seconds": 1800,
                 "lock_acquire_timeout_seconds": 600,
+                "max_parallel_docs": 8,
             },
             "parent_child": {
                 "use_parent_child": False,

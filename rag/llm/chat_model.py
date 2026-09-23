@@ -108,6 +108,43 @@ LITELLM_ALLOWED_GEN_CONF_KEYS = ALLOWED_GEN_CONF_KEYS | frozenset(
 )
 
 
+def _merge_extra_body(target: dict, extra: dict) -> None:
+    """Shallow-merge ``extra`` into ``target['extra_body']``.
+
+    Nested ``chat_template_kwargs`` are merged so vLLM thinking flags can sit
+    alongside other template options instead of replacing them.
+    """
+    body = target.get("extra_body")
+    if not isinstance(body, dict):
+        body = {}
+    extra = dict(extra)
+    extra_kwargs = extra.get("chat_template_kwargs")
+    existing_kwargs = body.get("chat_template_kwargs")
+    if isinstance(extra_kwargs, dict):
+        merged_kwargs = dict(existing_kwargs) if isinstance(existing_kwargs, dict) else {}
+        merged_kwargs.update(extra_kwargs)
+        extra["chat_template_kwargs"] = merged_kwargs
+    body.update(extra)
+    target["extra_body"] = body
+
+
+def _qwen_thinking_extra_body(enable_thinking: bool) -> dict:
+    """vLLM reads ``chat_template_kwargs.enable_thinking``; some gateways also read the top-level flag."""
+    return {
+        "enable_thinking": bool(enable_thinking),
+        "chat_template_kwargs": {"enable_thinking": bool(enable_thinking)},
+    }
+
+
+def _overlay_instance_extra_body(request_kwargs: dict, extra_body) -> dict:
+    """Let a model-instance extra_body win after family policy."""
+    if not isinstance(extra_body, dict) or not extra_body:
+        return request_kwargs
+    kwargs = dict(request_kwargs)
+    _merge_extra_body(kwargs, extra_body)
+    return kwargs
+
+
 def _apply_model_family_policies(
     model_name: str,
     *,
@@ -137,13 +174,6 @@ def _apply_model_family_policies(
         sanitized_gen_conf.pop("thinking", None)
         sanitized_gen_conf.pop("enable_thinking", None)
 
-    def _merge_extra_body(target: dict, extra: dict) -> None:
-        body = target.get("extra_body")
-        if not isinstance(body, dict):
-            body = {}
-        body.update(extra)
-        target["extra_body"] = body
-
     thinking_type = _thinking_type()
 
     # Qwen3 keeps RAGFlow's system default of disabling thinking unless explicitly overridden.
@@ -156,7 +186,7 @@ def _apply_model_family_policies(
         }:
             sanitized_gen_conf["enable_thinking"] = enable_thinking
         else:
-            _merge_extra_body(sanitized_kwargs, {"enable_thinking": enable_thinking})
+            _merge_extra_body(sanitized_kwargs, _qwen_thinking_extra_body(enable_thinking))
 
     if backend == "base":
         return sanitized_gen_conf, sanitized_kwargs
@@ -225,6 +255,8 @@ class Base(ABC):
         self.max_retries = kwargs.get("max_retries", int(os.environ.get("LLM_MAX_RETRIES", 5)))
         self.base_delay = kwargs.get("retry_interval", float(os.environ.get("LLM_BASE_DELAY", 2.0)))
         self.max_rounds = kwargs.get("max_rounds", 5)
+        extra_body = kwargs.get("extra_body")
+        self.extra_body = dict(extra_body) if isinstance(extra_body, dict) else None
         self.is_tools = False
         self.tools = []
         self.toolcall_sessions = {}
@@ -256,6 +288,15 @@ class Base(ABC):
 
         return LLMErrorCode.ERROR_GENERIC
 
+    def _apply_base_chat_policies(self, gen_conf, request_kwargs=None):
+        gen_conf, kwargs = _apply_model_family_policies(
+            self.model_name,
+            backend="base",
+            gen_conf=gen_conf,
+            request_kwargs=request_kwargs or {},
+        )
+        return gen_conf, _overlay_instance_extra_body(kwargs, self.extra_body)
+
     def _clean_conf(self, gen_conf):
         if "max_tokens" in gen_conf:
             del gen_conf["max_tokens"]
@@ -267,12 +308,7 @@ class Base(ABC):
         logging.info("[HISTORY STREAMLY]" + json.dumps(history, ensure_ascii=False, indent=4))
         reasoning_start = False
 
-        gen_conf, extra_request_kwargs = _apply_model_family_policies(
-            self.model_name,
-            backend="base",
-            gen_conf=gen_conf,
-            request_kwargs={},
-        )
+        gen_conf, extra_request_kwargs = self._apply_base_chat_policies(gen_conf)
         request_kwargs = {"model": self.model_name, "messages": history, "stream": True, **gen_conf}
         stop = kwargs.get("stop")
         if stop:
@@ -470,12 +506,7 @@ class Base(ABC):
     async def async_chat_with_tools(self, system: str, history: list, gen_conf: dict | None = None):
         gen_conf = dict(gen_conf or {})
         gen_conf = self._clean_conf(gen_conf)
-        gen_conf, extra_request_kwargs = _apply_model_family_policies(
-            self.model_name,
-            backend="base",
-            gen_conf=gen_conf,
-            request_kwargs={},
-        )
+        gen_conf, extra_request_kwargs = self._apply_base_chat_policies(gen_conf)
         if system and history and history[0].get("role") != "system":
             history.insert(0, {"role": "system", "content": system})
 
@@ -558,12 +589,7 @@ class Base(ABC):
     async def async_chat_streamly_with_tools(self, system: str, history: list, gen_conf: dict | None = None):
         gen_conf = dict(gen_conf or {})
         gen_conf = self._clean_conf(gen_conf)
-        gen_conf, extra_request_kwargs = _apply_model_family_policies(
-            self.model_name,
-            backend="base",
-            gen_conf=gen_conf,
-            request_kwargs={},
-        )
+        gen_conf, extra_request_kwargs = self._apply_base_chat_policies(gen_conf)
         tools = self.tools
         if system and history and history[0].get("role") != "system":
             history.insert(0, {"role": "system", "content": system})
@@ -743,12 +769,7 @@ class Base(ABC):
 
             return final_ans.strip(), tol_token
 
-        gen_conf, kwargs = _apply_model_family_policies(
-            self.model_name,
-            backend="base",
-            gen_conf=gen_conf,
-            request_kwargs=kwargs,
-        )
+        gen_conf, kwargs = self._apply_base_chat_policies(gen_conf, kwargs)
 
         response = await self.async_client.chat.completions.create(model=self.model_name, messages=history, **gen_conf, **kwargs)
 

@@ -72,6 +72,7 @@ DEFAULT_GRAPHRAG_MERGE_TIMEOUT_SECONDS = 180
 DEFAULT_GRAPHRAG_RESOLUTION_TIMEOUT_SECONDS = 1800
 DEFAULT_GRAPHRAG_COMMUNITY_TIMEOUT_SECONDS = 1800
 DEFAULT_GRAPHRAG_LOCK_ACQUIRE_TIMEOUT_SECONDS = 600
+DEFAULT_GRAPHRAG_MAX_PARALLEL_DOCS = 8
 
 
 def _bounded_int_config(config: dict, key: str, default: int, minimum: int, maximum: int) -> int:
@@ -264,7 +265,7 @@ async def run_graphrag_for_kb(
     *,
     with_resolution: bool = True,
     with_community: bool = True,
-    max_parallel_docs: int = 4,
+    max_parallel_docs: int | None = None,
 ) -> dict:
     tenant_id, kb_id = row["tenant_id"], row["kb_id"]
     task_id = row["id"]
@@ -297,6 +298,14 @@ async def run_graphrag_for_kb(
     resolution_timeout_seconds = _bounded_int_config(graphrag_config, "resolution_timeout_seconds", DEFAULT_GRAPHRAG_RESOLUTION_TIMEOUT_SECONDS, 0, 86400)
     community_timeout_seconds = _bounded_int_config(graphrag_config, "community_timeout_seconds", DEFAULT_GRAPHRAG_COMMUNITY_TIMEOUT_SECONDS, 0, 86400)
     lock_acquire_timeout_seconds = _lock_acquire_timeout_config(graphrag_config)
+    if max_parallel_docs is None:
+        max_parallel_docs = _bounded_int_config(
+            graphrag_config,
+            "max_parallel_docs",
+            DEFAULT_GRAPHRAG_MAX_PARALLEL_DOCS,
+            1,
+            32,
+        )
 
     if not doc_ids:
         logging.info(f"Fetching all docs for {kb_id}")
@@ -318,7 +327,7 @@ async def run_graphrag_for_kb(
         callback(msg=f"[GraphRAG] dataset:{kb_id} has no processable doc_id.")
         return {"ok_docs": [], "failed_docs": [], "total_docs": 0, "total_chunks": 0, "seconds": 0.0}
     else:
-        callback(msg=f"[GraphRAG] dataset:{kb_id} has {len(doc_ids)} documents to process.")
+        callback(msg=f"[GraphRAG] dataset:{kb_id} has {len(doc_ids)} documents to process (max_parallel_docs={max_parallel_docs}).")
 
     def load_doc_chunks(doc_id: str) -> list[str]:
         from common.token_utils import num_tokens_from_string

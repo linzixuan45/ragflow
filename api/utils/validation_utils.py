@@ -360,6 +360,23 @@ class RaptorConfig(Base):
     ext: Annotated[dict, Field(default={})]
 
 
+class GraphragChatLlmConfig(Base):
+    """OpenAI-compatible GraphRAG extraction override written by DeerFlow.
+
+    Task executors read ``parser_config.graphrag.chat_llm`` and prefer it over
+    the tenant default chat model. Dataset APIs must accept the same payload.
+    """
+
+    model_config = ConfigDict(extra="forbid", strict=False)
+
+    llm_factory: Annotated[str, Field(default="OpenAI-API-Compatible")]
+    llm_name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1), Field(...)]
+    api_base: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1), Field(...)]
+    api_key: Annotated[str | None, Field(default=None)]
+    deerflow_model: Annotated[str | None, Field(default=None)]
+    extra_body: Annotated[dict[str, Any] | None, Field(default=None)]
+
+
 class GraphragConfig(Base):
     """Dataset parser configuration for GraphRAG generation."""
 
@@ -368,6 +385,7 @@ class GraphragConfig(Base):
     method: Annotated[Literal["light", "general", "ner"], Field(default="light")]
     community: Annotated[bool, Field(default=False)]
     resolution: Annotated[bool, Field(default=False)]
+    chat_llm: Annotated[GraphragChatLlmConfig | None, Field(default=None)]
     batch_chunk_token_size: Annotated[int, Field(default=4096, ge=512, le=8196)]
     retry_attempts: Annotated[int, Field(default=2, ge=1, le=10)]
     retry_backoff_seconds: Annotated[float, Field(default=2.0, ge=0.0, le=600.0)]
@@ -378,6 +396,7 @@ class GraphragConfig(Base):
     resolution_timeout_seconds: Annotated[int, Field(default=1800, ge=0, le=86400)]
     community_timeout_seconds: Annotated[int, Field(default=1800, ge=0, le=86400)]
     lock_acquire_timeout_seconds: Annotated[int, Field(default=600, ge=0, le=86400)]
+    max_parallel_docs: Annotated[int, Field(default=8, ge=1, le=32)]
 
 
 class ParentChildConfig(Base):

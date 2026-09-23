@@ -46,13 +46,17 @@ def resolve_graphrag_chat_model_config(
         if llm_name and api_base:
             factory = str(chat_llm.get("llm_factory") or _DEFAULT_FACTORY).strip() or _DEFAULT_FACTORY
             token = str(chat_llm.get(_CREDENTIAL_FIELD) or "").strip() or _PLACEHOLDER_TOKEN
-            return {
+            override = {
                 "llm_factory": factory,
                 _CREDENTIAL_FIELD: token,
                 "llm_name": llm_name,
                 "api_base": api_base,
                 "model_type": LLMType.CHAT.value,
             }
+            extra_body = chat_llm.get("extra_body")
+            if isinstance(extra_body, dict):
+                override["extra_body"] = extra_body
+            return override
 
     llm_id = str(parser.get("llm_id") or "").strip() or fallback_llm_id
     return tenant_chat_model_config(tenant_id, llm_id)

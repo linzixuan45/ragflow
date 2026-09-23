@@ -1553,6 +1553,7 @@ async def do_handle_task(task):
                         "resolution_timeout_seconds": 1800,
                         "community_timeout_seconds": 1800,
                         "lock_acquire_timeout_seconds": 600,
+                        "max_parallel_docs": 8,
                     }
                 }
             )

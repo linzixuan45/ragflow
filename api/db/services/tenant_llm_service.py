@@ -214,7 +214,11 @@ class TenantLLMService(CommonService):
             if model_config["llm_factory"] not in ChatModel:
                 logging.error("Factory not in chat model. Supported factories: %s", list(ChatModel.keys()))
                 return None
-            return ChatModel[model_config["llm_factory"]](api_key, model_config["llm_name"], base_url=model_config["api_base"], **kwargs)
+            chat_kwargs = dict(kwargs)
+            extra_body = model_config.get("extra_body")
+            if isinstance(extra_body, dict):
+                chat_kwargs["extra_body"] = extra_body
+            return ChatModel[model_config["llm_factory"]](api_key, model_config["llm_name"], base_url=model_config["api_base"], **chat_kwargs)
 
         elif model_config["model_type"] == LLMType.SPEECH2TEXT.value:
             if model_config["llm_factory"] not in Seq2txtModel:

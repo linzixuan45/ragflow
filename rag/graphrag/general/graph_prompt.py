@@ -9,18 +9,22 @@ GRAPH_EXTRACTION_PROMPT = """
 -Goal-
 Given a text document that is potentially relevant to this activity and a list of entity types, identify all entities of those types from the text and all relationships among the identified entities.
 
+-Output language-
+Write entity_description and relationship_description in {language}. If {language} is Chinese, use Simplified Chinese, not English.
+Output ONLY formatted records. Never include reasoning, thoughts, type-mapping notes, or duplicate-skipping self-talk.
+
 -Steps-
 1. Identify all entities. For each identified entity, extract the following information:
 - entity_name: Name of the entity, capitalized, in language of 'Text'
 - entity_type: One of the following types: [{entity_types}]
-- entity_description: Comprehensive description of the entity's attributes and activities in language of 'Text'
+- entity_description: Comprehensive description of the entity's attributes and activities in {language}
 Format each entity as ("entity"{tuple_delimiter}<entity_name>{tuple_delimiter}<entity_type>{tuple_delimiter}<entity_description>
 
 2. From the entities identified in step 1, identify all pairs of (source_entity, target_entity) that are *clearly related* to each other.
 For each pair of related entities, extract the following information:
 - source_entity: name of the source entity, as identified in step 1
 - target_entity: name of the target entity, as identified in step 1
-- relationship_description: explanation as to why you think the source entity and the target entity are related to each other in language of 'Text'
+- relationship_description: factual explanation of how the source entity and the target entity are related, written in {language}
 - relationship_strength: a numeric score indicating strength of the relationship between the source entity and target entity
  Format each relationship as ("relationship"{tuple_delimiter}<source_entity>{tuple_delimiter}<target_entity>{tuple_delimiter}<relationship_description>{tuple_delimiter}<relationship_strength>)
 
@@ -114,7 +118,8 @@ Given one or two entities, and a list of descriptions, all related to the same e
 Please concatenate all of these into a single, comprehensive description. Make sure to include information collected from all the descriptions.
 If the provided descriptions are contradictory, please resolve the contradictions and provide a single, coherent summary.
 Make sure it is written in third person, and include the entity names so we the have full context.
-Use {language} as output language.
+Use {language} as output language. If the descriptions are in another language, rewrite the summary in {language}.
+Output only the summary. Do not include reasoning, thoughts, or extraction process notes.
 
 #######
 -Data-

@@ -65,6 +65,7 @@ def _install_rag_llm_stub():
         OpenAI = "OpenAI"
         Azure_OpenAI = "Azure-OpenAI"
         HunYuan = "Tencent Hunyuan"
+        Anthropic = "Anthropic"
 
     llm_pkg.SupportedLiteLLMProvider = SupportedLiteLLMProvider
     llm_pkg.FACTORY_DEFAULT_BASE_URL = {}

@@ -28,6 +28,32 @@ def test_override_wins_over_tenant_default(monkeypatch):
     assert config["llm_name"] == "Qwen3_32B_INT8"
     assert config["api_base"] == "http://10.100.15.70:11421/v1"
     assert config["model_type"] == "chat"
+    assert "extra_body" not in config
+
+
+def test_override_forwards_thinking_extra_body(monkeypatch):
+    monkeypatch.setattr("rag.graphrag.chat_llm.tenant_chat_model_config", lambda *_a, **_k: None)
+
+    config = resolve_graphrag_chat_model_config(
+        "tenant-1",
+        {
+            "graphrag": {
+                "chat_llm": {
+                    "llm_factory": "OpenAI-API-Compatible",
+                    "llm_name": "Qwen3_32B_INT8",
+                    "api_base": "http://10.100.15.70:11421/v1",
+                    "extra_body": {
+                        "enable_thinking": False,
+                        "chat_template_kwargs": {"enable_thinking": False},
+                    },
+                },
+            },
+        },
+        "tenant-default",
+    )
+
+    assert config["extra_body"]["enable_thinking"] is False
+    assert config["extra_body"]["chat_template_kwargs"]["enable_thinking"] is False
 
 
 def test_incomplete_override_falls_back_to_tenant_default(monkeypatch):

@@ -16,7 +16,6 @@
 import asyncio
 import logging
 import os
-import re
 from collections import Counter, defaultdict
 from copy import deepcopy
 from typing import Callable
@@ -26,6 +25,14 @@ import networkx as nx
 from api.db.services.task_service import has_canceled
 from common.token_utils import truncate
 from rag.graphrag.general.graph_prompt import SUMMARIZE_DESCRIPTIONS_PROMPT
+from rag.graphrag.graph_text import (
+    GRAPH_FIELD_SEP,
+    join_graph_descriptions,
+    needs_description_summary,
+    sanitize_graph_description,
+    split_graph_descriptions,
+    strip_graph_think,
+)
 from rag.graphrag.utils import (
     GraphChange,
     chat_limiter,
@@ -42,7 +49,6 @@ from rag.llm.chat_model import Base as CompletionLLM
 from rag.prompts.generator import message_fit_in
 from common.exceptions import TaskCanceledException
 
-GRAPH_FIELD_SEP = "<SEP>"
 DEFAULT_ENTITY_TYPES = ["organization", "person", "geo", "event", "category"]
 ENTITY_EXTRACTION_MAX_GLEANINGS = 2
 MAX_CONCURRENT_PROCESS_AND_EXTRACT_CHUNK = int(os.environ.get("MAX_CONCURRENT_PROCESS_AND_EXTRACT_CHUNK", 10))
@@ -75,9 +81,10 @@ class Extractor:
 
     async def _async_chat(self, system, history, gen_conf={}, task_id=""):
         hist = deepcopy(history)
-        conf = deepcopy(gen_conf)
+        conf = deepcopy(gen_conf) if gen_conf else {}
+        conf.setdefault("enable_thinking", False)
         response = await thread_pool_exec(get_llm_cache, self._llm.llm_name, system, hist, conf)
-        response = self._normalize_response_text(response)
+        response = strip_graph_think(self._normalize_response_text(response))
         if self._is_truncated_cache(response):
             response = ""
         if response:
@@ -94,8 +101,7 @@ class Extractor:
                     self._llm.async_chat(system_msg[0]["content"], hist, conf),
                     timeout=60 * 20,
                 )
-                response = self._normalize_response_text(response)
-                response = re.sub(r"^.*</think>", "", response, flags=re.DOTALL)
+                response = strip_graph_think(self._normalize_response_text(response))
                 if response.find("**ERROR**") >= 0:
                     raise Exception(response)
                 if not self._is_truncated_cache(response):
@@ -267,7 +273,7 @@ class Extractor:
             key=lambda x: x[1],
             reverse=True,
         )[0][0]
-        description = GRAPH_FIELD_SEP.join(sorted(set([dp["description"] for dp in entities])))
+        description = join_graph_descriptions([dp.get("description") or "" for dp in entities])
         already_source_ids = flat_uniq_list(entities, "source_id")
         description = await self._handle_entity_relation_summary(entity_name, description, task_id=task_id)
         node_data = dict(
@@ -282,7 +288,7 @@ class Extractor:
         if not edges_data:
             return
         weight = sum([edge["weight"] for edge in edges_data])
-        description = GRAPH_FIELD_SEP.join(sorted(set([edge["description"] for edge in edges_data])))
+        description = join_graph_descriptions([edge.get("description") or "" for edge in edges_data])
         description = await self._handle_entity_relation_summary(f"{src_id} -> {tgt_id}", description, task_id=task_id)
         keywords = flat_uniq_list(edges_data, "keywords")
         source_id = flat_uniq_list(edges_data, "source_id")
@@ -341,9 +347,12 @@ class Extractor:
 
         summary_max_tokens = 512
         use_description = truncate(description, summary_max_tokens)
-        description_list = use_description.split(GRAPH_FIELD_SEP)
-        if len(description_list) <= 12:
-            return use_description
+        description_list = split_graph_descriptions(use_description)
+        if not description_list:
+            return ""
+        joined = GRAPH_FIELD_SEP.join(description_list)
+        if not needs_description_summary(description_list, self._language):
+            return joined
         prompt_template = SUMMARIZE_DESCRIPTIONS_PROMPT
         context_base = dict(
             entity_name=entity_or_relation_name,
@@ -357,5 +366,5 @@ class Extractor:
             raise TaskCanceledException(f"Task {task_id} was cancelled during summary handling")
 
         async with chat_limiter:
-            summary = await self._async_chat("", [{"role": "user", "content": use_prompt}], {}, task_id)
-        return summary
+            summary = sanitize_graph_description(await self._async_chat("", [{"role": "user", "content": use_prompt}], {}, task_id))
+        return summary or joined

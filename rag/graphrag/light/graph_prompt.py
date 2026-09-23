@@ -19,25 +19,32 @@ PROMPTS["DEFAULT_USER_PROMPT"] = "n/a"
 
 PROMPTS["entity_extraction"] = """---Goal---
 Given a text document that is potentially relevant to this activity and a list of entity types, identify all entities of those types from the text and all relationships among the identified entities.
-Use {language} as output language.
+
+---Output language---
+entity_name 使用原文中的写法。entity_description、relationship_description、relationship_keywords、content_keywords 必须使用 {language} 撰写。
+If {language} is Chinese, write fluent Simplified Chinese. Do not write English descriptions for Chinese source text.
+
+---Output rules---
+Output ONLY the formatted records below. 不要输出推理、思考过程、自我检查、类型映射纠结、去重说明，或 “I will skip / already listed / the prompt asks” 之类过程文字.
+Do not put reasoning inside entity_description.
 
 ---Steps---
 1. Identify all entities. For each identified entity, extract the following information:
 - entity_name: Name of the entity, use same language as input text. If English, capitalized the name.
 - entity_type: One of the following types: [{entity_types}]
-- entity_description: Provide a comprehensive description of the entity's attributes and activities *based solely on the information present in the input text*. **Do not infer or hallucinate information not explicitly stated.** If the text provides insufficient information to create a comprehensive description, state "Description not available in text."
+- entity_description: Provide a comprehensive description of the entity's attributes and activities *based solely on the information present in the input text*, written in {language}. **Do not infer or hallucinate information not explicitly stated.** If the text provides insufficient information to create a comprehensive description, state a short “原文信息不足” in {language}.
 Format each entity as ("entity"{tuple_delimiter}<entity_name>{tuple_delimiter}<entity_type>{tuple_delimiter}<entity_description>)
 
 2. From the entities identified in step 1, identify all pairs of (source_entity, target_entity) that are *clearly related* to each other.
 For each pair of related entities, extract the following information:
 - source_entity: name of the source entity, as identified in step 1
 - target_entity: name of the target entity, as identified in step 1
-- relationship_description: explanation as to why you think the source entity and the target entity are related to each other
+- relationship_description: a factual explanation of how the source entity and the target entity are related, written in {language}
 - relationship_strength: a numeric score indicating strength of the relationship between the source entity and target entity
-- relationship_keywords: one or more high-level key words that summarize the overarching nature of the relationship, focusing on concepts or themes rather than specific details
+- relationship_keywords: one or more high-level key words in {language} that summarize the overarching nature of the relationship, focusing on concepts or themes rather than specific details
 Format each relationship as ("relationship"{tuple_delimiter}<source_entity>{tuple_delimiter}<target_entity>{tuple_delimiter}<relationship_description>{tuple_delimiter}<relationship_keywords>{tuple_delimiter}<relationship_strength>)
 
-3. Identify high-level key words that summarize the main concepts, themes, or topics of the entire text. These should capture the overarching ideas present in the document.
+3. Identify high-level key words that summarize the main concepts, themes, or topics of the entire text. These should capture the overarching ideas present in the document, written in {language}.
 Format the content-level key words as ("content_keywords"{tuple_delimiter}<high_level_keywords>)
 
 4. Return output in {language} as a single list of all the entities and relationships identified in steps 1 and 2. Use **{record_delimiter}** as the list delimiter.
@@ -57,6 +64,43 @@ Text:
 {input_text}
 ######################
 Output:"""
+
+PROMPTS["entity_extraction_examples_zh"] = [
+    """Example 1:
+
+Entity_types: [organization, person, geo, event, category]
+Text:
+```
+安徽星河自动化科技有限公司位于芜湖，与速博特（上海）签订合同 P250328035，采购焊缝尺寸检测单元及软件。项目计划于 2025 年 3 月 28 日实施。
+```
+
+Output:
+("entity"{tuple_delimiter}"安徽星河自动化科技有限公司"{tuple_delimiter}"organization"{tuple_delimiter}"安徽星河自动化科技有限公司位于芜湖，向速博特（上海）采购焊缝尺寸检测单元及软件，并签订合同 P250328035。"){record_delimiter}
+("entity"{tuple_delimiter}"速博特（上海）"{tuple_delimiter}"organization"{tuple_delimiter}"速博特（上海）向安徽星河自动化科技有限公司销售焊缝尺寸检测单元及软件。"){record_delimiter}
+("entity"{tuple_delimiter}"芜湖"{tuple_delimiter}"geo"{tuple_delimiter}"芜湖是安徽星河自动化科技有限公司所在地。"){record_delimiter}
+("entity"{tuple_delimiter}"合同 P250328035"{tuple_delimiter}"event"{tuple_delimiter}"合同 P250328035 是安徽星河自动化科技有限公司与速博特（上海）就焊缝检测设备签订的采购合同，计划于 2025 年 3 月 28 日实施。"){record_delimiter}
+("relationship"{tuple_delimiter}"安徽星河自动化科技有限公司"{tuple_delimiter}"速博特（上海）"{tuple_delimiter}"安徽星河自动化科技有限公司与速博特（上海）签订合同 P250328035，采购焊缝检测设备及软件。"{tuple_delimiter}"采购合同, 焊缝检测"{tuple_delimiter}9){record_delimiter}
+("relationship"{tuple_delimiter}"安徽星河自动化科技有限公司"{tuple_delimiter}"芜湖"{tuple_delimiter}"安徽星河自动化科技有限公司位于芜湖。"{tuple_delimiter}"所在地"{tuple_delimiter}8){record_delimiter}
+("content_keywords"{tuple_delimiter}"焊缝检测, 采购合同, 芜湖"){completion_delimiter}
+#############################""",
+    """Example 2:
+
+Entity_types: [organization, person, geo, event, category]
+Text:
+```
+2025 年 4 月 10 日，项目经理李明在合肥主持焊缝检测设备验收会，确认星河公司已完成安装。
+```
+
+Output:
+("entity"{tuple_delimiter}"李明"{tuple_delimiter}"person"{tuple_delimiter}"李明是项目经理，于 2025 年 4 月 10 日在合肥主持焊缝检测设备验收会。"){record_delimiter}
+("entity"{tuple_delimiter}"星河公司"{tuple_delimiter}"organization"{tuple_delimiter}"星河公司完成了焊缝检测设备安装，并参加验收。"){record_delimiter}
+("entity"{tuple_delimiter}"合肥"{tuple_delimiter}"geo"{tuple_delimiter}"合肥是焊缝检测设备验收会的举办地。"){record_delimiter}
+("entity"{tuple_delimiter}"焊缝检测设备验收会"{tuple_delimiter}"event"{tuple_delimiter}"焊缝检测设备验收会于 2025 年 4 月 10 日在合肥举行，确认安装完成。"){record_delimiter}
+("relationship"{tuple_delimiter}"李明"{tuple_delimiter}"焊缝检测设备验收会"{tuple_delimiter}"李明主持焊缝检测设备验收会。"{tuple_delimiter}"主持验收"{tuple_delimiter}8){record_delimiter}
+("relationship"{tuple_delimiter}"星河公司"{tuple_delimiter}"焊缝检测设备验收会"{tuple_delimiter}"星河公司完成安装并参加验收会。"{tuple_delimiter}"设备验收"{tuple_delimiter}7){record_delimiter}
+("content_keywords"{tuple_delimiter}"设备验收, 焊缝检测, 合肥"){completion_delimiter}
+#############################""",
+]
 
 PROMPTS["entity_extraction_examples"] = [
     """Example 1:
@@ -137,12 +181,21 @@ Output:
 #############################""",
 ]
 
+def select_entity_extraction_examples(language: str | None, example_number: int = 2) -> str:
+    from rag.graphrag.graph_text import is_chinese_language
+
+    pool = PROMPTS["entity_extraction_examples_zh"] if is_chinese_language(language) else PROMPTS["entity_extraction_examples"]
+    count = max(1, int(example_number))
+    return "\n".join(pool[:count])
+
+
 PROMPTS["summarize_entity_descriptions"] = """You are a helpful assistant responsible for generating a comprehensive summary of the data provided below.
 Given one or two entities, and a list of descriptions, all related to the same entity or group of entities.
 Please concatenate all of these into a single, comprehensive description. Make sure to include information collected from all the descriptions.
 If the provided descriptions are contradictory, please resolve the contradictions and provide a single, coherent summary.
 Make sure it is written in third person, and include the entity names so we the have full context.
-Use {language} as output language.
+Use {language} as output language. If the descriptions are in another language, rewrite the summary in {language}.
+Output only the summary. Do not include reasoning, thoughts, or extraction process notes.
 
 #######
 ---Data---
@@ -154,25 +207,26 @@ Output:
 
 PROMPTS["entity_continue_extraction"] = """
 MANY entities and relationships were missed in the last extraction. Please find only the missing entities and relationships from previous text.
+entity_description and relationship_description must be written in {language}. Output only formatted records. 不要输出推理或去重说明.
 
 ---Remember Steps---
 
 1. Identify all entities. For each identified entity, extract the following information:
 - entity_name: Name of the entity, use same language as input text. If English, capitalized the name
 - entity_type: One of the following types: [{entity_types}]
-- entity_description: Provide a comprehensive description of the entity's attributes and activities *based solely on the information present in the input text*. **Do not infer or hallucinate information not explicitly stated.** If the text provides insufficient information to create a comprehensive description, state "Description not available in text."
+- entity_description: Provide a comprehensive description of the entity's attributes and activities *based solely on the information present in the input text*, written in {language}. **Do not infer or hallucinate information not explicitly stated.** If the text provides insufficient information to create a comprehensive description, state a short “原文信息不足” in {language}.
 Format each entity as ("entity"{tuple_delimiter}<entity_name>{tuple_delimiter}<entity_type>{tuple_delimiter}<entity_description>)
 
 2. From the entities identified in step 1, identify all pairs of (source_entity, target_entity) that are *clearly related* to each other.
 For each pair of related entities, extract the following information:
 - source_entity: name of the source entity, as identified in step 1
 - target_entity: name of the target entity, as identified in step 1
-- relationship_description: explanation as to why you think the source entity and the target entity are related to each other
+- relationship_description: a factual explanation of how the source entity and the target entity are related, written in {language}
 - relationship_strength: a numeric score indicating strength of the relationship between the source entity and target entity
-- relationship_keywords: one or more high-level key words that summarize the overarching nature of the relationship, focusing on concepts or themes rather than specific details
+- relationship_keywords: one or more high-level key words in {language} that summarize the overarching nature of the relationship, focusing on concepts or themes rather than specific details
 Format each relationship as ("relationship"{tuple_delimiter}<source_entity>{tuple_delimiter}<target_entity>{tuple_delimiter}<relationship_description>{tuple_delimiter}<relationship_keywords>{tuple_delimiter}<relationship_strength>)
 
-3. Identify high-level key words that summarize the main concepts, themes, or topics of the entire text. These should capture the overarching ideas present in the document.
+3. Identify high-level key words that summarize the main concepts, themes, or topics of the entire text. These should capture the overarching ideas present in the document, written in {language}.
 Format the content-level key words as ("content_keywords"{tuple_delimiter}<high_level_keywords>)
 
 4. Return output in {language} as a single list of all the entities and relationships identified in steps 1 and 2. Use **{record_delimiter}** as the list delimiter.

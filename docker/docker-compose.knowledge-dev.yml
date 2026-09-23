@@ -82,6 +82,13 @@ services:
       - ../rag/app/parser_router.py:/ragflow/rag/app/parser_router.py:ro
       - ../rag/flow/parser/parser.py:/ragflow/rag/flow/parser/parser.py:ro
       - ../rag/flow/parser/utils.py:/ragflow/rag/flow/parser/utils.py:ro
+      - ../api/utils/validation_utils.py:/ragflow/api/utils/validation_utils.py:ro
+      - ../rag/graphrag/chat_llm.py:/ragflow/rag/graphrag/chat_llm.py:ro
+      - ../rag/graphrag/graph_text.py:/ragflow/rag/graphrag/graph_text.py:ro
+      - ../rag/graphrag/light/graph_extractor.py:/ragflow/rag/graphrag/light/graph_extractor.py:ro
+      - ../rag/graphrag/light/graph_prompt.py:/ragflow/rag/graphrag/light/graph_prompt.py:ro
+      - ../rag/graphrag/general/index.py:/ragflow/rag/graphrag/general/index.py:ro
+      - ../rag/llm/chat_model.py:/ragflow/rag/llm/chat_model.py:ro
       - ../rag/svr/task_executor.py:/ragflow/rag/svr/task_executor.py:ro
       - ../rag/svr/task_executor_refactor/chunk_builder.py:/ragflow/rag/svr/task_executor_refactor/chunk_builder.py:ro
       - ../rag/svr/task_executor_refactor/chunk_service.py:/ragflow/rag/svr/task_executor_refactor/chunk_service.py:ro
