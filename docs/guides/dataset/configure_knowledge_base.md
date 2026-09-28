@@ -153,8 +153,9 @@ Before marking a dataset as Agent-ready, verify all of the following:
   `hybrid` mode.
 - The Agent host authorizes the current user for the dataset. A service API key
   alone is not user authorization.
-- Agent-visible results contain paths, snippets, opaque cursors, and
-  `citation_ref` values, but no upstream internal identifiers or storage URLs.
+- Agent-visible results contain paths, snippets, opaque cursors,
+  `citation_ref` values, and opaque `image_ref` values, but no upstream internal
+  identifiers or storage URLs.
 
 #### Recommended Agent integration
 

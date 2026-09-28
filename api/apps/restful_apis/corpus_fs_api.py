@@ -794,7 +794,7 @@ async def grep(tenant_id: str, dataset_id: str):
                     if citation_context is None:
                         citation_context = citation_contexts[document["id"]] = service.citation_context(document)
                     target = service.citation_target(entry, document, content_revision, chunk=chunk, context=citation_context)
-                    items.append({"path": entry["path"], "snippet": chunk.get("content_with_weight", ""), "citation_ref": _issue_citation(service, document, target), "page": target["page"]})
+                    items.append({"path": entry["path"], "snippet": chunk.get("content_with_weight", ""), "citation_ref": _issue_citation(service, document, target), "page": target["page"], "images": service.search_images(document["id"], chunk)})
             page = KeywordSearchService.page_state(result, offset=offset, returned_count=len(items), count_only=count_only)
             return {
                 "total": page["total"],

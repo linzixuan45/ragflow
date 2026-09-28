@@ -95,9 +95,9 @@ class KeywordSearchService:
             {"minimum_should_match": "100%" if match == "all" else 0},
         )
         order_by = OrderByExpr().desc("_score").asc("doc_id").asc("chunk_order_int")
-        result = settings.docStoreConn.search(["id", "doc_id", "content_with_weight", "page_num_int", "position_int"], ["content_with_weight"] if highlight else [], condition, [match_expression], order_by, offset, 0 if count_only else limit, index_name, dataset_ids)
+        result = settings.docStoreConn.search(["id", "doc_id", "content_with_weight", "page_num_int", "position_int", "img_id"], ["content_with_weight"] if highlight else [], condition, [match_expression], order_by, offset, 0 if count_only else limit, index_name, dataset_ids)
         total = settings.docStoreConn.get_total(result)
         if count_only:
             return {"total": total, "consumed_count": 0, "chunks": []}
-        fields = settings.docStoreConn.get_fields(result, ["id", "doc_id", "content_with_weight", "page_num_int", "position_int"])
+        fields = settings.docStoreConn.get_fields(result, ["id", "doc_id", "content_with_weight", "page_num_int", "position_int", "img_id"])
         return {"total": total, "consumed_count": len(fields), "chunks": [{"id": chunk_id, **chunk} for chunk_id, chunk in fields.items()]}

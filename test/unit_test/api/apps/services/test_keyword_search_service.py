@@ -143,3 +143,24 @@ def test_internal_search_with_no_authorized_requested_document_does_not_query_da
 def test_keyword_search_rejects_noncanonical_request_types(kwargs):
     with pytest.raises(ValueError, match="invalid keyword search request"):
         KeywordSearchService().search("tenant", ["dataset"], [], "VPN", **kwargs)
+
+
+def test_keyword_search_requests_img_id_so_figure_hits_expose_their_image(monkeypatch):
+    store = Store()
+    store.get_total = lambda _result: 1
+    requested_fields: list[list[str]] = []
+    row = {"doc_id": "doc-1", "content_with_weight": "验收报告图", "img_id": "dataset-1-chunk-1"}
+
+    def get_fields(_result, fields):
+        requested_fields.append(list(fields))
+        return {"chunk-1": dict(row)}
+
+    store.get_fields = get_fields
+    monkeypatch.setattr("api.apps.services.keyword_search_service.settings.docStoreConn", store)
+
+    result = KeywordSearchService().search("tenant", ["dataset"], ["doc-1"], "验收")
+
+    expected = ["id", "doc_id", "content_with_weight", "page_num_int", "position_int", "img_id"]
+    assert store.calls[0][0][0] == expected
+    assert requested_fields == [expected]
+    assert result["chunks"] == [{"id": "chunk-1", **row}]

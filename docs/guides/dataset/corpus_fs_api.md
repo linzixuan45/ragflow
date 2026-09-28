@@ -69,6 +69,21 @@ current page. The next cursor advances by `consumed_count`, so a stale or
 unmappable index hit cannot make a later page repeat. `total` is the backend
 keyword-hit count, while `truncated` means another consumed page is available.
 
+Every returned hit carries the public evidence fields `path`, `snippet`,
+`citation_ref`, `page`, and `images`. `images` matches the `/search` contract: it
+is empty when the matched chunk has no associated figure, and otherwise exposes
+an opaque `image_ref` readable through `GET /image`. The reference is derived
+from the same chunk as the snippet, so a hit whose snippet is a figure
+description also carries that figure's reference. A table stored as an image can
+appear here too, exactly as `/search` already reports it.
+
+An `image_ref` is a hint, not a guarantee: the referenced object can be removed
+or migrated after indexing. `GET /image` then rejects the read with
+`IMAGE_NOT_FOUND` (404), and callers must tolerate that and skip the hit. A
+snippet that reads like a figure caption while `images` is empty means the
+dataset's parsing pipeline flattened media into text, so that chunk carries no
+image reference at all.
+
 ## Citation contract
 
 `/content`, `/grep`, and `/search` issue the same encrypted and authenticated
