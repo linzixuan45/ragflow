@@ -12,6 +12,7 @@ import (
 	"ragflow/internal/entity"
 	modelModule "ragflow/internal/entity/models"
 	"ragflow/internal/ingestion/component/schema"
+	"ragflow/internal/parser/parser"
 	"ragflow/internal/utility"
 
 	"gorm.io/gorm"
@@ -44,26 +45,26 @@ func maybeDispatchPDFVision(
 	binary []byte,
 	inputs map[string]any,
 	setups map[string]schema.ParserSetup,
-) (parserDispatchResult, bool, error) {
+) (parser.ParseResult, bool, error) {
 	if fileType != utility.FileTypePDF {
-		return parserDispatchResult{}, false, nil
+		return parser.ParseResult{}, false, nil
 	}
 	setup, ok := setups["pdf"]
 	if !ok {
-		return parserDispatchResult{}, false, nil
+		return parser.ParseResult{}, false, nil
 	}
 	modelID, useVision := resolvePDFVisionModelID(setup)
 	if !useVision {
-		return parserDispatchResult{}, false, nil
+		return parser.ParseResult{}, false, nil
 	}
 	tenantID := getStringOr(inputs, "tenant_id", "")
 	if tenantID == "" {
-		return parserDispatchResult{}, true, fmt.Errorf(
+		return parser.ParseResult{}, true, fmt.Errorf(
 			`Parser: pdf parse_method %q requires tenant_id to resolve IMAGE2TEXT model`, modelID)
 	}
 	res, err := dispatchPDFVision(filename, binary, tenantID, modelID, setup)
 	if err != nil {
-		return parserDispatchResult{}, true, err
+		return parser.ParseResult{}, true, err
 	}
 	return res, true, nil
 }
@@ -112,18 +113,18 @@ func dispatchPDFVision(
 	tenantID string,
 	modelID string,
 	setup schema.ParserSetup,
-) (parserDispatchResult, error) {
+) (parser.ParseResult, error) {
 	renderedPages, err := pdfVisionPageRenderer(binary)
 	if err != nil {
-		return parserDispatchResult{}, fmt.Errorf("Parser: pdf vision render: %w", err)
+		return parser.ParseResult{}, fmt.Errorf("Parser: pdf vision render: %w", err)
 	}
 	driver, resolvedModelName, apiConfig, err := pdfVisionModelResolver(tenantID, modelID)
 	if err != nil {
-		return parserDispatchResult{}, fmt.Errorf("Parser: pdf vision model %q: %w", modelID, err)
+		return parser.ParseResult{}, fmt.Errorf("Parser: pdf vision model %q: %w", modelID, err)
 	}
 	promptTemplate, err := pdfVisionPromptLoader("vision_llm_describe_prompt")
 	if err != nil {
-		return parserDispatchResult{}, fmt.Errorf("Parser: load vision prompt: %w", err)
+		return parser.ParseResult{}, fmt.Errorf("Parser: load vision prompt: %w", err)
 	}
 
 	items := make([]map[string]any, 0, len(renderedPages))
@@ -132,7 +133,7 @@ func dispatchPDFVision(
 		prompt := renderPDFVisionPrompt(promptTemplate, page.PageNumber)
 		resp, err := pdfVisionChatInvoker(driver, resolvedModelName, buildPDFVisionMessages(prompt, page.ImageURL), apiConfig)
 		if err != nil {
-			return parserDispatchResult{}, fmt.Errorf("Parser: pdf vision page %d: %w", page.PageNumber, err)
+			return parser.ParseResult{}, fmt.Errorf("Parser: pdf vision page %d: %w", page.PageNumber, err)
 		}
 		text := extractPDFVisionAnswer(resp)
 		positions := [][]any{{page.PageNumber, 0.0, page.WidthPts, 0.0, page.HeightPts}}
@@ -160,19 +161,19 @@ func dispatchPDFVision(
 	}
 	switch outputFormat {
 	case "json":
-		return parserDispatchResult{
+		return parser.ParseResult{
 			OutputFormat: "json",
 			File:         fileMeta,
 			JSON:         items,
 		}, nil
 	case "markdown":
-		return parserDispatchResult{
+		return parser.ParseResult{
 			OutputFormat: "markdown",
 			File:         fileMeta,
 			Markdown:     strings.TrimSpace(strings.Join(markdownParts, "\n\n")),
 		}, nil
 	default:
-		return parserDispatchResult{}, fmt.Errorf("Parser: unsupported PDF output_format %q for vision parse_method %q", outputFormat, modelID)
+		return parser.ParseResult{}, fmt.Errorf("Parser: unsupported PDF output_format %q for vision parse_method %q", outputFormat, modelID)
 	}
 }
 

@@ -12,6 +12,23 @@ import (
 const minerUPollTimeout = 30 * time.Minute
 const minerUPollInterval = 200 * time.Millisecond
 
+// minerUProtocolCandidates lists the submit endpoints to try in order.
+//
+// MinerU 4.x replaced the 3.x `file_parse` submit route with `tasks`;
+// the result route (`tasks/<id>/result`) is unchanged across both. The
+// server version is not discoverable up front, so — as the Docling
+// backend does for its `/v1` vs `/v1alpha` routes — we try the newer
+// protocol first and fall through to the legacy one when the submit is
+// rejected. Only a failed *submit* advances the candidate; once a task
+// id is issued the protocol is settled.
+//
+// Any submit error advances the candidate, so a transient 5xx on the
+// preferred route costs one extra rejected POST before the error is
+// surfaced. That is deliberate: it cannot start a duplicate task (the
+// server rejected the submit), and distinguishing "wrong version" from
+// "server unhealthy" would otherwise need a separate probe.
+var minerUProtocolCandidates = []string{"tasks", "file_parse"}
+
 func parseWithMinerU(filename string, data []byte, parser *PDFParser) ParseResult {
 	if len(data) == 0 {
 		return emptyPDFResult(filename)
@@ -39,10 +56,6 @@ func parseWithMinerU(filename string, data []byte, parser *PDFParser) ParseResul
 		timeout = minerUPollTimeout
 	}
 
-	driver := models.NewMinerLocalUModel(
-		map[string]string{"default": apiServer},
-		models.URLSuffix{DocumentParse: "tasks", Task: "tasks"},
-	)
 	apiConfig := &models.APIConfig{
 		BaseURL: &apiServer,
 	}
@@ -50,15 +63,35 @@ func parseWithMinerU(filename string, data []byte, parser *PDFParser) ParseResul
 		apiConfig.ApiKey = &apiKey
 	}
 
-	task, err := driver.ParseFile(&backend, data, nil, apiConfig, &models.ParseFileConfig{
+	submitConfig := &models.ParseFileConfig{
 		Filename:      filename,
 		Effort:        parser.MinerUEffort,
 		ImageAnalysis: &parser.MinerUImageAnalysis,
-	})
-	if err != nil {
-		return ParseResult{Err: fmt.Errorf("parser: MinerU submit: %w", err)}
 	}
-	result, err := pollMinerUTask(driver, task.TaskID, apiConfig, timeout)
+
+	var (
+		taskID   string
+		driver   *models.MinerULocalModel
+		attempts []string
+	)
+	for _, submitRoute := range minerUProtocolCandidates {
+		candidate := models.NewMinerLocalUModel(
+			map[string]string{"default": apiServer},
+			models.URLSuffix{DocumentParse: submitRoute, Task: "tasks"},
+		)
+		task, err := candidate.ParseFile(&backend, data, nil, apiConfig, submitConfig)
+		if err != nil {
+			attempts = append(attempts, fmt.Sprintf("%s: %v", submitRoute, err))
+			continue
+		}
+		driver, taskID = candidate, task.TaskID
+		break
+	}
+	if driver == nil {
+		return ParseResult{Err: fmt.Errorf("parser: MinerU submit failed for every protocol (%s)", strings.Join(attempts, "; "))}
+	}
+
+	result, err := pollMinerUTask(driver, taskID, apiConfig, timeout)
 	if err != nil {
 		return ParseResult{Err: fmt.Errorf("parser: MinerU result: %w", err)}
 	}

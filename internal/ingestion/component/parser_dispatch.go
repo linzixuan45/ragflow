@@ -44,28 +44,12 @@ func isMinerUInput(filename string) bool {
 	return ok
 }
 
-// parserDispatchResult is the typed outcome of dispatchParse. The
-// component's Invoke translates it into the runtime output map.
-//
-// OutputFormat is the wire format the parser actually emitted. It
-// always matches setups[fileType].output_format on success; on a
-// format-mismatch failure (the whitelist rejects it) OutputFormat is
-// empty and Err is non-nil.
-//
-// File is the per-parser file metadata and may be nil.
-//
-// Payload holds exactly one populated field per the ParseResult
-// contract (see internal/parser/parser/parse_result.go).
-type parserDispatchResult struct {
-	OutputFormat string
-	File         map[string]any
-	JSON         []map[string]any
-	Markdown     string
-	Text         string
-	HTML         string
-	Err          error
-}
-
+// dispatchParse returns parser.ParseResult, the Go parser library's
+// structured output contract (see internal/parser/parser/parse_result.go).
+// OutputFormat is the wire format the parser actually emitted: it always
+// matches setups[fileType].output_format on success, and on a
+// format-mismatch failure (the whitelist rejects it) it is empty with a
+// non-nil Err. Payload holds exactly one populated field.
 type parserSetupConfigurer interface {
 	ConfigureFromSetup(setup map[string]any)
 }
@@ -167,7 +151,11 @@ func resolveLibType(fileType utility.FileType, setups map[string]schema.ParserSe
 // fileType may be utility.FileTypeOTHER when the upstream did not
 // supply a filename; the dispatch then takes text-page mode
 // without consulting parser.GetParser.
-func dispatchParse(fileType utility.FileType, filename string, data []byte, setups map[string]schema.ParserSetup) parserDispatchResult {
+func dispatchParse(fileType utility.FileType, filename string, data []byte, setups map[string]schema.ParserSetup) parser.ParseResult {
+	// MinerU-backed inputs bypass family dispatch: every suffix in
+	// minerUInputSuffixes is routed to the MinerU backend regardless of
+	// the family the extension would otherwise resolve to (docx/pptx/
+	// xlsx/images as well as pdf).
 	if isMinerUInput(filename) {
 		p := parser.NewPDFParser()
 		if setup, ok := setups["pdf"]; ok {
@@ -177,21 +165,16 @@ func dispatchParse(fileType utility.FileType, filename string, data []byte, setu
 		p.OutputFormat = "json"
 		res := p.ParseWithResult(filename, data)
 		if res.Err != nil {
-			return parserDispatchResult{Err: fmt.Errorf("Parser: MinerU %q: %w", filename, res.Err)}
+			return parser.ParseResult{Err: fmt.Errorf("Parser: MinerU %q: %w", filename, res.Err)}
 		}
-		return parserDispatchResult{
-			OutputFormat: res.OutputFormat,
-			File:         res.File,
-			JSON:         res.JSON,
-			Markdown:     res.Markdown,
-		}
+		return res
 	}
 	if fileType == utility.FileTypeOTHER {
 		// Unknown / unset family. The component treats the bytes
 		// as text pages; the existing logic
 		// (splitIntoPages + fan-out) handles it. We return no
 		// result here so the caller routes to that path.
-		return parserDispatchResult{}
+		return parser.ParseResult{}
 	}
 
 	libType, parseMethod := resolveLibType(fileType, setups)
@@ -201,13 +184,13 @@ func dispatchParse(fileType utility.FileType, filename string, data []byte, setu
 	// surface it as Err so Invoke can set _ERROR.
 	p, err := parser.GetParser(fileType, map[string]string{"lib_type": libType})
 	if err != nil {
-		return parserDispatchResult{Err: fmt.Errorf("Parser: resolve %q: %w", fileType, err)}
+		return parser.ParseResult{Err: fmt.Errorf("Parser: resolve %q: %w", fileType, err)}
 	}
 	configureParserFromSetups(p, fileType, setups)
 
 	res := p.ParseWithResult(filename, data)
 	if res.Err != nil {
-		return parserDispatchResult{Err: fmt.Errorf("Parser: %q: %w", fileType, res.Err)}
+		return parser.ParseResult{Err: fmt.Errorf("Parser: %q: %w", fileType, res.Err)}
 	}
 	// Carry the configured parse_method on the file metadata so
 	// downstream consumers can read which provider ran.
@@ -217,14 +200,7 @@ func dispatchParse(fileType utility.FileType, filename string, data []byte, setu
 		}
 		res.File["parse_method"] = parseMethod
 	}
-	return parserDispatchResult{
-		OutputFormat: res.OutputFormat,
-		File:         res.File,
-		JSON:         res.JSON,
-		Markdown:     res.Markdown,
-		Text:         res.Text,
-		HTML:         res.HTML,
-	}
+	return res
 }
 
 // fileTypeFromInputs derives the parser-library extension form
@@ -400,7 +376,7 @@ func pagesFromDispatch(pages []schema.Page) [][]byte {
 // at rag/flow/parser/parser.py:_invoke — the downstream chunker
 // / tokenizer / extractor components read the matching family
 // key, with "pages" as the universal fallback shape.
-func buildParserOutputs(parsed []schema.Page, dispatched parserDispatchResult, name string, fileType utility.FileType) map[string]any {
+func buildParserOutputs(parsed []schema.Page, dispatched parser.ParseResult, name string, fileType utility.FileType) map[string]any {
 	out := map[string]any{
 		"pages": toAnyPages(parsed),
 		"name":  name,
@@ -429,7 +405,7 @@ func buildParserOutputs(parsed []schema.Page, dispatched parserDispatchResult, n
 	return out
 }
 
-func hydrateEmptyDispatchPayload(dispatched parserDispatchResult, binary []byte) parserDispatchResult {
+func hydrateEmptyDispatchPayload(dispatched parser.ParseResult, binary []byte) parser.ParseResult {
 	if dispatched.Err != nil || len(binary) == 0 {
 		return dispatched
 	}

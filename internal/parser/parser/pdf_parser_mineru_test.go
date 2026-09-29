@@ -193,6 +193,81 @@ func TestPDFParser_ParseWithResult_MinerURequiresAPIServer(t *testing.T) {
 	}
 }
 
+// A MinerU 3.x server has no `tasks` submit route, so the submit must fall
+// through to the legacy `file_parse` route. The result route is shared.
+func TestPDFParser_ParseWithResult_MinerUFallsBackToLegacyProtocol(t *testing.T) {
+	var v1SubmitCalled, legacySubmitCalled atomic.Bool
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/tasks":
+			v1SubmitCalled.Store(true)
+			// 3.x servers reject the 4.x submit route.
+			http.Error(w, "not found", http.StatusNotFound)
+		case r.Method == http.MethodPost && r.URL.Path == "/file_parse":
+			legacySubmitCalled.Store(true)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"task_id":"legacy-task-1"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/tasks/legacy-task-1/result":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"results":{"sample.pdf":{"md_content":"# Legacy\n\nBody.\n"}}}`))
+		default:
+			http.Error(w, "unexpected route "+r.URL.Path, http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	pdf := NewPDFParser()
+	pdf.ConfigureFromSetup(map[string]any{
+		"parse_method":     "MinerU",
+		"output_format":    "markdown",
+		"mineru_apiserver": server.URL,
+		"mineru_backend":   "pipeline",
+	})
+
+	res := pdf.ParseWithResult("sample.pdf", []byte("%PDF-1.4\nmock"))
+	if res.Err != nil {
+		t.Fatalf("ParseWithResult: %v", res.Err)
+	}
+	if !v1SubmitCalled.Load() {
+		t.Fatal("4.x submit route was never attempted; want it tried first")
+	}
+	if !legacySubmitCalled.Load() {
+		t.Fatal("legacy submit route was never attempted; want fallback after 4.x rejection")
+	}
+	if got, want := res.OutputFormat, "markdown"; got != want {
+		t.Fatalf("OutputFormat = %q, want %q", got, want)
+	}
+	if got, want := res.Markdown, "# Legacy\n\nBody.\n"; got != want {
+		t.Fatalf("Markdown = %q, want %q", got, want)
+	}
+}
+
+// When no submit route is accepted the error must name every attempted
+// protocol so an operator can tell a version mismatch from a dead server.
+func TestPDFParser_ParseWithResult_MinerUReportsAllProtocolFailures(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "nope", http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	pdf := NewPDFParser()
+	pdf.ConfigureFromSetup(map[string]any{
+		"parse_method":     "MinerU",
+		"mineru_apiserver": server.URL,
+	})
+
+	res := pdf.ParseWithResult("sample.pdf", []byte("%PDF-1.4\nmock"))
+	if res.Err == nil {
+		t.Fatal("ParseWithResult: want error when every submit route fails")
+	}
+	for _, route := range []string{"tasks", "file_parse"} {
+		if !strings.Contains(res.Err.Error(), route) {
+			t.Fatalf("error = %q, want it to mention route %q", res.Err.Error(), route)
+		}
+	}
+}
+
 func TestMinerUUploadShape(t *testing.T) {
 	body := &strings.Builder{}
 	writer := multipart.NewWriter(body)
