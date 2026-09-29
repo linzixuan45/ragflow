@@ -1,7 +1,8 @@
+cd 
+
 ---
 title: Corpus FS API
 ---
-
 # Corpus FS API
 
 Corpus FS exposes one dataset-scoped, path-only namespace. Dataset content is
@@ -13,21 +14,21 @@ authenticated caller with access to the dataset.
 
 ## Read operations
 
-| Method and path | Purpose |
-| --- | --- |
-| `GET /tree?path=/` | List one directory with cursor pagination. |
-| `GET /find` | Find files by name below a path. |
-| `GET /stat` | Read metadata for one path. |
-| `GET /usage` | Aggregate document, byte, chunk, and token usage. |
-| `GET /blob?path=...` | Download the immutable uploaded source; supports one HTTP byte range. |
-| `GET /content?path=...` | Read the parsed/source text projection and opaque image references. |
-| `GET /image?path=...&image_ref=...` | Read one projected image. |
-| `POST /grep` | Run literal keyword search below a path. |
-| `POST /search` | Run semantic or hybrid retrieval below a path. |
-| `POST /citations/resolve` | Resolve a citation to versioned evidence coordinates. |
-| `POST /citations/preview` | Read evidence from the source version bound to a citation. |
-| `GET /parse-status?path=...` | Read detailed parsing status, progress, message, and counts. |
-| `POST /parse` | Start, restart, or cancel parsing for up to 100 paths. |
+| Method and path                       | Purpose                                                               |
+| ------------------------------------- | --------------------------------------------------------------------- |
+| `GET /tree?path=/`                  | List one directory with cursor pagination.                            |
+| `GET /find`                         | Find files by name below a path.                                      |
+| `GET /stat`                         | Read metadata for one path.                                           |
+| `GET /usage`                        | Aggregate document, byte, chunk, and token usage.                     |
+| `GET /blob?path=...`                | Download the immutable uploaded source; supports one HTTP byte range. |
+| `GET /content?path=...`             | Read the parsed/source text projection and opaque image references.   |
+| `GET /image?path=...&image_ref=...` | Read one projected image.                                             |
+| `POST /grep`                        | Run literal keyword search below a path.                              |
+| `POST /search`                      | Run semantic or hybrid retrieval below a path.                        |
+| `POST /citations/resolve`           | Resolve a citation to versioned evidence coordinates.                 |
+| `POST /citations/preview`           | Read evidence from the source version bound to a citation.            |
+| `GET /parse-status?path=...`        | Read detailed parsing status, progress, message, and counts.          |
+| `POST /parse`                       | Start, restart, or cancel parsing for up to 100 paths.                |
 
 `GET /content` binds every returned block citation to the same source-projection
 snapshot used to render that response. A projection published concurrently with
@@ -154,14 +155,14 @@ Object storage and parse-queue side effects are not database transactions, so
 uploads report per-file errors while preserving and revising successful files.
 `GET /blob` instead uses the source content hash as its `ETag`.
 
-| Method and path | Purpose |
-| --- | --- |
-| `POST /entries/folders` | Create a directory. |
-| `POST /entries/upload` | Upload files and enqueue parsing. |
-| `POST /entries/move` | Move entries or rename one entry. |
-| `POST /entries/delete-preview` | Preview recursive delete counts and receive a confirmation token. |
-| `DELETE /entries` | Delete the confirmed snapshot. |
-| `POST /parse` | Apply `retry` or `cancel` to up to 100 paths and return per-path outcomes. |
+| Method and path                  | Purpose                                                                       |
+| -------------------------------- | ----------------------------------------------------------------------------- |
+| `POST /entries/folders`        | Create a directory.                                                           |
+| `POST /entries/upload`         | Upload files and enqueue parsing.                                             |
+| `POST /entries/move`           | Move entries or rename one entry.                                             |
+| `POST /entries/delete-preview` | Preview recursive delete counts and receive a confirmation token.             |
+| `DELETE /entries`              | Delete the confirmed snapshot.                                                |
+| `POST /parse`                  | Apply`retry` or `cancel` to up to 100 paths and return per-path outcomes. |
 
 The request body is `{"action":"retry|cancel","paths":["/a.pdf"]}`.
 The response reports `success_count`, `skipped_count`, `failed_count`, and an
@@ -176,12 +177,12 @@ delete does.
 An uploaded source and an edited Markdown derivative have separate lifecycles.
 Saving Markdown never overwrites a PDF or another uploaded source.
 
-| Method and path | Purpose |
-| --- | --- |
-| `GET /derived-content?path=...` | Read the current Markdown derivative. |
-| `PUT /derived-content` | Save a new immutable version. |
-| `GET /derived-content/versions?path=...` | List versions newest first. |
-| `POST /derived-content/restore` | Restore an older version as a new version. |
+| Method and path                            | Purpose                                    |
+| ------------------------------------------ | ------------------------------------------ |
+| `GET /derived-content?path=...`          | Read the current Markdown derivative.      |
+| `PUT /derived-content`                   | Save a new immutable version.              |
+| `GET /derived-content/versions?path=...` | List versions newest first.                |
+| `POST /derived-content/restore`          | Restore an older version as a new version. |
 
 `PUT /derived-content` accepts `path`, UTF-8 `content`, and
 `expected_version`. The first save uses `expected_version: 0`. Restore accepts

@@ -48,5 +48,10 @@ def is_mineru_file(filename: str) -> bool:
     return file_suffix(filename) in MINERU_SUFFIXES
 
 
+def uses_source_projection(filename: str) -> bool:
+    """Source projections are parser-owned, so every MinerU format carries one."""
+    return is_mineru_file(filename)
+
+
 def mineru_mime_type(filename: str) -> str:
     return MINERU_MIME_TYPES.get(file_suffix(filename), "application/octet-stream")

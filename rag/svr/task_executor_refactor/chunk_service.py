@@ -38,6 +38,7 @@ from common.connection_utils import timeout
 from common.constants import PAGERANK_FLD, TAG_FLD
 from common.misc_utils import thread_pool_exec
 from common.float_utils import normalize_overlapped_percent
+from common.mineru_formats import uses_source_projection
 from rag.nlp import search
 from rag.svr.task_executor_refactor.task_context import TaskContext
 from rag.utils.base64_image import image2id
@@ -146,7 +147,7 @@ class ChunkService:
                 if isinstance(block, dict) and block.get("layout_type") == "title"
             ],
         }
-        if source_blocks and ctx.name.lower().endswith(".pdf"):
+        if source_blocks and uses_source_projection(ctx.name):
             from api.apps.services.source_projection_service import SourceProjectionService
 
             SourceProjectionService.write_pending(

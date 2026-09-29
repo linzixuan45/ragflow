@@ -7,6 +7,7 @@ from common.mineru_formats import (
     PPTX_SUFFIXES,
     XLSX_SUFFIXES,
     is_mineru_file,
+    uses_source_projection,
 )
 
 
@@ -40,3 +41,13 @@ def test_mineru_file_detection_is_case_insensitive_and_does_not_expand_scope():
     assert not is_mineru_file("legacy.ppt")
     assert not is_mineru_file("legacy.xls")
     assert not is_mineru_file("image.tif")
+
+
+def test_source_projection_covers_every_mineru_format_not_only_pdf():
+    for filename in ("document.pdf", "document.docx", "slides.pptx", "sheet.xlsx", "scan.png", "scan.JPG"):
+        assert uses_source_projection(filename), filename
+
+
+def test_source_projection_keeps_non_mineru_formats_out():
+    for filename in ("legacy.doc", "legacy.ppt", "legacy.xls", "notes.txt", "page.html"):
+        assert not uses_source_projection(filename), filename

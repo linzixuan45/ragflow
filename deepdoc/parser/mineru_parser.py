@@ -229,6 +229,9 @@ class MinerUParser(RAGFlowPdfParser):
         self.mineru_server_url = mineru_server_url.rstrip("/")
         self.outlines = []
         self.source_projection_sections = []
+        # Source index of each entry in `_transfer_to_tables`'s returned media list.
+        # MinerU office output carries no bbox, so array order is the only reading order.
+        self.source_projection_media_indexes: list[int] = []
         self.logger = logging.getLogger(self.__class__.__name__)
 
     @staticmethod
@@ -778,7 +781,7 @@ class MinerUParser(RAGFlowPdfParser):
     def _transfer_to_sections(self, outputs: list[dict[str, Any]], parse_method: str = None, table_enable: bool = False):
         sections = []
         projection_sections = []
-        for output in outputs:
+        for source_index, output in enumerate(outputs):
             match output.get("type"):
                 case MinerUContentType.TEXT:
                     section = output.get("text", "")
@@ -816,6 +819,7 @@ class MinerUParser(RAGFlowPdfParser):
                 "text": section,
                 "layout_type": layout_type,
                 "position_tag": position_tag,
+                "source_index": source_index,
             }
             if level is not None:
                 projection_section["level"] = level
@@ -833,8 +837,9 @@ class MinerUParser(RAGFlowPdfParser):
 
     def _transfer_to_tables(self, outputs: list[dict[str, Any]]):
         media = []
+        self.source_projection_media_indexes = []
         page_offset = int(getattr(self, "page_from", 0) or 0)
-        for output in outputs:
+        for source_index, output in enumerate(outputs):
             output_type = output.get("type")
             if output_type not in {MinerUContentType.IMAGE, MinerUContentType.CHART, MinerUContentType.TABLE}:
                 continue
@@ -870,6 +875,7 @@ class MinerUParser(RAGFlowPdfParser):
             else:
                 text = self._image_semantic_text(output)
             media.append(((image, text), [[page_idx, left, right, top, bottom]]))
+            self.source_projection_media_indexes.append(source_index)
         return media
 
     def _enhance_images_with_vlm(self, outputs: list[dict[str, Any]], vision_model, callback: Optional[Callable] = None):

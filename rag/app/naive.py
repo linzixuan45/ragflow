@@ -892,6 +892,62 @@ class Markdown(MarkdownParser):
         return sections, tbls
 
 
+def _mineru_section_images(projection_sections, tables, media_indexes=None):
+    """Attach caption-less MinerU media images to their nearest text section.
+
+    MinerU's office branch (docx/pptx/xlsx) emits images as standalone items with an
+    empty ``image_caption`` and no bbox, so ``tokenize_table`` drops them via its
+    ``if not rows: continue`` guard and the chunk loses the image entirely. Because
+    those formats carry no positions either, the only reading-order signal is the
+    order of ``outputs`` -- which the parser exposes through ``source_index`` and
+    ``source_projection_media_indexes``.
+
+    Media that already has text (a caption or a VLM description) keeps the existing
+    ``tokenize_table`` path and is not taken over here.
+    """
+    if not projection_sections or not tables:
+        return None
+
+    text_indexes = [index for index, section in enumerate(projection_sections) if isinstance(section, dict)]
+    if not text_indexes:
+        return None
+
+    ordered = [(section.get("source_index", index), index) for index, section in enumerate(projection_sections) if isinstance(section, dict)]
+    for media_index, table in enumerate(tables):
+        if not isinstance(table, (tuple, list)) or len(table) != 2:
+            continue
+        data = table[0]
+        if not isinstance(data, (tuple, list)) or len(data) != 2:
+            continue
+        image, rows = data
+        if image is None or (isinstance(rows, str) and rows.strip()):
+            continue
+        if media_indexes and media_index < len(media_indexes):
+            source_index = media_indexes[media_index]
+        else:
+            source_index = len(projection_sections) + media_index
+        ordered.append((source_index, image))
+
+    ordered.sort(key=lambda item: item[0])
+
+    images: list = [None] * len(projection_sections)
+    pending = None
+    last_host = None
+    for source_index, payload in ordered:
+        if isinstance(payload, int):
+            last_host = payload
+            if pending is not None:
+                images[payload] = concat_img(images[payload], pending) if images[payload] is not None else pending
+                pending = None
+        else:
+            pending = payload if pending is None else concat_img(pending, payload)
+
+    if pending is not None and last_host is not None:
+        images[last_host] = concat_img(images[last_host], pending) if images[last_host] is not None else pending
+
+    return images if any(image is not None for image in images) else None
+
+
 def chunk(filename, binary=None, from_page=0, to_page=MAXIMUM_PAGE_NUMBER, lang="Chinese", callback=None, **kwargs):
     """
     Supported file formats are docx, pdf, excel, txt.
@@ -985,6 +1041,17 @@ def chunk(filename, binary=None, from_page=0, to_page=MAXIMUM_PAGE_NUMBER, lang=
         )
         if table_context_size or image_context_size:
             tables = append_context2table_image4pdf(sections, tables, image_context_size)
+        if suffix != "pdf":
+            # MinerU only renders page images for PDF, so `crop()` cannot produce a
+            # chunk preview for office/image inputs. Their media images carry no
+            # caption, which means tokenize_table would drop them; host each one on
+            # the nearest text section instead. PDF keeps its crop-based path, and
+            # media that already gained context text keeps the tokenize_table path.
+            section_images = _mineru_section_images(
+                projection_sections,
+                tables,
+                getattr(pdf_parser, "source_projection_media_indexes", None),
+            )
         if int(parser_config.get("chunk_token_num", 0)) <= 0:
             parser_config["chunk_token_num"] = 0
         res = tokenize_table(tables, doc, is_english, language=lang)

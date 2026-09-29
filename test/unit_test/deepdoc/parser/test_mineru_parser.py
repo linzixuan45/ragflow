@@ -147,11 +147,13 @@ def test_transfer_to_sections_preserves_mineru_text_level_for_source_projection(
             "layout_type": "title",
             "level": 1,
             "position_tag": "@@1\t10.0\t110.0\t20.0\t40.0##",
+            "source_index": 0,
         },
         {
             "text": "Body text",
             "layout_type": "text",
             "position_tag": "@@1\t10.0\t110.0\t50.0\t70.0##",
+            "source_index": 1,
         },
     ]
 
@@ -838,3 +840,29 @@ def test_parse_pdf_rejects_empty_page_window(monkeypatch):
 
     with pytest.raises(ValueError, match="to_page must be greater than from_page"):
         parser.parse_pdf("sample.pdf", binary=b"%PDF", from_page=5, to_page=5)
+
+
+def test_transfer_records_original_output_order_for_projection(monkeypatch, tmp_path):
+    """docx 的 MinerU 输出无 bbox 且 page_idx 恒为 0，数组顺序是唯一阅读序信号。"""
+    from PIL import Image
+
+    module = _load_mineru_parser(monkeypatch)
+    parser = module.MinerUParser()
+    first_image = tmp_path / "first.png"
+    second_image = tmp_path / "second.png"
+    Image.new("RGB", (4, 4), (255, 0, 0)).save(first_image)
+    Image.new("RGB", (4, 4), (0, 255, 0)).save(second_image)
+
+    outputs = [
+        {"type": module.MinerUContentType.TEXT, "text": "Alpha", "page_idx": 0, "bbox": (0, 0, 1, 1)},
+        {"type": module.MinerUContentType.IMAGE, "img_path": str(first_image), "image_caption": [], "page_idx": 0, "bbox": (0, 0, 1, 1)},
+        {"type": module.MinerUContentType.TEXT, "text": "Beta", "page_idx": 0, "bbox": (0, 0, 1, 1)},
+        {"type": module.MinerUContentType.IMAGE, "img_path": str(second_image), "image_caption": [], "page_idx": 0, "bbox": (0, 0, 1, 1)},
+    ]
+
+    parser._transfer_to_sections(outputs, parse_method="raw")
+    media = parser._transfer_to_tables(outputs)
+
+    assert [section["source_index"] for section in parser.source_projection_sections] == [0, 2]
+    assert len(media) == 2
+    assert parser.source_projection_media_indexes == [1, 3]

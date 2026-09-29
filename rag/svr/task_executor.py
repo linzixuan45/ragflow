@@ -109,6 +109,7 @@ from rag.utils.table_es_metadata import (
 from rag.nlp import search as nlp_search
 from rag.utils.chunk_metrics import summarize_chunk_tokens
 from rag.app.parser_router import effective_parser_id
+from common.mineru_formats import uses_source_projection
 
 BATCH_SIZE = 64
 
@@ -373,7 +374,7 @@ async def build_chunks(task, progress_callback):
             if isinstance(block, dict) and block.get("layout_type") == "title"
         ],
     }
-    if source_blocks and task["name"].lower().endswith(".pdf"):
+    if source_blocks and uses_source_projection(task["name"]):
         from api.apps.services.source_projection_service import SourceProjectionService
 
         SourceProjectionService.write_pending(
