@@ -1,0 +1,414 @@
+{
+  "metadata": {
+    "file_suffix": "pdf",
+    "producer": {
+      "name": "mineru",
+      "version": "4.0.8"
+    },
+    "document": {
+      "title": "(anonymous)",
+      "authors": [
+        "(anonymous)"
+      ],
+      "subject": "(unspecified)",
+      "created_at": "2026-09-29T16:00:50+08:00",
+      "modified_at": "2026-09-29T16:00:50+08:00",
+      "creator_application": "(unspecified)",
+      "producer_application": "ReportLab PDF Library - (opensource)",
+      "page_count": 2,
+      "page_count_kind": "physical"
+    }
+  },
+  "extensions": {
+    "mineru": {
+      "tier": "standard",
+      "parse_mode": "txt"
+    },
+    "docvortex_layout": {
+      "version": 1,
+      "pages": [
+        {
+          "page_idx": 0,
+          "width_pt": 595.2755737304688,
+          "height_pt": 841.8897705078125
+        },
+        {
+          "page_idx": 1,
+          "width_pt": 595.2755737304688,
+          "height_pt": 841.8897705078125
+        }
+      ]
+    }
+  },
+  "pages": [
+    {
+      "page_idx": 0,
+      "blocks": [
+        {
+          "type": "doc_title",
+          "index": 0,
+          "bbox": [
+            0.128,
+            0.095,
+            0.557,
+            0.121
+          ],
+          "content": [
+            {
+              "type": "text",
+              "content": "Quarterly Engineering Report"
+            }
+          ],
+          "level": 1
+        },
+        {
+          "type": "paragraph_title",
+          "index": 1,
+          "bbox": [
+            0.127,
+            0.135,
+            0.239,
+            0.153
+          ],
+          "content": [
+            {
+              "type": "text",
+              "content": "Overview"
+            }
+          ],
+          "level": 2
+        },
+        {
+          "type": "text",
+          "index": 2,
+          "bbox": [
+            0.126,
+            0.162,
+            0.821,
+            0.192
+          ],
+          "content": [
+            {
+              "type": "text",
+              "content": "This report summarizes throughput, latency and cost for the platform team. Parsing quality is validated against golden documents each release."
+            }
+          ]
+        },
+        {
+          "type": "paragraph_title",
+          "index": 3,
+          "bbox": [
+            0.127,
+            0.215,
+            0.299,
+            0.234
+          ],
+          "content": [
+            {
+              "type": "text",
+              "content": "Revenue Chart"
+            }
+          ],
+          "level": 2
+        },
+        {
+          "type": "chart",
+          "index": 4,
+          "bbox": [
+            0.297,
+            0.249,
+            0.701,
+            0.399
+          ],
+          "content": [
+            {
+              "type": "chart_body",
+              "index": 4,
+              "bbox": [
+                0.297,
+                0.249,
+                0.701,
+                0.399
+              ],
+              "image_path": "images/page_0_chart_4.jpg",
+              "content": ""
+            },
+            {
+              "type": "chart_caption",
+              "index": 5,
+              "bbox": [
+                0.127,
+                0.415,
+                0.382,
+                0.431
+              ],
+              "content": [
+                {
+                  "type": "text",
+                  "content": "Figure 1: quarterly revenue trend."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "paragraph_title",
+          "index": 6,
+          "bbox": [
+            0.128,
+            0.454,
+            0.253,
+            0.472
+          ],
+          "content": [
+            {
+              "type": "text",
+              "content": "Data Table"
+            }
+          ],
+          "level": 2
+        },
+        {
+          "type": "table",
+          "index": 7,
+          "bbox": [
+            0.284,
+            0.478,
+            0.715,
+            0.566
+          ],
+          "content": [
+            {
+              "type": "table_body",
+              "index": 7,
+              "bbox": [
+                0.284,
+                0.478,
+                0.715,
+                0.566
+              ],
+              "image_path": "images/page_0_table_7.jpg",
+              "content": "<table><tbody><tr><td>Quarter</td><td>Revenue</td><td>Latency</td></tr><tr><td>Q1</td><td>120ms</td><td>98.2</td></tr><tr><td>Q2</td><td>125ms</td><td>101.4</td></tr><tr><td>Q3</td><td>118ms</td><td>104.9</td></tr></tbody></table>"
+            },
+            {
+              "type": "table_caption",
+              "index": 8,
+              "bbox": [
+                0.127,
+                0.573,
+                0.372,
+                0.589
+              ],
+              "content": [
+                {
+                  "type": "text",
+                  "content": "Table 1: service level indicators."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "paragraph_title",
+          "index": 9,
+          "bbox": [
+            0.127,
+            0.613,
+            0.266,
+            0.632
+          ],
+          "content": [
+            {
+              "type": "text",
+              "content": "Key Metrics"
+            }
+          ],
+          "level": 2
+        },
+        {
+          "type": "text",
+          "index": 10,
+          "bbox": [
+            0.126,
+            0.64,
+            0.591,
+            0.657
+          ],
+          "content": [
+            {
+              "type": "text",
+              "content": "Throughput increased by 18 percent quarter over quarter."
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "index": 11,
+          "bbox": [
+            0.126,
+            0.662,
+            0.486,
+            0.678
+          ],
+          "content": [
+            {
+              "type": "text",
+              "content": "p95 latency stayed below 130 milliseconds."
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "index": 12,
+          "bbox": [
+            0.126,
+            0.683,
+            0.551,
+            0.699
+          ],
+          "content": [
+            {
+              "type": "text",
+              "content": "Cost per thousand requests dropped to 0.42 dollars."
+            }
+          ]
+        },
+        {
+          "type": "paragraph_title",
+          "index": 13,
+          "bbox": [
+            0.127,
+            0.723,
+            0.24,
+            0.741
+          ],
+          "content": [
+            {
+              "type": "text",
+              "content": "Formulas"
+            }
+          ],
+          "level": 2
+        },
+        {
+          "type": "equation",
+          "index": 14,
+          "bbox": [
+            0.35,
+            0.767,
+            0.65,
+            0.804
+          ],
+          "image_path": "images/page_0_equation_14.jpg",
+          "content": "E = m c ^ {2} \\quad \\int_ {0} ^ {\\infty} e ^ {- x ^ {2}} d x = \\frac {\\sqrt {\\pi}}{2}"
+        },
+        {
+          "type": "paragraph_title",
+          "index": 15,
+          "bbox": [
+            0.127,
+            0.849,
+            0.276,
+            0.869
+          ],
+          "content": [
+            {
+              "type": "text",
+              "content": "Code Listing"
+            }
+          ],
+          "level": 2
+        },
+        {
+          "type": "text",
+          "index": 16,
+          "bbox": [
+            0.126,
+            0.876,
+            0.36,
+            0.89
+          ],
+          "content": [
+            {
+              "type": "text",
+              "content": "def parse_document(path):"
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "index": 17,
+          "bbox": [
+            0.161,
+            0.891,
+            0.414,
+            0.905
+          ],
+          "content": [
+            {
+              "type": "text",
+              "content": "with open(path, \"rb\") as f:"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "page_idx": 1,
+      "blocks": [
+        {
+          "type": "header",
+          "index": 0,
+          "bbox": [
+            0.199,
+            0.094,
+            0.341,
+            0.107
+          ],
+          "content": [
+            {
+              "type": "text",
+              "content": "return f.read()"
+            }
+          ]
+        },
+        {
+          "type": "paragraph_title",
+          "index": 1,
+          "bbox": [
+            0.126,
+            0.133,
+            0.263,
+            0.151
+          ],
+          "content": [
+            {
+              "type": "text",
+              "content": "Conclusion"
+            }
+          ],
+          "level": 2
+        },
+        {
+          "type": "text",
+          "index": 2,
+          "bbox": [
+            0.125,
+            0.159,
+            0.848,
+            0.176
+          ],
+          "content": [
+            {
+              "type": "text",
+              "content": "All service objectives were met. The team will focus on parser regression coverage next quarter."
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "is_full_document": true,
+  "schema": "docvortex.middle",
+  "schema_version": "2.0"
+}

@@ -866,3 +866,391 @@ def test_transfer_records_original_output_order_for_projection(monkeypatch, tmp_
     assert [section["source_index"] for section in parser.source_projection_sections] == [0, 2]
     assert len(media) == 2
     assert parser.source_projection_media_indexes == [1, 3]
+
+
+def test_probe_v1_health_classifies_instances(monkeypatch):
+    module = _load_mineru_parser(monkeypatch)
+    parser = module.MinerUParser(mineru_api="http://mineru.example")
+
+    class _Response:
+        def __init__(self, status_code, payload=None):
+            self.status_code = status_code
+            self._payload = payload
+
+        def json(self):
+            if self._payload is None:
+                raise ValueError("no json")
+            return self._payload
+
+    health = {"status": "ok", "version": "4.0.8"}
+    monkeypatch.setattr(module.requests, "get", lambda *_args, **_kwargs: _Response(200, health))
+    assert parser._probe_v1_health() == health
+
+    monkeypatch.setattr(module.requests, "get", lambda *_args, **_kwargs: _Response(503, {"status": "loading"}))
+    assert parser._probe_v1_health() == {"status": "loading"}
+
+    monkeypatch.setattr(module.requests, "get", lambda *_args, **_kwargs: _Response(404))
+    assert parser._probe_v1_health() is None
+
+    def _explode(*_args, **_kwargs):
+        raise module.requests.ConnectionError("offline")
+
+    monkeypatch.setattr(module.requests, "get", _explode)
+    assert parser._probe_v1_health() is None
+
+
+def test_check_installation_prefers_v1_and_skips_openapi_probe(monkeypatch):
+    module = _load_mineru_parser(monkeypatch)
+    parser = module.MinerUParser(mineru_api="http://mineru.example")
+    monkeypatch.setattr(parser, "_probe_v1_health", lambda: {"status": "ok", "version": "4.0.8"})
+    monkeypatch.setattr(parser, "_is_http_endpoint_valid", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("openapi probe must be skipped on V1")))
+
+    available, reason = parser.check_installation(backend="hybrid-engine")
+
+    assert available is True
+    assert reason == ""
+    assert parser._api_protocol == "v1"
+
+
+def test_check_installation_v1_preloading_reports_not_ready(monkeypatch):
+    module = _load_mineru_parser(monkeypatch)
+    parser = module.MinerUParser(mineru_api="http://mineru.example")
+    monkeypatch.setattr(parser, "_probe_v1_health", lambda: {"status": "loading"})
+
+    available, reason = parser.check_installation(backend="hybrid-engine")
+
+    assert available is False
+    assert "not ready" in reason
+    assert parser._api_protocol == "v1"
+
+
+def test_check_installation_falls_back_to_legacy_contract(monkeypatch):
+    module = _load_mineru_parser(monkeypatch)
+    parser = module.MinerUParser(mineru_api="http://mineru.example")
+    monkeypatch.setattr(parser, "_probe_v1_health", lambda: None)
+    monkeypatch.setattr(parser, "_is_http_endpoint_valid", lambda url: url.endswith("/openapi.json"))
+
+    available, _reason = parser.check_installation(backend="hybrid-engine")
+
+    assert available is True
+    assert parser._api_protocol == "legacy"
+
+
+@pytest.mark.parametrize(
+    ("start", "end", "expected"),
+    [
+        (0, 99999, "all"),
+        (0, 9, "1-10"),
+        (2, 4, "3-5"),
+        (4, 99999, "5-r1"),
+        (0, 999, "all"),
+        (9, 0, "all"),
+    ],
+)
+def test_build_v1_page_range_maps_zero_based_windows(monkeypatch, start, end, expected):
+    module = _load_mineru_parser(monkeypatch)
+
+    assert module.build_v1_page_range(start, end) == expected
+
+
+@pytest.mark.parametrize(
+    ("backend", "expected"),
+    [
+        ("pipeline", "basic"),
+        ("vlm-engine", "advanced"),
+        ("vlm-http-client", "advanced"),
+        ("hybrid-engine", "standard"),
+        ("hybrid-http-client", "standard"),
+        ("unknown-backend", "standard"),
+    ],
+)
+def test_resolve_v1_tier_follows_official_backend_mapping(monkeypatch, backend, expected):
+    module = _load_mineru_parser(monkeypatch)
+
+    assert module.resolve_v1_tier(backend) == expected
+    assert module.resolve_v1_tier(backend, override="flash") == "flash"
+
+
+def test_middle_json_to_content_list_from_v1_fixture(monkeypatch):
+    module = _load_mineru_parser(monkeypatch)
+    fixture_path = Path(__file__).resolve().parents[3] / "fixtures" / "mineru" / "mineru4_rich_middle_json.json"
+    middle_json = __import__("json").loads(fixture_path.read_text(encoding="utf-8"))
+
+    items = module.middle_json_to_content_list(middle_json)
+    by_type = {}
+    for item in items:
+        by_type.setdefault(item["type"], []).append(item)
+
+    title = by_type["text"][0]
+    assert title["text"] == "Quarterly Engineering Report"
+    assert title["text_level"] == 1
+    assert title["page_idx"] == 0
+    assert title["bbox"] == [128, 95, 557, 121]
+
+    table = by_type["table"][0]
+    assert table["img_path"] == "images/page_0_table_7.jpg"
+    assert table["table_caption"] == ["Table 1: service level indicators."]
+    assert "<table>" in table["table_body"]
+    assert table["bbox"] == [284, 478, 715, 566]
+
+    chart = by_type["chart"][0]
+    assert chart["img_path"] == "images/page_0_chart_4.jpg"
+    assert chart["chart_caption"] == ["Figure 1: quarterly revenue trend."]
+
+    equation = by_type["equation"][0]
+    assert equation["img_path"] == "images/page_0_equation_14.jpg"
+    assert equation["text_format"] == "latex"
+    assert "E = m c" in equation["text"]
+
+    header = by_type["header"][0]
+    assert header["text"] == "return f.read()"
+
+    for item in items:
+        assert isinstance(item["page_idx"], int)
+        if "bbox" in item:
+            assert all(isinstance(value, int) for value in item["bbox"])
+            assert all(0 <= value <= 1000 for value in item["bbox"])
+
+
+def test_middle_json_to_content_list_visuals_lists_and_fallbacks(monkeypatch):
+    module = _load_mineru_parser(monkeypatch)
+    middle_json = {
+        "pages": [
+            {
+                "page_idx": 2,
+                "blocks": [
+                    {
+                        "type": "image",
+                        "index": 0,
+                        "bbox": [0.1, 0.2, 0.3, 0.4],
+                        "content": [
+                            {"type": "image_body", "index": 0, "bbox": [0.1, 0.2, 0.3, 0.4], "image_path": "images/page_2_image_0.jpg", "content": ""},
+                            {"type": "image_caption", "index": 1, "content": [{"type": "text", "content": "A photo"}]},
+                        ],
+                    },
+                    {
+                        "type": "list",
+                        "index": 2,
+                        "bbox": [0.1, 0.5, 0.9, 0.6],
+                        "content": [
+                            {"type": "list", "content": [{"type": "text", "content": "nested bullet"}]},
+                            {"type": "text", "content": "outer bullet"},
+                        ],
+                    },
+                    {
+                        "type": "code",
+                        "index": 3,
+                        "bbox": [0.1, 0.7, 0.9, 0.8],
+                        "content": [
+                            {"type": "algorithm_body", "index": 3, "content": "sort(list)"},
+                            {"type": "code_caption", "index": 4, "content": [{"type": "text", "content": "Algorithm 1"}]},
+                        ],
+                    },
+                    {"type": "ref_text", "bbox": [0.1, 0.81, 0.5, 0.83], "content": [{"type": "text", "content": "ref one"}]},
+                    {"type": "ref_text", "bbox": [0.1, 0.84, 0.5, 0.86], "content": [{"type": "text", "content": "ref two"}]},
+                    {"type": "abstract", "bbox": [0.1, 0.9, 0.9, 0.95], "content": [{"type": "text", "content": "future block type"}]},
+                    {"type": "page_number", "bbox": [0.9, 0.96, 0.95, 0.98], "content": [{"type": "text", "content": "12"}]},
+                ],
+            }
+        ]
+    }
+
+    items = module.middle_json_to_content_list(middle_json)
+
+    assert [item["type"] for item in items] == ["image", "list", "code", "list", "text", "page_number"]
+    assert all(item["page_idx"] == 2 for item in items)
+
+    image = items[0]
+    assert image["img_path"] == "images/page_2_image_0.jpg"
+    assert image["image_caption"] == ["A photo"]
+    assert image["bbox"] == [100, 200, 300, 400]
+
+    listing = items[1]
+    assert listing["list_items"] == ["nested bullet", "outer bullet"]
+
+    code = items[2]
+    assert code["sub_type"] == "algorithm"
+    assert code["code_body"] == "sort(list)"
+    assert code["code_caption"] == ["Algorithm 1"]
+
+    refs = items[3]
+    assert refs["sub_type"] == "ref_text"
+    assert refs["list_items"] == ["ref one", "ref two"]
+    assert refs["bbox"] == [100, 810, 500, 860]
+
+    fallback = items[4]
+    assert fallback["type"] == "text"
+    assert fallback["text"] == "future block type"
+
+    assert items[5]["type"] == "page_number"
+    assert items[5]["text"] == "12"
+
+
+class _FakeRaw:
+    def __init__(self, data: bytes):
+        import io
+
+        self._buffer = io.BytesIO(data)
+        self.decode_content = False
+
+    def read(self, size=-1):
+        return self._buffer.read(size)
+
+
+class _FakeResponse:
+    def __init__(self, status_code=200, payload=None, content=b""):
+        self.status_code = status_code
+        self._payload = payload
+        self.raw = _FakeRaw(content)
+        if payload is not None:
+            self.text = __import__("json").dumps(payload)
+        else:
+            self.text = content[:512].decode("utf-8", "ignore")
+
+    def json(self):
+        if self._payload is None:
+            raise ValueError("no json")
+        return self._payload
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise __import__("requests").HTTPError(f"HTTP {self.status_code}", response=self)
+
+
+def _build_v1_zip() -> bytes:
+    import io
+    import zipfile
+
+    fixture_path = Path(__file__).resolve().parents[3] / "fixtures" / "mineru" / "mineru4_rich_middle_json.json"
+    middle_json = fixture_path.read_bytes()
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("markdown.md", "# Quarterly Engineering Report")
+        archive.writestr("middle_json.json", middle_json)
+        archive.writestr("images/page_0_chart_4.jpg", b"chart-bytes")
+        archive.writestr("images/page_0_equation_14.jpg", b"equation-bytes")
+        archive.writestr("images/page_0_table_7.jpg", b"table-bytes")
+    return buffer.getvalue()
+
+
+def _install_v1_http(monkeypatch, module, job_states, zip_bytes):
+    polls = {"count": 0}
+    calls = {"post": [], "put": [], "get": []}
+
+    def post(url, **kwargs):
+        calls["post"].append((url, kwargs.get("json")))
+        if url.endswith("/v1/uploads"):
+            return _FakeResponse(payload={"id": "upload_1", "upload_url": "/v1/uploads/upload_1/content", "upload_method": "PUT", "upload_headers": {"Content-Type": "application/pdf"}})
+        if url.endswith("/v1/uploads/upload_1/complete"):
+            return _FakeResponse(payload={"file": {"id": "file_1"}})
+        if url.endswith("/v1/parse/jobs"):
+            return _FakeResponse(status_code=202, payload={"job_id": "job_1", "status": "queued"})
+        raise AssertionError(f"unexpected POST {url}")
+
+    def put(url, **kwargs):
+        calls["put"].append(url)
+        assert url == "http://mineru.example/v1/uploads/upload_1/content"
+        return _FakeResponse()
+
+    def get(url, **kwargs):
+        calls["get"].append(url)
+        if url.endswith("/v1/health"):
+            return _FakeResponse(payload={"status": "ok", "version": "4.0.8"})
+        if "/v1/parse/jobs/job_1" in url:
+            state = job_states[min(polls["count"], len(job_states) - 1)]
+            polls["count"] += 1
+            return _FakeResponse(payload=state)
+        if "/v1/files/zip_1/content" in url:
+            return _FakeResponse(content=zip_bytes)
+        raise AssertionError(f"unexpected GET {url}")
+
+    monkeypatch.setattr(module.requests, "post", post)
+    monkeypatch.setattr(module.requests, "get", get)
+    monkeypatch.setattr(module.requests, "put", put)
+    monkeypatch.setattr(module, "V1_POLL_INTERVAL_SECONDS", 0.01)
+    return calls
+
+
+_RUNNING_JOB = {
+    "job_id": "job_1",
+    "status": "running",
+    "progress": {"completed": 0, "failed": 0, "total": 1},
+    "files": [{"file_id": "file_1", "name": "sample.pdf", "page_range": "all", "status": "running", "output_files": None, "error": None}],
+}
+_COMPLETED_JOB = {
+    "job_id": "job_1",
+    "status": "completed",
+    "progress": {"completed": 1, "failed": 0, "total": 1},
+    "files": [{"file_id": "file_1", "name": "sample.pdf", "page_range": "all", "status": "completed", "output_files": {"zip": {"file_id": "zip_1", "bytes": 100}}, "error": None}],
+}
+
+
+def test_run_mineru_v1_full_flow_produces_content_list(monkeypatch, tmp_path):
+    module = _load_mineru_parser(monkeypatch)
+    parser = module.MinerUParser(mineru_api="http://mineru.example")
+    calls = _install_v1_http(monkeypatch, module, [_RUNNING_JOB, _COMPLETED_JOB], _build_v1_zip())
+
+    pdf_path = tmp_path / "sample.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 fake")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    progress = []
+
+    output_path = parser._run_mineru_api(pdf_path, out_dir, module.MinerUParseOptions(), callback=lambda value, msg: progress.append(value))
+
+    jobs_payload = [payload for url, payload in calls["post"] if url.endswith("/v1/parse/jobs")]
+    assert jobs_payload == [
+        {
+            "files": [{"source": {"type": "file_id", "file_id": "file_1"}, "page_range": "all"}],
+            "tier": "standard",
+            "output_formats": ["zip"],
+        }
+    ]
+    assert calls["put"] == ["http://mineru.example/v1/uploads/upload_1/content"]
+    assert (out_dir / f"{output_path.name}.zip").is_file()
+
+    outputs = parser._read_output(output_path, pdf_path.stem)
+    assert outputs, "content_list must be readable by the existing consumer"
+    assert any(item.get("type") == "table" for item in outputs)
+    table = next(item for item in outputs if item.get("type") == "table")
+    assert (output_path / table["img_path"]).is_file()
+    assert progress[0] == 0.20
+
+
+def test_run_mineru_v1_maps_page_window_and_tier(monkeypatch, tmp_path):
+    module = _load_mineru_parser(monkeypatch)
+    parser = module.MinerUParser(mineru_api="http://mineru.example")
+    monkeypatch.setenv("MINERU_TIER", "advanced")
+    calls = _install_v1_http(monkeypatch, module, [_COMPLETED_JOB], _build_v1_zip())
+
+    pdf_path = tmp_path / "sample.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 fake")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    options = module.MinerUParseOptions(start_page_id=1, end_page_id=5)
+    parser._run_mineru_api(pdf_path, out_dir, options)
+
+    jobs_payload = [payload for url, payload in calls["post"] if url.endswith("/v1/parse/jobs")]
+    assert jobs_payload[0]["tier"] == "advanced"
+    assert jobs_payload[0]["files"][0]["page_range"] == "2-6"
+
+
+def test_run_mineru_v1_failed_job_raises_with_server_error(monkeypatch, tmp_path):
+    module = _load_mineru_parser(monkeypatch)
+    parser = module.MinerUParser(mineru_api="http://mineru.example")
+    failed_job = {
+        "job_id": "job_1",
+        "status": "failed",
+        "progress": {"completed": 0, "failed": 1, "total": 1},
+        "files": [{"file_id": "file_1", "name": "sample.pdf", "status": "failed", "output_files": None, "error": "page limit exceeded"}],
+    }
+    _install_v1_http(monkeypatch, module, [failed_job], b"")
+
+    pdf_path = tmp_path / "sample.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 fake")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    with pytest.raises(RuntimeError, match="page limit exceeded"):
+        parser._run_mineru_api(pdf_path, out_dir, module.MinerUParseOptions())

@@ -23,6 +23,7 @@ import shutil
 import sys
 import tempfile
 import threading
+import time
 import zipfile
 from collections import OrderedDict
 from collections.abc import Callable
@@ -205,6 +206,238 @@ class MinerUEffort(StrEnum):
     HIGH = "high"
 
 
+V1_TERMINAL_STATUSES = frozenset({"completed", "partial", "failed", "canceled"})
+V1_POLL_INTERVAL_SECONDS = 2.0
+V1_JOB_TIMEOUT_SECONDS = 1800
+V1_MAX_PAGES_PER_FILE = 1000
+
+# MinerU 4.x quality tier per 3.x backend (official mapping from the 4.0 changelog).
+BACKEND_TO_V1_TIER = {
+    MinerUBackend.PIPELINE: "basic",
+    MinerUBackend.VLM_ENGINE: "advanced",
+    MinerUBackend.VLM_HTTP_CLIENT: "advanced",
+    MinerUBackend.HYBRID_ENGINE: "standard",
+    MinerUBackend.HYBRID_HTTP_CLIENT: "standard",
+}
+
+_VISUAL_BODY_TYPES = frozenset({"image_body", "table_body", "chart_body", "code_body", "algorithm_body"})
+_VISUAL_ANNOTATION_TYPES = frozenset(
+    {
+        "image_caption",
+        "image_footnote",
+        "table_caption",
+        "table_footnote",
+        "chart_caption",
+        "chart_footnote",
+        "code_caption",
+        "code_footnote",
+    }
+)
+_AUX_TEXT_TYPES = frozenset({"header", "footer", "page_number", "aside_text", "page_footnote"})
+
+
+def resolve_v1_tier(backend, override: str = "") -> str:
+    """Map a 3.x backend onto a MinerU 4.x tier; an explicit override wins."""
+    override = (override or "").strip()
+    if override:
+        return override
+    try:
+        return BACKEND_TO_V1_TIER.get(MinerUBackend(backend), "standard")
+    except ValueError:
+        return "standard"
+
+
+def build_v1_page_range(start_page_id: int, end_page_id: int) -> str:
+    """Convert RAGFlow's 0-based inclusive page window to a V1 1-based page_range."""
+    first = max(0, int(start_page_id)) + 1
+    last = int(end_page_id) + 1
+    if last >= V1_MAX_PAGES_PER_FILE:
+        return "all" if first <= 1 else f"{first}-r1"
+    if last < first:
+        return "all"
+    return f"{first}-{last}"
+
+
+def _render_inline(content) -> str:
+    """Render inline spans (text / equation / code / hyperlink) into plain text."""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return str(content) if content else ""
+    parts = []
+    for span in content:
+        if isinstance(span, str):
+            parts.append(span)
+            continue
+        if not isinstance(span, dict):
+            continue
+        span_type = span.get("type")
+        if span_type == "hyperlink":
+            parts.append(_render_inline(span.get("children") or span.get("content") or []))
+            continue
+        value = span.get("content")
+        if isinstance(value, list):
+            parts.append(_render_inline(value))
+        elif value:
+            parts.append(str(value))
+    return "".join(parts)
+
+
+def _normalize_bbox(bbox) -> list[int] | None:
+    if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+        return None
+    try:
+        return [int(float(value) * 1000) for value in bbox]
+    except (TypeError, ValueError):
+        return None
+
+
+def _union_bbox(blocks: list[dict]) -> list | None:
+    boxes = [block.get("bbox") for block in blocks]
+    boxes = [bbox for bbox in boxes if isinstance(bbox, (list, tuple)) and len(bbox) == 4 and all(isinstance(value, (int, float)) for value in bbox)]
+    if not boxes:
+        return None
+    return [min(bbox[0] for bbox in boxes), min(bbox[1] for bbox in boxes), max(bbox[2] for bbox in boxes), max(bbox[3] for bbox in boxes)]
+
+
+def _annotation_texts(block: dict, accepted: frozenset[str]) -> list[str]:
+    annotations = [child for child in block.get("content") or [] if isinstance(child, dict) and child.get("type") in accepted]
+    annotations.sort(key=lambda child: (child.get("index") is None, child.get("index") or 0))
+    return [text for text in (_render_inline(child.get("content")) for child in annotations) if text]
+
+
+def _visual_body(block: dict) -> dict:
+    for child in block.get("content") or []:
+        if isinstance(child, dict) and child.get("type") in _VISUAL_BODY_TYPES:
+            return child
+    return {}
+
+
+def _flatten_nested(blocks: list, nested_types: frozenset[str], depth: int = 0) -> list[tuple[int, dict]]:
+    leaves = []
+    for child in blocks or []:
+        if not isinstance(child, dict):
+            continue
+        if child.get("type") in nested_types:
+            leaves.extend(_flatten_nested(child.get("content") or [], nested_types, depth + 1))
+        else:
+            leaves.append((depth, child))
+    return leaves
+
+
+def _render_visual_item(block: dict, block_type: str) -> dict:
+    body = _visual_body(block)
+    item: dict[str, Any] = {"type": block_type}
+    img_path = body.get("image_path") or block.get("image_path") or ""
+    if img_path:
+        item["img_path"] = img_path
+    annotation_prefix = "image" if block_type == "image" else block_type
+    item[f"{annotation_prefix}_caption"] = _annotation_texts(block, frozenset({f"{annotation_prefix}_caption"}))
+    item[f"{annotation_prefix}_footnote"] = _annotation_texts(block, frozenset({f"{annotation_prefix}_footnote"}))
+    body_content = body.get("content") or ""
+    if block_type == "table":
+        if body_content:
+            item["table_body"] = body_content
+    elif block_type == "code":
+        item["code_body"] = body_content
+        item["sub_type"] = "algorithm" if body.get("type") == "algorithm_body" or block.get("sub_type") == "algorithm" else "code"
+    else:
+        if body_content:
+            item["content"] = body_content
+    if block_type in {"image", "chart"} and block.get("sub_type"):
+        item["sub_type"] = block["sub_type"]
+    return item
+
+
+def _render_block(block: dict) -> dict | None:
+    block_type = block.get("type")
+    if not isinstance(block_type, str):
+        return None
+
+    if block_type in {"doc_title", "paragraph_title"}:
+        item: dict[str, Any] = {"type": "text", "text": _render_inline(block.get("content"))}
+        level = block.get("level")
+        if isinstance(level, int) and not isinstance(level, bool):
+            item["text_level"] = level
+        return item or None
+    if block_type == "text":
+        return {"type": "text", "text": _render_inline(block.get("content"))}
+    if block_type == "equation":
+        item = {"type": "equation"}
+        if block.get("image_path"):
+            item["img_path"] = block["image_path"]
+        latex = _render_inline(block.get("content")).strip()
+        if latex:
+            item["text"] = latex
+            item["text_format"] = "latex"
+        return item
+    if block_type == "list":
+        items = [text for _depth, leaf in _flatten_nested(block.get("content") or [], frozenset({"list"})) if (text := _render_inline(leaf.get("content")))]
+        return {"type": "list", "sub_type": block.get("sub_type") or "text", "list_items": items}
+    if block_type == "index":
+        items = []
+        for depth, leaf in _flatten_nested(block.get("content") or [], frozenset({"index"})):
+            label = _render_inline(leaf.get("content")).strip()
+            if label:
+                items.append(f"{'    ' * depth}- {label}")
+        return {"type": "index", "list_items": items}
+    if block_type in {"image", "table", "chart"}:
+        return _render_visual_item(block, block_type)
+    if block_type == "code":
+        return _render_visual_item(block, "code")
+    if block_type in _AUX_TEXT_TYPES:
+        return {"type": block_type, "text": _render_inline(block.get("content"))}
+
+    text = _render_inline(block.get("content"))
+    if text:
+        return {"type": "text", "text": text}
+    return None
+
+
+def middle_json_to_content_list(middle_json: dict) -> list[dict]:
+    """Project a MinerU 4.x ``docvortex.middle`` document onto the 3.x Content List V1 shape.
+
+    Mirrors MinerU's own ``render_content_list`` (mineru/render/_internal/content_list/v1.py):
+    bbox is normalized from 0-1 to 0-1000 integers, headings carry ``text_level``,
+    visual blocks keep their zip-relative ``img_path``.
+    """
+    items: list[dict] = []
+
+    def append_item(item: dict, page_idx: int, bbox) -> None:
+        item["page_idx"] = page_idx
+        normalized = _normalize_bbox(bbox)
+        if normalized:
+            item["bbox"] = normalized
+        items.append(item)
+
+    def flush_references(group: list[dict], page_idx: int) -> None:
+        if not group:
+            return
+        list_items = [text for block in group if (text := _render_inline(block.get("content")))]
+        append_item({"type": "list", "sub_type": "ref_text", "list_items": list_items}, page_idx, _union_bbox(group))
+        group.clear()
+
+    for page in middle_json.get("pages") or []:
+        if not isinstance(page, dict):
+            continue
+        page_idx = page.get("page_idx", 0)
+        ref_group: list[dict] = []
+
+        for block in page.get("blocks") or []:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "ref_text":
+                ref_group.append(block)
+                continue
+            flush_references(ref_group, page_idx)
+            item = _render_block(block)
+            if item is None:
+                continue
+            append_item(item, page_idx, block.get("bbox"))
+        flush_references(ref_group, page_idx)
+    return items
+
+
 @dataclass
 class MinerUParseOptions:
     """Options for MinerU PDF parsing."""
@@ -227,6 +460,7 @@ class MinerUParser(RAGFlowPdfParser):
     def __init__(self, mineru_path: str = "mineru", mineru_api: str = "", mineru_server_url: str = ""):
         self.mineru_api = mineru_api.rstrip("/")
         self.mineru_server_url = mineru_server_url.rstrip("/")
+        self._api_protocol: str | None = None
         self.outlines = []
         self.source_projection_sections = []
         # Source index of each entry in `_transfer_to_tables`'s returned media list.
@@ -295,6 +529,30 @@ class MinerUParser(RAGFlowPdfParser):
         except Exception:
             return False
 
+    def _probe_v1_health(self) -> dict | None:
+        """Return the MinerU 4.x ``/v1/health`` payload, or None for a 3.x instance."""
+        if not self.mineru_api:
+            return None
+        try:
+            response = requests.get(f"{self.mineru_api}/v1/health", timeout=5)
+        except requests.RequestException:
+            return None
+        if response.status_code not in (200, 503):
+            return None
+        try:
+            payload = response.json()
+        except ValueError:
+            return None
+        if not isinstance(payload, dict) or not ({"version", "status"} & payload.keys()):
+            return None
+        return payload
+
+    def _resolve_api_protocol(self) -> str:
+        if self._api_protocol:
+            return self._api_protocol
+        self._api_protocol = "v1" if self._probe_v1_health() is not None else "legacy"
+        return self._api_protocol
+
     @staticmethod
     def _sanitize_section_text(section: str) -> str:
         """Normalize MinerU text blocks before chunking.
@@ -328,6 +586,17 @@ class MinerUParser(RAGFlowPdfParser):
             reason = "[MinerU] MINERU_APISERVER not configured."
             self.logger.warning(reason)
             return False, reason
+
+        health = self._probe_v1_health()
+        if health is not None:
+            self._api_protocol = "v1"
+            if health.get("status") == "ok":
+                self.logger.info(f"[MinerU] MinerU 4.x V1 api reachable, version={health.get('version')}")
+                return True, reason
+            reason = f"[MinerU] MinerU 4.x not ready yet: {health}"
+            self.logger.warning(reason)
+            return False, reason
+        self._api_protocol = "legacy"
 
         api_openapi = f"{self.mineru_api}/openapi.json"
         try:
@@ -364,6 +633,8 @@ class MinerUParser(RAGFlowPdfParser):
         return self._run_mineru_api(input_path, output_dir, options, callback)
 
     def _run_mineru_api(self, input_path: Path, output_dir: Path, options: MinerUParseOptions, callback: Optional[Callable] = None) -> Path:
+        if self._resolve_api_protocol() == "v1":
+            return self._run_mineru_v1(input_path, output_dir, options, callback)
         input_file_path = str(input_path)
 
         if not os.path.exists(input_file_path):
@@ -442,6 +713,138 @@ class MinerUParser(RAGFlowPdfParser):
                     response_body = ""
             detail = f"; response: {response_body[:2000]}" if response_body else ""
             raise RuntimeError(f"[MinerU] api failed with exception {e}{detail}") from e
+
+    def _v1_json(self, verb: str, path: str, *, payload: dict | None = None, expect: tuple[int, ...] = (200,), timeout: int = 60) -> dict:
+        kwargs: dict[str, Any] = {"timeout": timeout, "headers": {"Accept": "application/json"}}
+        if payload is not None:
+            kwargs["json"] = payload
+        response = getattr(requests, verb)(f"{self.mineru_api}{path}", **kwargs)
+        if response.status_code not in expect:
+            body = (response.text or "").strip()
+            detail = f"; response: {body[:2000]}" if body else ""
+            raise requests.HTTPError(f"HTTP {response.status_code} for {path}{detail}", response=response)
+        data = response.json()
+        if not isinstance(data, dict):
+            raise TypeError(f"[MinerU] v1 response for {path} is not a JSON object: {type(data).__name__}")
+        return data
+
+    def _v1_wait_for_job(self, job_id: str, callback: Callable | None = None) -> dict:
+        deadline = time.monotonic() + V1_JOB_TIMEOUT_SECONDS
+        reported = False
+        while True:
+            job = self._v1_json("get", f"/v1/parse/jobs/{job_id}")
+            status = job.get("status")
+            if status in V1_TERMINAL_STATUSES:
+                self.logger.info(f"[MinerU] v1 job {job_id} finished: status={status} progress={job.get('progress')}")
+                return job
+            if not reported:
+                reported = True
+                if callback:
+                    callback(0.45, f"[MinerU] parse job {job_id} status={status}")
+            if time.monotonic() > deadline:
+                raise RuntimeError(f"[MinerU] v1 parse job timed out after {V1_JOB_TIMEOUT_SECONDS}s: job_id={job_id}")
+            time.sleep(V1_POLL_INTERVAL_SECONDS)
+
+    def _v1_zip_file_id(self, job: dict) -> str:
+        files = job.get("files") or []
+        entry = files[0] if files and isinstance(files[0], dict) else {}
+        zip_meta = (entry.get("output_files") or {}).get("zip") or {}
+        zip_file_id = zip_meta.get("file_id")
+        if entry.get("status") == "completed" and zip_file_id:
+            return str(zip_file_id)
+        error = entry.get("error") or job.get("error") or entry.get("status") or job.get("status")
+        raise RuntimeError(f"[MinerU] v1 parse produced no zip (job={job.get('status')}, file={entry.get('status')}): {error}")
+
+    def _v1_download_file(self, file_id: str, destination: Path) -> None:
+        response = requests.get(f"{self.mineru_api}/v1/files/{file_id}/content", timeout=600, stream=True)
+        response.raise_for_status()
+        with open(destination, "wb") as target:
+            response.raw.decode_content = True
+            shutil.copyfileobj(response.raw, target)
+
+    def _write_v1_content_list(self, output_path: Path, file_stem: str) -> None:
+        middle_path = output_path / "middle_json.json"
+        if not middle_path.is_file():
+            raise RuntimeError(f"[MinerU] v1 zip is missing middle_json.json: {output_path}")
+        with open(middle_path, encoding="utf-8") as source:
+            middle_json = json.load(source)
+        content_list = middle_json_to_content_list(middle_json)
+        target = output_path / f"{file_stem}_content_list.json"
+        target.write_text(json.dumps(content_list, ensure_ascii=False), encoding="utf-8")
+        self.logger.info(f"[MinerU] rendered {len(content_list)} content_list items from v1 middle_json -> {target.name}")
+
+    def _run_mineru_v1(self, input_path: Path, output_dir: Path, options: MinerUParseOptions, callback: Callable | None = None) -> Path:
+        input_file = Path(input_path)
+        file_stem = input_file.stem
+        output_path = Path(tempfile.mkdtemp(prefix=f"{file_stem}_{options.method}_", dir=str(output_dir)))
+        zip_path = Path(output_dir) / f"{output_path.name}.zip"
+        tier = resolve_v1_tier(options.backend, os.environ.get("MINERU_TIER", ""))
+        page_range = build_v1_page_range(options.start_page_id, options.end_page_id) if file_suffix(str(input_file)) == "pdf" else None
+
+        self.logger.info(f"[MinerU] v1 request: tier={tier} page_range={page_range} backend={options.backend} file={input_file.name}")
+        if callback:
+            callback(0.20, f"[MinerU] invoke MinerU 4.x api: {self.mineru_api} tier={tier}")
+
+        try:
+            upload = self._v1_json(
+                "post",
+                "/v1/uploads",
+                payload={
+                    "filename": input_file.name,
+                    "bytes": input_file.stat().st_size,
+                    "mime_type": mineru_mime_type(input_file.name),
+                    "purpose": "parse",
+                },
+            )
+            upload_id = upload.get("id")
+            upload_url = upload.get("upload_url")
+            if not upload_id or not upload_url:
+                raise RuntimeError(f"[MinerU] v1 upload creation returned no id/url: {upload}")
+            if str(upload_url).startswith("/"):
+                upload_url = f"{self.mineru_api}{upload_url}"
+            with open(input_file, "rb") as upload_body:
+                put_response = requests.put(str(upload_url), data=upload_body, headers=upload.get("upload_headers") or {}, timeout=600)
+            put_response.raise_for_status()
+
+            completed = self._v1_json("post", f"/v1/uploads/{upload_id}/complete")
+            file_id = (completed.get("file") or {}).get("id")
+            if not file_id:
+                raise RuntimeError(f"[MinerU] v1 upload completion returned no file id: {completed}")
+
+            job_payload: dict[str, Any] = {
+                "files": [{"source": {"type": "file_id", "file_id": file_id}}],
+                "tier": tier,
+                "output_formats": ["zip"],
+            }
+            if page_range:
+                job_payload["files"][0]["page_range"] = page_range
+            job = self._v1_json("post", "/v1/parse/jobs", payload=job_payload, expect=(200, 202))
+            job_id = job.get("job_id")
+            if not job_id:
+                raise RuntimeError(f"[MinerU] v1 parse job submission returned no job_id: {job}")
+
+            job = self._v1_wait_for_job(str(job_id), callback)
+            self._v1_download_file(self._v1_zip_file_id(job), zip_path)
+            if callback:
+                callback(0.55, f"[MinerU] zip file returned, saving to {zip_path}...")
+        except requests.RequestException as e:
+            response = getattr(e, "response", None)
+            response_body = ""
+            if response is not None:
+                try:
+                    response_body = response.text.strip()
+                except (AttributeError, ValueError):
+                    response_body = ""
+            detail = f"; response: {response_body[:2000]}" if response_body else ""
+            raise RuntimeError(f"[MinerU] v1 api failed with exception {e}{detail}") from e
+
+        self.logger.info(f"[MinerU] Unzip to {output_path}...")
+        self._extract_zip_no_root(str(zip_path), str(output_path), file_stem + "/")
+        self._write_v1_content_list(output_path, file_stem)
+        if callback:
+            callback(0.65, f"[MinerU] Unzip to {output_path}...")
+        self.logger.info("[MinerU] V1 api completed successfully.")
+        return output_path
 
     def __images__(self, fnm, zoomin: int = 1, page_from=0, page_to=MAXIMUM_PAGE_NUMBER, callback=None):
         self.page_from = page_from
