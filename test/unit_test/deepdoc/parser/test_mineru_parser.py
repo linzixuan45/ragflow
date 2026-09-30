@@ -1254,3 +1254,140 @@ def test_run_mineru_v1_failed_job_raises_with_server_error(monkeypatch, tmp_path
 
     with pytest.raises(RuntimeError, match="page limit exceeded"):
         parser._run_mineru_api(pdf_path, out_dir, module.MinerUParseOptions())
+
+
+def _install_reuse_v1_http(monkeypatch, module, zip_bytes, fail_jobs=frozenset()):
+    """Fake MinerU 4.x that mints a fresh upload per call and counts them.
+
+    ``fail_jobs`` lists job numbers that report failure, which is how a stale
+    reused ``file_id`` surfaces.
+    """
+    state = {"uploads": 0, "jobs": 0}
+
+    def post(url, **kwargs):
+        if url.endswith("/v1/uploads"):
+            state["uploads"] += 1
+            number = state["uploads"]
+            return _FakeResponse(
+                payload={
+                    "id": f"upload_{number}",
+                    "upload_url": f"/v1/uploads/upload_{number}/content",
+                    "upload_headers": {"Content-Type": "application/pdf"},
+                }
+            )
+        if "/v1/uploads/" in url and url.endswith("/complete"):
+            return _FakeResponse(payload={"file": {"id": url.split("/v1/uploads/")[1].split("/")[0].replace("upload", "file")}})
+        if url.endswith("/v1/parse/jobs"):
+            state["jobs"] += 1
+            return _FakeResponse(status_code=202, payload={"job_id": f"job_{state['jobs']}", "status": "queued"})
+        raise AssertionError(f"unexpected POST {url}")
+
+    def put(url, **kwargs):
+        return _FakeResponse()
+
+    def get(url, **kwargs):
+        if url.endswith("/v1/health"):
+            return _FakeResponse(payload={"status": "ok", "version": "4.0.8"})
+        if "/v1/parse/jobs/" in url:
+            number = int(url.rsplit("job_", 1)[1])
+            if number in fail_jobs:
+                return _FakeResponse(
+                    payload={
+                        "job_id": f"job_{number}",
+                        "status": "failed",
+                        "progress": {"completed": 0, "failed": 1, "total": 1},
+                        "files": [{"file_id": "f", "status": "failed", "output_files": None, "error": "file not found"}],
+                    }
+                )
+            return _FakeResponse(
+                payload={
+                    "job_id": f"job_{number}",
+                    "status": "completed",
+                    "progress": {"completed": 1, "failed": 0, "total": 1},
+                    "files": [{"file_id": "f", "status": "completed", "output_files": {"zip": {"file_id": f"zip_{number}"}}, "error": None}],
+                }
+            )
+        if "/v1/files/" in url and url.endswith("/content"):
+            return _FakeResponse(content=zip_bytes)
+        raise AssertionError(f"unexpected GET {url}")
+
+    monkeypatch.setattr(module.requests, "post", post)
+    monkeypatch.setattr(module.requests, "put", put)
+    monkeypatch.setattr(module.requests, "get", get)
+    monkeypatch.setattr(module, "V1_POLL_INTERVAL_SECONDS", 0.01)
+    return state
+
+
+def test_run_mineru_v1_uploads_once_for_repeated_content(monkeypatch, tmp_path):
+    """Every page-range task carries the whole file, so the bytes must upload once."""
+    module = _load_mineru_parser(monkeypatch)
+    parser = module.MinerUParser(mineru_api="http://mineru.example")
+    state = _install_reuse_v1_http(monkeypatch, module, _build_v1_zip())
+
+    pdf_path = tmp_path / "sample.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 fake")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    parser._run_mineru_api(pdf_path, out_dir, module.MinerUParseOptions(start_page_id=0, end_page_id=11))
+    parser._run_mineru_api(pdf_path, out_dir, module.MinerUParseOptions(start_page_id=12, end_page_id=21))
+
+    assert state["uploads"] == 1, "the second page-range task must reuse the first upload"
+    assert state["jobs"] == 2, "each page range still needs its own parse job"
+
+
+def test_run_mineru_v1_separates_uploads_by_content(monkeypatch, tmp_path):
+    """Different bytes must not share a file id."""
+    module = _load_mineru_parser(monkeypatch)
+    parser = module.MinerUParser(mineru_api="http://mineru.example")
+    state = _install_reuse_v1_http(monkeypatch, module, _build_v1_zip())
+
+    first = tmp_path / "first.pdf"
+    first.write_bytes(b"%PDF-1.4 first")
+    second = tmp_path / "second.pdf"
+    second.write_bytes(b"%PDF-1.4 second")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    parser._run_mineru_api(first, out_dir, module.MinerUParseOptions())
+    parser._run_mineru_api(second, out_dir, module.MinerUParseOptions())
+
+    assert state["uploads"] == 2
+
+
+def test_run_mineru_v1_reuploads_when_reused_file_id_is_stale(monkeypatch, tmp_path):
+    """A reused id whose server-side copy is gone must not fail the parse."""
+    module = _load_mineru_parser(monkeypatch)
+    parser = module.MinerUParser(mineru_api="http://mineru.example")
+    # The first job fails, standing in for a file id the server no longer holds.
+    state = _install_reuse_v1_http(monkeypatch, module, _build_v1_zip(), fail_jobs={2})
+
+    pdf_path = tmp_path / "sample.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 fake")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    parser._run_mineru_api(pdf_path, out_dir, module.MinerUParseOptions(start_page_id=0, end_page_id=11))
+    parser._run_mineru_api(pdf_path, out_dir, module.MinerUParseOptions(start_page_id=12, end_page_id=21))
+
+    # First call uploads once; second reuses, fails, then re-uploads and succeeds.
+    assert state["uploads"] == 2
+    assert state["jobs"] == 3
+
+
+def test_run_mineru_v1_does_not_retry_a_failed_first_upload(monkeypatch, tmp_path):
+    """A failure on a fresh upload is a real error, not a stale reference."""
+    module = _load_mineru_parser(monkeypatch)
+    parser = module.MinerUParser(mineru_api="http://mineru.example")
+    state = _install_reuse_v1_http(monkeypatch, module, _build_v1_zip(), fail_jobs={1})
+
+    pdf_path = tmp_path / "sample.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 fake")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    with pytest.raises(RuntimeError, match="file not found"):
+        parser._run_mineru_api(pdf_path, out_dir, module.MinerUParseOptions())
+
+    assert state["uploads"] == 1
+    assert state["jobs"] == 1

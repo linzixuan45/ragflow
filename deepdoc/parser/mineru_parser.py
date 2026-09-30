@@ -210,6 +210,53 @@ V1_TERMINAL_STATUSES = frozenset({"completed", "partial", "failed", "canceled"})
 V1_POLL_INTERVAL_SECONDS = 2.0
 V1_JOB_TIMEOUT_SECONDS = 1800
 V1_MAX_PAGES_PER_FILE = 1000
+V1_UPLOAD_CACHE_LIMIT = 64
+
+
+class V1UploadCache:
+    """Share one MinerU 4.x upload across jobs for identical content.
+
+    A document split into page ranges becomes one task per range, and each task
+    uploads the whole file, so the same bytes are sent once per range while only
+    ``page_range`` differs. Keying the resulting ``file_id`` by server plus
+    content hash lets later jobs skip the upload, and the per-key lock makes
+    concurrent tasks for the same content wait for a single upload instead of
+    racing to create several.
+    """
+
+    def __init__(self, limit: int = V1_UPLOAD_CACHE_LIMIT) -> None:
+        self._limit = limit
+        self._file_ids: OrderedDict[tuple[str, str], str] = OrderedDict()
+        self._locks: dict[tuple[str, str], threading.Lock] = {}
+        self._guard = threading.Lock()
+
+    def lock_for(self, key: tuple[str, str]) -> threading.Lock:
+        with self._guard:
+            lock = self._locks.get(key)
+            if lock is None:
+                lock = self._locks[key] = threading.Lock()
+            return lock
+
+    def get(self, key: tuple[str, str]) -> str | None:
+        with self._guard:
+            file_id = self._file_ids.get(key)
+            if file_id is not None:
+                self._file_ids.move_to_end(key)
+            return file_id
+
+    def put(self, key: tuple[str, str], file_id: str) -> None:
+        with self._guard:
+            self._file_ids[key] = file_id
+            self._file_ids.move_to_end(key)
+            while len(self._file_ids) > self._limit:
+                self._file_ids.popitem(last=False)
+
+    def drop(self, key: tuple[str, str]) -> None:
+        with self._guard:
+            self._file_ids.pop(key, None)
+
+
+_v1_upload_cache = V1UploadCache()
 
 # MinerU 4.x quality tier per 3.x backend (official mapping from the 4.0 changelog).
 BACKEND_TO_V1_TIER = {
@@ -786,6 +833,49 @@ class MinerUParser(RAGFlowPdfParser):
             callback(0.20, f"[MinerU] invoke MinerU 4.x api: {self.mineru_api} tier={tier}")
 
         try:
+            key = self._v1_content_key(input_file)
+            file_id, reused = self._v1_upload_file_id(key, input_file)
+            try:
+                self._v1_execute_job(file_id, tier, page_range, zip_path, callback)
+            except Exception:
+                if not reused:
+                    raise
+                # A reused file_id can outlive the server's copy. Re-upload once
+                # rather than failing the parse on a stale reference.
+                self.logger.warning(f"[MinerU] v1 job failed for reused upload {file_id}; re-uploading and retrying once", exc_info=True)
+                _v1_upload_cache.drop(key)
+                file_id, _ = self._v1_upload_file_id(key, input_file)
+                self._v1_execute_job(file_id, tier, page_range, zip_path, callback)
+        except requests.RequestException as e:
+            response = getattr(e, "response", None)
+            response_body = ""
+            if response is not None:
+                try:
+                    response_body = response.text.strip()
+                except (AttributeError, ValueError):
+                    response_body = ""
+            detail = f"; response: {response_body[:2000]}" if response_body else ""
+            raise RuntimeError(f"[MinerU] v1 api failed with exception {e}{detail}") from e
+
+        self.logger.info(f"[MinerU] Unzip to {output_path}...")
+        self._extract_zip_no_root(str(zip_path), str(output_path), file_stem + "/")
+        self._write_v1_content_list(output_path, file_stem)
+        if callback:
+            callback(0.65, f"[MinerU] Unzip to {output_path}...")
+        self.logger.info("[MinerU] V1 api completed successfully.")
+        return output_path
+
+    def _v1_content_key(self, input_file: Path) -> tuple[str, str]:
+        """Identify an upload by server plus content so page-range tasks share it."""
+        return (self.mineru_api, hashlib.sha256(input_file.read_bytes()).hexdigest())
+
+    def _v1_upload_file_id(self, key: tuple[str, str], input_file: Path) -> tuple[str, bool]:
+        """Return ``(file_id, reused)``, uploading once per content hash."""
+        with _v1_upload_cache.lock_for(key):
+            cached = _v1_upload_cache.get(key)
+            if cached:
+                self.logger.info(f"[MinerU] v1 reuse uploaded file {cached} for {input_file.name}")
+                return cached, True
             upload = self._v1_json(
                 "post",
                 "/v1/uploads",
@@ -810,41 +900,27 @@ class MinerUParser(RAGFlowPdfParser):
             file_id = (completed.get("file") or {}).get("id")
             if not file_id:
                 raise RuntimeError(f"[MinerU] v1 upload completion returned no file id: {completed}")
+            _v1_upload_cache.put(key, str(file_id))
+            return str(file_id), False
 
-            job_payload: dict[str, Any] = {
-                "files": [{"source": {"type": "file_id", "file_id": file_id}}],
-                "tier": tier,
-                "output_formats": ["zip"],
-            }
-            if page_range:
-                job_payload["files"][0]["page_range"] = page_range
-            job = self._v1_json("post", "/v1/parse/jobs", payload=job_payload, expect=(200, 202))
-            job_id = job.get("job_id")
-            if not job_id:
-                raise RuntimeError(f"[MinerU] v1 parse job submission returned no job_id: {job}")
+    def _v1_execute_job(self, file_id: str, tier: str, page_range: str | None, zip_path: Path, callback: Callable | None) -> None:
+        """Submit one parse job for an already-uploaded file and fetch its zip."""
+        job_payload: dict[str, Any] = {
+            "files": [{"source": {"type": "file_id", "file_id": file_id}}],
+            "tier": tier,
+            "output_formats": ["zip"],
+        }
+        if page_range:
+            job_payload["files"][0]["page_range"] = page_range
+        job = self._v1_json("post", "/v1/parse/jobs", payload=job_payload, expect=(200, 202))
+        job_id = job.get("job_id")
+        if not job_id:
+            raise RuntimeError(f"[MinerU] v1 parse job submission returned no job_id: {job}")
 
-            job = self._v1_wait_for_job(str(job_id), callback)
-            self._v1_download_file(self._v1_zip_file_id(job), zip_path)
-            if callback:
-                callback(0.55, f"[MinerU] zip file returned, saving to {zip_path}...")
-        except requests.RequestException as e:
-            response = getattr(e, "response", None)
-            response_body = ""
-            if response is not None:
-                try:
-                    response_body = response.text.strip()
-                except (AttributeError, ValueError):
-                    response_body = ""
-            detail = f"; response: {response_body[:2000]}" if response_body else ""
-            raise RuntimeError(f"[MinerU] v1 api failed with exception {e}{detail}") from e
-
-        self.logger.info(f"[MinerU] Unzip to {output_path}...")
-        self._extract_zip_no_root(str(zip_path), str(output_path), file_stem + "/")
-        self._write_v1_content_list(output_path, file_stem)
+        job = self._v1_wait_for_job(str(job_id), callback)
+        self._v1_download_file(self._v1_zip_file_id(job), zip_path)
         if callback:
-            callback(0.65, f"[MinerU] Unzip to {output_path}...")
-        self.logger.info("[MinerU] V1 api completed successfully.")
-        return output_path
+            callback(0.55, f"[MinerU] zip file returned, saving to {zip_path}...")
 
     def __images__(self, fnm, zoomin: int = 1, page_from=0, page_to=MAXIMUM_PAGE_NUMBER, callback=None):
         self.page_from = page_from
