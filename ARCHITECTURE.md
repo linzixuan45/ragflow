@@ -258,8 +258,56 @@ RE2 全局构造顺序崩溃（`_GLOBAL__sub_I_RAGAnalyzer_Create`），这是
 
 ## 6. 修改前的检查清单
 
+### 6.1 每次改动前
+
 - 新增能力时先确认归属：**Go 领地还是 Python 领地**
 - 不要为了让两个后端「一致」而重写 Python 定制
-- 动 nginx 路由或 Go 的 `/datasets` 分组后，回归验证 Corpus FS 可达
-- 同步上游后抽查共享表（`document` / `task` / `file` / `knowledgebase`）字段差异
+- 动 nginx 路由或 Go 的 `/datasets` 分组后，回归验证 **Corpus FS 与
+  keyword-search** 可达（两条都在 Python 侧，且都挂在 `/datasets/*` 下）
 - 若发现某能力两侧都有实现，收敛到**当前实际服务该路由的那一侧**
+
+### 6.2 同步上游后的固定检查项
+
+1. **共享表字段漂移**（长期风险，见 §3）：两侧对 `document` / `task` / `file` /
+   `knowledgebase` 各有定义，字段漂移会让双方 AutoMigrate 互相改写。
+
+   ```bash
+   grep -A30 "type Document struct" internal/entity/document.go
+   grep -A30 "^class Document(DataBaseModel)" api/db/db_models.py
+   ```
+
+2. **Python 专属路由是否仍可达**：Corpus FS（`/datasets/<id>/fs/*`）与
+   keyword-search（`/datasets/keyword-search`）。上游若扩展 Go 的 `/datasets`
+   分组，或有人放宽 `docker/nginx/ragflow.conf.hybrid` 的
+   `^/api/v1/datasets/search$`，这些路由会被静默劫持到 Go 并 404。
+
+   ```bash
+   # 未鉴权时应为 401（可达）；404 表示被错误转发到 Go
+   curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:9380/api/v1/datasets/keyword-search
+   curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:9380/api/v1/datasets/x/fs/tree
+   ```
+
+3. **远程解析后端是否真的在服务**：`API_PROXY_SCHEME=python` 下解析依赖远程
+   MinerU，其队列可能静默停摆（实测 2026-10-01：8 个 `running` job 卡住 34h 占满
+   `max_concurrent_jobs`，其后 69 个 job 全部排队）。**症状是「解析变慢/`Task done`
+   耗时几百秒/复用上传失败重试」，而不是报错**。
+
+   ```bash
+   curl -s http://10.100.15.70:8886/v1/usage
+   curl -s 'http://10.100.15.70:8886/v1/parse/jobs?limit=100' \
+     | python3 -c 'import json,sys,collections; d=json.load(sys.stdin); \
+   print(collections.Counter(j["status"] for j in d["items"]))'
+   # running 数与 max_concurrent_jobs 相同且 started_at 很旧 → 槽位被僵死 job 占满
+   ```
+
+4. **移植可行性不能按「模块」判断**：本 fork 自 `cb93883f3` 起
+   `internal/ingestion/**` 几乎未跟随上游，多个上游包（`internal/ingestion/task/`、
+   `internal/ingestion/service/`、`internal/service/document/`）在本仓库**不存在**。
+   动手前先确认目标包是否落后：
+
+   ```bash
+   git diff --stat cb93883f3 HEAD -- <path>    # 空输出 = 本 fork 从未改过
+   ```
+
+   逐提交的第一批清单见
+   `开发日志/RAGFlow更新-加入原仓库改动/移植清单-第一批-提交级-2026-09-30.md`。

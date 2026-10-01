@@ -43,9 +43,13 @@ const (
 	minerUV1FilePath     = "/v1/files/%s/content"
 
 	minerUV1PollInterval = 2 * time.Second
-	minerUV1JobTimeout   = 30 * time.Minute
 	minerUV1MaxBytes     = 1 << 30
 )
+
+// minerUV1JobTimeout caps how long a parse job is polled before giving up.
+// It is a variable so bounded integration probes can shorten it when the
+// remote parse queue is backed up.
+var minerUV1JobTimeout = 30 * time.Minute
 
 // minerUV1TerminalStatuses are the job states that stop polling.
 var minerUV1TerminalStatuses = map[string]bool{
