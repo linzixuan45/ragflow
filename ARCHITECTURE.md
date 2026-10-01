@@ -45,8 +45,9 @@
 | 9383 | `bin/ragflow_server --admin` | Go admin |
 | 9384 | `bin/ragflow_server --api` | Go API |
 
-nginx 按 location 顺序**最长前缀优先**匹配；末尾的 `^/(v1|api)` → Python 是
-API 兜底，`location /` 提供前端静态资源：
+nginx matches `location ~` regexes **in file order, first match wins** — not by
+longest prefix. The trailing `^/(v1|api)` → Python is the API fallback and
+`location /` serves the frontend:
 
 ```
 ^/api/v1/admin/roles_with_permission   -> 9381  Python
@@ -56,11 +57,18 @@ API 兜底，`location /` 提供前端静态资源：
 ^/api/v1/admin/variables               -> 9381  Python
 ^/api/v1/admin                         -> 9383  Go
 ^/api/v1/skills                        -> 9384  Go
-^/api/v1/datasets/search               -> 9384  Go
+^/api/v1/datasets/search$              -> 9384  Go     <- 末尾 `$` 必须保留
 ^/api/v1/chat/completions              -> 9384  Go
 ^/v1/system/config                     -> 9384  Go
 ^/v1/user/(login|logout)               -> 9384  Go
 ^/(v1|api)                             -> 9380  Python   <- 兜底
+```
+
+剩余的 Python 专属 `/datasets/*` 子路由（全部落兜底规则 → Python）：
+
+```
+/api/v1/datasets/keyword-search        -> 9380  Python  （keyword_search_api.py）
+/api/v1/datasets/<id>/fs/*             -> 9380  Python  （corpus_fs_api.py）
 ```
 
 ### 归属划分
@@ -100,16 +108,25 @@ providers / mcp / users / tenants 等），但 hybrid 配置当前**只把其中
 
 ### ⚠️ 路由归属的脆弱点
 
-Corpus FS 挂在 `/api/v1/datasets/<id>/fs/*`，而 hybrid 配置**只把
-`datasets/search` 指向 Go**。其余 `/datasets/*` 落到兜底的 `^/(v1|api)`
-→ Python，所以 Corpus FS 当前**能正确到达 Python**。
+Python 专属的 `/datasets/*` 子路由只靠 nginx 规则落到 Python：
 
-但 Go 侧 `internal/router/router.go:327` 也注册了 `/datasets` 分组。
-**这只靠 nginx 规则维持，不靠设计约束。** 若上游把 Go 的 datasets 路由扩展到
-覆盖 `/datasets/<id>/fs`，或有人调整 nginx 顺序，Corpus FS 会被静默劫持到
-Go 并返回 404。
+- **Corpus FS**：`/api/v1/datasets/<id>/fs/*`
+- **关键词检索**：`/api/v1/datasets/keyword-search`（`keyword_search_api.py`）
 
-**修改 nginx 或 Go datasets 路由时，必须回归验证 Corpus FS 端点可达。**
+它们靠兜底的 `^/(v1|api)` → Python 正确到达，而 Go 侧
+`internal/router/router.go` 也注册了 `/datasets` 分组。
+**这只靠 nginx 规则维持，不靠设计约束。**
+
+已实际踩到过一次：`^/api/v1/datasets/search` 未加 `$` 时**同时匹配**
+`datasets/search` 与 `datasets/keyword-search`（`search` 字面量在 `keyword-`
+之后仍连续出现），把 Python 的关键词检索静默转发到未实现该路由的 Go。
+该规则现已收窄为 `^/api/v1/datasets/search$`，并加注释锁定。
+
+若上游把 Go 的 datasets 路由扩展到覆盖 `/datasets/<id>/fs`，或有人去掉该
+`$`、调整 nginx 顺序，这些能力会被静默劫持到 Go 并返回 404。
+
+**修改 nginx 或 Go datasets 路由时，必须回归验证 Corpus FS 与
+keyword-search 端点可达。**
 
 ---
 
@@ -185,17 +202,26 @@ git fetch upstream --unshallow     # 首次必须，浅克隆会让 merge-base �
 
 ### Go 侧当前的分叉面
 
-仅 5 类真实能力（上游均无）：
+仅 6 类真实能力（上游均无）：
 
 1. `MinerUEffort` / `MinerUImageAnalysis` 字段（`pdf_parser_common.go`）
 2. `minerUInputSuffixes` 多格式路由：docx/pptx/xlsx + 8 种图片 → MinerU
    （`parser_dispatch.go`）
-3. `TaskSegment` 富字段：`Type` / `Layout` / `Image` / `Positions`（`types.go`）
-4. MinerU 提交协议回落：`tasks` → `file_parse`（`pdf_parser_mineru.go`）
-5. `FileTypeVISUAL` 映射（`utility/file.go`）
+3. `TaskSegment` 富字段：`Type` / `Layout` / `LayoutType` / `Image` / `Positions`
+   （`types.go`）
+4. **MinerU 4.x V1 客户端**（`internal/entity/models/mineru_local_v1.go`）：
+   `/v1/health` 探测 → `/v1/uploads`（create/PUT/complete）→
+   `/v1/parse/jobs` → `/v1/files/<id>/content`（zip）→ `middle_json.json`
+   投影为 Content List V1；含按内容哈希的上传复用与 `tier` 映射
+5. legacy（3.x）提交路由回落：`tasks` → `file_parse`（`pdf_parser_mineru.go`）
+6. `FileTypeVISUAL` 映射（`utility/file.go`）
 
 其余为采纳上游契约的结果，**不构成分叉**：`parser.ParseResult` 已统一
 （上游独立收敛到相同字段），`ctx` 参数与 `buildParserOutputs` 签名同理。
+
+> **不要用上游 Go 版 MinerU 覆盖这里。** 上游实现只取 `segment.Content`，
+> 丢弃版面/图片/层级，且只支持 legacy 协议（见
+> `开发日志/RAGFlow更新-加入原仓库改动/官方更新合并评估报告-*.md` §5.3）。
 
 ---
 
@@ -207,6 +233,9 @@ uv run ragflow_deps/download_deps.py
 bash build.sh --test ./internal/parser/parser/... ./internal/ingestion/component/...
 bash build.sh --go
 
+# 无 CGO 依赖的包可直接跑（绕开原生库与链接器）
+CGO_ENABLED=0 go test ./internal/entity/models/...
+
 # Python
 uv run pytest test/unit_test/deepdoc/parser/test_mineru_parser.py
 ruff check
@@ -216,6 +245,14 @@ Go 构建依赖原生静态库（`office_oxide`、`pdfium-static`、`pdf_oxide`�
 **clang + lld**。用 g++ 编译 `internal/binding/cpp` 会在 CGO 链接期因
 RE2 全局构造顺序崩溃（`_GLOBAL__sub_I_RAGAnalyzer_Create`），这是
 `build.sh` 强制要求 clang 的原因。
+
+> **本机（无 root）还有一个独立的环境缺口**：系统只有 `libpcre2-8-0`
+> 运行时，缺 dev 包，`ld.lld` 会报 `unable to find library -lpcre2-8`。
+> 指向 `~/lib-shim/libpcre2-8.a`（`vim` 用的 conda 静态库）可编过并链接，
+> 但产出的 `parser.test` 二进制在**任何测试执行前**即段错误。该现象在
+> 未改动的代码上同样存在，属工具链问题，不是代码问题——**请在正常环境跑
+> `build.sh --test` 取绿灯**。`internal/entity/models` 无 CGO 依赖，故
+> MinerU V1 客户端的运行时逻辑可用 `CGO_ENABLED=0` 直接验证。
 
 ---
 
