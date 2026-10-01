@@ -117,12 +117,16 @@ type ListTaskStatus struct {
 }
 
 type TaskSegment struct {
-	Index     int       `json:"index"`
-	Content   string    `json:"content"`
-	Type      string    `json:"type,omitempty"`
-	Layout    string    `json:"layout,omitempty"`
-	Image     string    `json:"image,omitempty"`
-	Positions []float64 `json:"positions,omitempty"`
+	Index   int    `json:"index"`
+	Content string `json:"content"`
+	Type    string `json:"type,omitempty"`
+	Layout  string `json:"layout,omitempty"`
+	// LayoutType is the richer layout vocabulary the shared item mapping
+	// consumes (`title`, `figure`, `table`, `equation`, ...); Layout keeps the
+	// coarser legacy value for callers that predate it.
+	LayoutType string    `json:"layout_type,omitempty"`
+	Image      string    `json:"image,omitempty"`
+	Positions  []float64 `json:"positions,omitempty"`
 }
 
 type TaskResponse struct {

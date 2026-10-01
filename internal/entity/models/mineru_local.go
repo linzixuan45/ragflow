@@ -316,7 +316,9 @@ func (m *MinerULocalModel) ShowTask(taskID string, apiConfig *APIConfig) (*TaskR
 type minerUContentBlock struct {
 	Type           string    `json:"type"`
 	Text           string    `json:"text"`
+	LayoutType     string    `json:"layout_type"`
 	Content        string    `json:"content"`
+	ListItems      []string  `json:"list_items"`
 	TableBody      string    `json:"table_body"`
 	ImagePath      string    `json:"img_path"`
 	TableImagePath string    `json:"table_img_path"`
@@ -340,25 +342,38 @@ func minerUContentSegments(raw string, images map[string]string) ([]TaskSegment,
 	}
 	segments := make([]TaskSegment, 0, len(blocks))
 	for _, block := range blocks {
-		segment := TaskSegment{Index: len(segments), Type: "text", Layout: "text"}
+		layoutType := strings.TrimSpace(block.LayoutType)
+		segment := TaskSegment{Index: len(segments), Type: "text", Layout: "text", LayoutType: layoutType}
+		if segment.LayoutType == "" {
+			segment.LayoutType = "text"
+		}
 		switch block.Type {
 		case "header", "footer", "page_number", "discarded":
 			continue
 		case "table":
 			segment.Type = "table"
 			segment.Layout = "table"
+			segment.LayoutType = "table"
 			segment.Content = joinMinerUText(append([]string{block.TableBody}, append(block.TableCaption, block.TableFootnote...)...)...)
 			segment.Image = minerUImage(images, block.TableImagePath)
 		case "image":
 			segment.Type = "image"
 			segment.Layout = "figure"
+			if segment.LayoutType == "text" {
+				segment.LayoutType = "figure"
+			}
 			segment.Content = joinMinerUText(append(block.ImageCaption, block.ImageFootnote...)...)
 			segment.Image = minerUImage(images, block.ImagePath)
 		case "chart":
 			segment.Type = "image"
 			segment.Layout = "figure"
+			if segment.LayoutType == "text" {
+				segment.LayoutType = "figure"
+			}
 			segment.Content = joinMinerUText(append(append(block.ChartCaption, block.ChartFootnote...), block.Content)...)
 			segment.Image = minerUImage(images, block.ImagePath)
+		case "list", "index":
+			segment.Content = strings.Join(block.ListItems, "\n")
 		default:
 			segment.Content = joinMinerUText(block.Text, block.Content)
 		}
