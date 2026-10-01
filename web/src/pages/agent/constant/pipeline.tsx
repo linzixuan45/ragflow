@@ -347,6 +347,7 @@ export const initialTitleChunkerValues = {
   hierarchyGroup: '0',
   include_heading_content: false,
   root_chunk_as_heading: false,
+  chunk_token_cap: 512,
   hierarchyRules: cloneDeep(originalRules),
   groupRules: cloneDeep(originalRules),
 };
