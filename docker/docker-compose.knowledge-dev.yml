@@ -47,10 +47,12 @@ services:
       - ../api/apps/restful_apis/keyword_search_api.py:/ragflow/api/apps/restful_apis/keyword_search_api.py:ro
       - ../agent/tools/googlescholar.py:/ragflow/agent/tools/googlescholar.py:ro
       - ../api/apps/services/corpus_citation_service.py:/ragflow/api/apps/services/corpus_citation_service.py:ro
+      - ../api/apps/services/corpus_context_cache.py:/ragflow/api/apps/services/corpus_context_cache.py:ro
       - ../api/apps/services/corpus_cursor_service.py:/ragflow/api/apps/services/corpus_cursor_service.py:ro
       - ../api/apps/services/corpus_delegation_service.py:/ragflow/api/apps/services/corpus_delegation_service.py:ro
       - ../api/apps/services/corpus_fs_service.py:/ragflow/api/apps/services/corpus_fs_service.py:ro
       - ../api/apps/services/corpus_tool_service.py:/ragflow/api/apps/services/corpus_tool_service.py:ro
+      - ../api/apps/services/corpus_recall_service.py:/ragflow/api/apps/services/corpus_recall_service.py:ro
       - ../api/apps/services/document_markdown_service.py:/ragflow/api/apps/services/document_markdown_service.py:ro
       - ../api/apps/services/corpus_path_service.py:/ragflow/api/apps/services/corpus_path_service.py:ro
       - ../api/apps/services/corpus_secret_service.py:/ragflow/api/apps/services/corpus_secret_service.py:ro
@@ -73,6 +75,8 @@ services:
       - ../rag/llm/embedding_model.py:/ragflow/rag/llm/embedding_model.py:ro
       - ../rag/llm/ocr_model.py:/ragflow/rag/llm/ocr_model.py:ro
       - ../rag/llm/rerank_model.py:/ragflow/rag/llm/rerank_model.py:ro
+      - ../rag/nlp/search.py:/ragflow/rag/nlp/search.py:ro
+      - ../rag/nlp/query.py:/ragflow/rag/nlp/query.py:ro
       - ../rag/prompts/generator.py:/ragflow/rag/prompts/generator.py:ro
       - ../rag/utils/es_conn.py:/ragflow/rag/utils/es_conn.py:ro
       - ../rag/utils/chunk_metrics.py:/ragflow/rag/utils/chunk_metrics.py:ro

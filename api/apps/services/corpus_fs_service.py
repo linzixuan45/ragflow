@@ -14,13 +14,14 @@ from typing import Any
 import xxhash
 from peewee import InterfaceError, OperationalError, ProgrammingError
 
+from api.apps.services.corpus_context_cache import cache_enabled, citation_manifest_cache, dataset_context_cache
 from api.apps.services.corpus_path_service import AmbiguousPathError, CorpusPathRegistry, CorpusPathResolver
 from api.apps.services.corpus_secret_service import corpus_secret
 from api.apps.services.document_markdown_service import DocumentMarkdownService, MarkdownVersionConflict, MarkdownVersionNotFound
 from api.apps.services.source_projection_service import SourceProjectionService
 from api.common.check_team_permission import check_file_team_permission, check_kb_team_permission
 from api.db import FileType
-from api.db.db_models import DB, Document, File2Document, Knowledgebase, Task
+from api.db.db_models import DB, Document, File, File2Document, Knowledgebase, Task
 from api.db.services.document_service import DocumentService
 from api.db.services.file2document_service import File2DocumentService
 from api.db.services.file_service import FileService
@@ -129,67 +130,102 @@ class CorpusFsService:
             raise NotFoundError("dataset not found")
         return dataset
 
-    def _documents(self) -> list[dict[str, Any]]:
-        self._dataset()
+    def _document_rows(self) -> list[dict[str, Any]]:
         return list(Document.select().where((Document.kb_id == self.dataset_id) & (Document.status == "1")).dicts())
 
+    def _documents(self) -> list[dict[str, Any]]:
+        self._dataset()
+        return self._document_rows()
+
+    def dataset_context(self, dataset: Any) -> tuple[dict[str, dict], dict[str, dict], list[dict], dict]:
+        """(documents, files, links, root) for one dataset, cached by revision.
+
+        The value holds no permission-filtered data: ``_file_documents`` still
+        runs per request against the caller's tenant.
+        """
+        revision = getattr(dataset, "content_revision", 1)
+        key = (self.tenant_id, self.dataset_id, revision)
+        cached = dataset_context_cache.get(key) if cache_enabled() else None
+        if cached is not None:
+            return cached
+        docs = {document["id"]: document for document in self._document_rows()}
+        root, files, links = self._dataset_tree(docs, dataset)
+        value = (docs, files, links, root)
+        if cache_enabled():
+            dataset_context_cache.put(key, value)
+        return value
+
     def search_context(self, path: str) -> tuple[dict[str, dict], dict[str, dict[str, Any]], int]:
-        documents = {document["id"]: document for document in self._documents()}
-        return self.search_scope(path), documents, self.revision(self._dataset())["content_revision"]
+        dataset = self._dataset()
+        docs, files, links, root = self.dataset_context(dataset)
+        entries, _ = self._build_projection(docs, files, links, root)
+        return self._scope_entries(entries, path), docs, self.revision(dataset)["content_revision"]
 
     @staticmethod
     def _select_active_document(file: dict, linked: list[dict]) -> dict:
         active_document_id = file.get("active_document_id")
         return next((candidate for candidate in linked if candidate["id"] == active_document_id), linked[0])
 
-    def _dataset_file_root(self) -> dict:
-        dataset = self._dataset()
+    @staticmethod
+    def _files_by_ids(file_ids: list[str]) -> dict[str, dict]:
+        ids = list(dict.fromkeys(file_ids))
+        if not ids:
+            return {}
+        return {row["id"]: row for row in File.select().where(File.id.in_(ids)).dicts()}
+
+    @staticmethod
+    def _files_by_parents(parent_ids: list[str]) -> dict[str, dict]:
+        parents = list(dict.fromkeys(parent_ids))
+        if not parents:
+            return {}
+        return {row["id"]: row for row in File.select().where((File.parent_id.in_(parents)) & (File.id.not_in(parents))).dicts()}
+
+    def _dataset_file_root(self, dataset: Any, kb_root_id: str, link_file_ids: list[str]) -> dict | None:
+        """Resolve the dataset folder owning ``link_file_ids``.
+
+        Climbs from each linked file (in link order) until an ancestor sits
+        directly under the knowledge-base folder; the first match wins, exactly
+        like the historical per-link walk. Falls back to the folder named after
+        the dataset.
+        """
+        for file_id in link_file_ids:
+            current: str | None = file_id
+            seen: set[str] = set()
+            while current is not None and current not in seen:
+                seen.add(current)
+                row = self._files_by_ids([current]).get(current)
+                if row is None:
+                    break
+                if row["parent_id"] == kb_root_id:
+                    return row
+                current = row["parent_id"]
+        candidates = FileService.query(tenant_id=self.tenant_id, parent_id=kb_root_id, name=dataset.name)
+        return candidates[0].to_dict() if candidates else None
+
+    def _descendant_files(self, root_id: str) -> dict[str, dict]:
+        """Load the dataset subtree with one query per directory level."""
+        files: dict[str, dict] = {}
+        frontier = [root_id]
+        while frontier:
+            rows = self._files_by_parents(frontier)
+            files.update(rows)
+            frontier = [file_id for file_id, row in rows.items() if row.get("type") == FileType.FOLDER.value]
+        return files
+
+    def _dataset_tree(self, docs: dict[str, Any], dataset: Any) -> tuple[dict, dict[str, dict], list[dict]]:
         tenant_root = FileService._find_root_folder(self.tenant_id)
         kb_root = FileService._find_kb_folder(self.tenant_id, tenant_root)
         if tenant_root is None or kb_root is None:
             raise NotFoundError("dataset file hierarchy is not initialized")
-        document_ids = [document["id"] for document in self._documents()]
-        links = list(File2Document.select().where(File2Document.document_id.in_(document_ids)).dicts()) if document_ids else []
-        root = None
-        for link in links:
-            ok, current = FileService.get_by_id(link["file_id"])
-            seen: set[str] = set()
-            while ok and current.id not in seen and current.parent_id != current.id:
-                seen.add(current.id)
-                if current.parent_id == kb_root["id"]:
-                    root = current.to_dict()
-                    break
-                ok, current = FileService.get_by_id(current.parent_id)
-            if root:
-                break
-        if root is None:
-            candidates = FileService.query(tenant_id=self.tenant_id, parent_id=kb_root["id"], name=dataset.name)
-            root = candidates[0].to_dict() if candidates else None
+        links = list(File2Document.select().where(File2Document.document_id.in_(list(docs))).dicts()) if docs else []
+        root = self._dataset_file_root(dataset, kb_root["id"], [link["file_id"] for link in links])
         if root is None:
             raise NotFoundError("dataset file hierarchy is not initialized")
-
-        return root
-
-    @staticmethod
-    def _descendant_files(root_id: str) -> dict[str, dict]:
-        result: dict[str, dict] = {}
-        pending = [root_id]
-        while pending:
-            parent_id = pending.pop()
-            for item in FileService.list_all_files_by_parent_id(parent_id):
-                value = item.to_dict() if hasattr(item, "to_dict") else dict(item)
-                if value["id"] in result:
-                    continue
-                result[value["id"]] = value
-                if value.get("type") == FileType.FOLDER.value:
-                    pending.append(value["id"])
-        return result
-
-    def _projection(self) -> tuple[dict[str, dict], dict[str, list[dict]]]:
-        docs = {doc["id"]: doc for doc in self._documents()}
-        root = self._dataset_file_root()
         files = self._descendant_files(root["id"])
-        links = list(File2Document.select().where((File2Document.document_id.in_(list(docs))) & (File2Document.file_id.in_(list(files)))).dicts()) if docs and files else []
+        return root, files, [link for link in links if link["file_id"] in files]
+
+    def _file_documents(self, files: dict[str, dict], docs: dict[str, Any], links: list[dict]) -> dict[str, list[dict]]:
+        """Map every visible file to the documents it exposes (active document first)."""
         file_docs: dict[str, list[dict]] = defaultdict(list)
         for link in links:
             doc, file = docs.get(link["document_id"]), files.get(link.get("file_id"))
@@ -200,10 +236,23 @@ class CorpusFsService:
             active = docs.get(file.get("active_document_id"))
             if active is not None and all(candidate["id"] != active["id"] for candidate in file_docs[file["id"]]):
                 file_docs[file["id"]].append(active)
+        return file_docs
 
-        entries: dict[str, dict] = {
-            "/": {"kind": "directory", "name": "/", "path": "/", "_file_id": root["id"]}
-        }
+    def _projection(self) -> tuple[dict[str, dict], dict[str, list[dict]]]:
+        dataset = self._dataset()
+        docs, files, links, root = self.dataset_context(dataset)
+        return self._build_projection(docs, files, links, root)
+
+    def _build_projection(
+        self,
+        docs: dict[str, Any],
+        files: dict[str, dict],
+        links: list[dict],
+        root: dict,
+    ) -> tuple[dict[str, dict], dict[str, list[dict]]]:
+        file_docs = self._file_documents(files, docs, links)
+
+        entries: dict[str, dict] = {"/": {"kind": "directory", "name": "/", "path": "/", "_file_id": root["id"]}}
         children: dict[str, list[dict]] = defaultdict(list)
         by_parent: dict[str, list[dict]] = defaultdict(list)
         for file in files.values():
@@ -264,7 +313,9 @@ class CorpusFsService:
             raise CorpusFsError("invalid folder name")
         if FileService.query(name=name, parent_id=parent["_file_id"]):
             raise EntryConflictError("entry already exists")
-        FileService.insert({"id": get_uuid(), "parent_id": parent["_file_id"], "tenant_id": self.tenant_id, "created_by": self.tenant_id, "name": name, "location": "", "size": 0, "type": FileType.FOLDER.value})
+        FileService.insert(
+            {"id": get_uuid(), "parent_id": parent["_file_id"], "tenant_id": self.tenant_id, "created_by": self.tenant_id, "name": name, "location": "", "size": 0, "type": FileType.FOLDER.value}
+        )
         return {"kind": "directory", "name": name, "path": parent_path.rstrip("/") + "/" + name, "child_count": 0}
 
     def move(self, source_paths: list[str], destination_path: str, new_name: str | None = None) -> int:
@@ -334,12 +385,7 @@ class CorpusFsService:
                 continue
             if file.type != FileType.FOLDER.value:
                 links = File2DocumentService.get_by_file_id(file_id)
-                document_ids = list(
-                    dict.fromkeys(
-                        [link.document_id for link in links]
-                        + DocumentMarkdownService.publication_document_ids(file_id)
-                    )
-                )
+                document_ids = list(dict.fromkeys([link.document_id for link in links] + DocumentMarkdownService.publication_document_ids(file_id)))
                 try:
                     source_bucket, source_object = File2DocumentService.get_storage_address(file_id=file_id)
                 except Exception:
@@ -353,10 +399,7 @@ class CorpusFsService:
                     try:
                         settings.STORAGE_IMPL.rm(source_bucket, source_object)
                     except Exception:
-                        errors.append(
-                            f"failed to remove source object for path target {file_id}; "
-                            "version objects already removed, metadata and File retained for retry"
-                        )
+                        errors.append(f"failed to remove source object for path target {file_id}; version objects already removed, metadata and File retained for retry")
                         continue
                 document_cleanup_failed = False
                 for document_id in document_ids:
@@ -394,11 +437,7 @@ class CorpusFsService:
 
     def uploaded_entries(self, document_ids: list[str]) -> list[dict]:
         entries, _ = self._projection()
-        by_document_id = {
-            entry["_document_id"]: entry
-            for entry in entries.values()
-            if entry.get("kind") == "file" and entry.get("_document_id")
-        }
+        by_document_id = {entry["_document_id"]: entry for entry in entries.values() if entry.get("kind") == "file" and entry.get("_document_id")}
         uploaded = []
         for document_id in document_ids:
             entry = by_document_id.get(document_id)
@@ -407,9 +446,7 @@ class CorpusFsService:
             uploaded.append(self.public_entry(entry))
         return uploaded
 
-    def replace_original(
-        self, path: str, content: bytes, expected_content_hash: str
-    ) -> dict:
+    def replace_original(self, path: str, content: bytes, expected_content_hash: str) -> dict:
         entry, document = self.resolve_document(path)
         current_hash = str(entry.get("_content_hash") or "")
         if not expected_content_hash or current_hash != expected_content_hash:
@@ -417,9 +454,7 @@ class CorpusFsService:
         if str(document.get("run")) == TaskStatus.RUNNING.value:
             raise EntryConflictError("document is being parsed")
 
-        bucket, object_name = File2DocumentService.get_storage_address(
-            file_id=entry["_file_id"]
-        )
+        bucket, object_name = File2DocumentService.get_storage_address(file_id=entry["_file_id"])
         previous = settings.STORAGE_IMPL.get(bucket, object_name)
         if previous is None:
             raise NotFoundError("source object not found")
@@ -481,9 +516,7 @@ class CorpusFsService:
             if dataset.content_revision != expected_revision:
                 raise RevisionConflictError("content revision changed")
             yield
-            updated = Knowledgebase.update(content_revision=expected_revision + 1).where(
-                (Knowledgebase.id == self.dataset_id) & (Knowledgebase.content_revision == expected_revision)
-            ).execute()
+            updated = Knowledgebase.update(content_revision=expected_revision + 1).where((Knowledgebase.id == self.dataset_id) & (Knowledgebase.content_revision == expected_revision)).execute()
             if updated != 1:
                 raise RevisionConflictError("content revision changed")
 
@@ -494,19 +527,19 @@ class CorpusFsService:
         return dataset
 
     def search_scope(self, path: str) -> dict[str, dict]:
-        path = CorpusPathResolver.normalize(path)
         entries, _ = self._projection()
+        return self._scope_entries(entries, path)
+
+    @staticmethod
+    def _scope_entries(entries: dict[str, dict], path: str) -> dict[str, dict]:
+        path = CorpusPathResolver.normalize(path)
         root = entries.get(path)
         if root is None:
             raise NotFoundError("path not found")
         if root["kind"] == "file":
             return {root["_document_id"]: root}
         prefix = path.rstrip("/") + "/"
-        return {
-            entry["_document_id"]: entry
-            for entry_path, entry in entries.items()
-            if entry["kind"] == "file" and (path == "/" or entry_path.startswith(prefix))
-        }
+        return {entry["_document_id"]: entry for entry_path, entry in entries.items() if entry["kind"] == "file" and (path == "/" or entry_path.startswith(prefix))}
 
     @staticmethod
     def search_vector_weight(mode: str, configured_weight: float) -> float:
@@ -535,6 +568,7 @@ class CorpusFsService:
         if root["kind"] != "directory":
             raise CorpusFsError("path is not a directory")
         prefix = path.rstrip("/") + "/"
+
         def matches(entry_path: str, entry: dict) -> bool:
             if entry["kind"] != "file" or not entry_path.startswith(prefix):
                 return False
@@ -565,7 +599,13 @@ class CorpusFsService:
             raise NotFoundError("path not found")
         prefix = path.rstrip("/") + "/"
         selected = [item for item_path, item in entries.items() if item["kind"] == "file" and item_path.startswith(prefix) and item_path.count("/") - path.count("/") <= depth + 1]
-        return {"path": path, "document_count": len(selected), "size_bytes": sum(item["size_bytes"] for item in selected), "chunk_count": sum(item["chunk_count"] for item in selected), "token_count": sum(item["token_count"] for item in selected)}
+        return {
+            "path": path,
+            "document_count": len(selected),
+            "size_bytes": sum(item["size_bytes"] for item in selected),
+            "chunk_count": sum(item["chunk_count"] for item in selected),
+            "token_count": sum(item["token_count"] for item in selected),
+        }
 
     def resolve_document(self, path: str) -> tuple[dict, dict]:
         path = CorpusPathResolver.normalize(path)
@@ -786,11 +826,7 @@ class CorpusFsService:
                     projection = None
             if projection:
                 manifest, projection_blocks = projection
-                selected = [
-                    block
-                    for block in projection_blocks
-                    if (page is None or block.get("page") == page) and (not kinds or block.get("kind") in kinds)
-                ]
+                selected = [block for block in projection_blocks if (page is None or block.get("page") == page) and (not kinds or block.get("kind") in kinds)]
                 blocks: list[dict] = []
                 images: list[dict] = []
                 content_parts: list[str] = []
@@ -873,6 +909,13 @@ class CorpusFsService:
         except (TypeError, ValueError):
             return -1
 
+    @staticmethod
+    def chunk_page(chunk: dict | None) -> int | None:
+        """The page a chunk states about itself, before projection blocks refine it."""
+        chunk = chunk or {}
+        positions = chunk.get("position_int") or chunk.get("positions") or []
+        return CorpusFsService._first_page(chunk.get("page_num_int")) or CorpusFsService._first_page(positions[0] if positions else None)
+
     def citation_context(self, document: dict) -> tuple[dict, list[dict] | None]:
         if document.get("type", "").lower() == "pdf":
             try:
@@ -881,13 +924,31 @@ class CorpusFsService:
                 projection = None
             if projection:
                 return projection
+        return self._storage_citation_context(document)
+
+    def _storage_citation_context(self, document: dict) -> tuple[dict, list[dict] | None]:
+        """sha256 of the stored object, cached by the document's own fingerprint.
+
+        Reading the whole object is the only way to hash it, and the fingerprint
+        already changes whenever the content does, so it is the exact cache key:
+        a cached manifest can never describe different bytes.
+        """
+        fingerprint = str(document.get("content_hash") or "")
+        key = (self.dataset_id, document["id"], fingerprint)
+        if fingerprint and cache_enabled():
+            cached = citation_manifest_cache.get(key)
+            if cached is not None:
+                return cached
         bucket, object_name = File2DocumentService.get_storage_address(doc_id=document["id"])
         source = settings.STORAGE_IMPL.get(bucket, object_name)
         if hasattr(source, "read"):
             source = source.read()
         if not isinstance(source, bytes):
             raise NotFoundError("source object not found")
-        return {"projection_revision": None, "source_sha256": hashlib.sha256(source).hexdigest()}, None
+        value = ({"projection_revision": None, "source_sha256": hashlib.sha256(source).hexdigest()}, None)
+        if fingerprint and cache_enabled():
+            citation_manifest_cache.put(key, value)
+        return value
 
     def citation_target(
         self,
@@ -902,11 +963,7 @@ class CorpusFsService:
         manifest, projection_blocks = context or self.citation_context(document)
         selected = block
         chunk_positions = (chunk or {}).get("position_int") or (chunk or {}).get("positions") or []
-        page = (
-            self._first_page((chunk or {}).get("page_num_int"))
-            or self._first_page(chunk_positions[0] if chunk_positions else None)
-            or self._first_page((block or {}).get("page"))
-        )
+        page = self.chunk_page(chunk) or self._first_page((block or {}).get("page"))
         if chunk is not None and projection_blocks:
             ranked = []
             for candidate in projection_blocks:
@@ -920,11 +977,7 @@ class CorpusFsService:
                 selected = max(ranked, key=lambda item: item[0])[1]
             elif snippet := str(chunk.get("content_with_weight") or ""):
                 selected = next(
-                    (
-                        candidate
-                        for candidate in projection_blocks
-                        if (page is None or candidate.get("page") == page) and snippet in str(candidate.get("text") or "")
-                    ),
+                    (candidate for candidate in projection_blocks if (page is None or candidate.get("page") == page) and snippet in str(candidate.get("text") or "")),
                     None,
                 )
 

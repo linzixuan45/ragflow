@@ -8,14 +8,13 @@ import math
 from collections.abc import Callable
 from typing import Any
 
-from api.apps.services import dataset_api_service
 from api.apps.services.corpus_citation_service import CorpusCitationService
+from api.apps.services.corpus_recall_service import CorpusRecallService
 from api.apps.services.corpus_fs_service import CorpusFsError, CorpusFsService, is_unavailable_io
 from api.apps.services.corpus_secret_service import corpus_secret
 
 CORPUS_EVIDENCE_SCHEMA = "ragflow.corpus.evidence.v1"
 _MAX_SCOPES = 50
-_MAX_CANDIDATES_PER_SCOPE = 50
 
 
 class CorpusSearchUnavailableError(CorpusFsError):
@@ -71,7 +70,7 @@ class CorpusToolService:
         actor_ref: str | None = None,
         *,
         service_factory: Callable[[str], CorpusFsService] | None = None,
-        searcher: Callable[..., Any] | None = None,
+        recall: Any | None = None,
         citation_service: CorpusCitationService | None = None,
     ) -> None:
         self.tenant_id = tenant_id
@@ -85,7 +84,7 @@ class CorpusToolService:
                 actor_ref=self.actor_ref,
             )
         )
-        self._searcher = searcher or dataset_api_service.search
+        self._recall = recall or CorpusRecallService(tenant_id)
         self._citation_service = citation_service or CorpusCitationService(corpus_secret("citation"))
 
     @staticmethod
@@ -168,45 +167,55 @@ class CorpusToolService:
                 }
             )
 
-        async def search_scope(context: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-            document_ids = list(context["by_document"])
-            if not document_ids:
-                return context, []
-            candidate_limit = min(_MAX_CANDIDATES_PER_SCOPE, max(limit * 4, limit))
-            ok, result = await self._searcher(
-                context["dataset_id"],
-                self.tenant_id,
+        # One fused recall across every scope: a single query embedding, a single
+        # strict window, a per-scope filter-only fallback only where the strict
+        # query cannot reach the dataset, and a single rerank over the merged pool.
+        effective_weight = CorpusFsService.search_vector_weight(mode, vector_similarity_weight)
+        chunks = await self._recall.recall(
+            scopes=[
                 {
-                    "question": query,
-                    "doc_ids": document_ids,
-                    "page": 1,
-                    "size": candidate_limit,
-                    "top_k": _MAX_CANDIDATES_PER_SCOPE,
-                    "similarity_threshold": similarity_threshold,
-                    "vector_similarity_weight": context["service"].search_vector_weight(mode, vector_similarity_weight),
-                    "use_kg": bool(use_kg),
-                },
-            )
-            if not ok:
-                raise CorpusSearchUnavailableError(str(result))
-            return context, list(result.get("chunks") or [])
+                    "scope": context["scope"],
+                    "dataset_id": context["dataset_id"],
+                    "path": context["path"],
+                    "visible": context["by_document"],
+                }
+                for context in contexts
+            ],
+            question=query,
+            similarity_threshold=similarity_threshold,
+            vector_similarity_weight=effective_weight,
+            mode=mode,
+            use_kg=bool(use_kg),
+        )
+        contexts_by_scope = {context["scope"]: context for context in contexts}
 
-        scope_results = await asyncio.gather(*(search_scope(context) for context in contexts))
-        ranked: list[tuple[dict[str, Any], float | None, int, int, str]] = []
+        # Ranking and de-duplication need a page number, not a citation. Reading the
+        # source object (whole-file GET + sha256) to produce one is what made a
+        # 16-dataset search spend 3.5s on candidate documents that were then
+        # discarded, so the expensive half is deferred to the surviving items.
+        # The page used here is exactly the page ``citation_target`` derives before
+        # projection blocks refine it, so the ranking keys are unchanged for every
+        # document type whose citation context carries no blocks (all non-PDFs);
+        # PDF projections are still resolved eagerly because they can move the page.
+        ranked: list[tuple[dict[str, Any], float | None, int, int, str, dict[str, Any]]] = []
         citation_contexts: dict[tuple[str, str], Any] = {}
-        for context, chunks in scope_results:
+        for source_rank, chunk in enumerate(chunks):
+            context = contexts_by_scope.get(chunk.get("_scope"))
+            if context is None:
+                continue
             service = context["service"]
             content_revision = context["content_revision"]
-            for source_rank, chunk in enumerate(chunks):
-                document_ids = _chunk_document_ids(chunk, context["by_document"], use_kg=bool(use_kg))
-                if not document_ids:
-                    continue
-                document_id = document_ids[0]
-                entry = context["by_document"].get(document_id)
-                document = context["documents"].get(document_id)
-                if not entry or not document:
-                    continue
-                citation_key = (context["dataset_id"], document_id)
+            document_ids = _chunk_document_ids(chunk, context["by_document"], use_kg=bool(use_kg))
+            if not document_ids:
+                continue
+            document_id = document_ids[0]
+            entry = context["by_document"].get(document_id)
+            document = context["documents"].get(document_id)
+            if not entry or not document:
+                continue
+            citation_key = (context["dataset_id"], document_id)
+            page = service.chunk_page(chunk)
+            if (document.get("type") or "").lower() == "pdf":
                 citation_context = citation_contexts.get(citation_key)
                 if citation_context is None:
                     citation_context = citation_contexts[citation_key] = await self._run_sync_io(
@@ -220,27 +229,32 @@ class CorpusToolService:
                     chunk=chunk,
                     context=citation_context,
                 )
-                score = _finite_float(chunk.get("score"))
-                if score is None:
-                    score = _finite_float(chunk.get("similarity"))
-                evidence = {
-                    "scope": context["scope"],
-                    "path": entry["path"],
-                    "snippet": str(chunk.get("content_with_weight") or chunk.get("snippet") or ""),
-                    "citation_ref": self._citation_service.issue(
-                        self.tenant_id,
-                        context["dataset_id"],
-                        document_id,
-                        target,
-                    ),
-                    "page": target.get("page") if isinstance(target, dict) else _page(chunk),
-                    "positions": chunk.get("position_int") or chunk.get("positions") or [],
-                    "score": score,
-                    "vector_similarity": _finite_float(chunk.get("vector_similarity")),
-                    "term_similarity": _finite_float(chunk.get("term_similarity")),
-                    "images": service.search_images(document_id, chunk),
-                }
-                ranked.append((evidence, score, context["scope_index"], source_rank, document_id))
+                page = target.get("page") if isinstance(target, dict) else page
+            score = _finite_float(chunk.get("score"))
+            if score is None:
+                score = _finite_float(chunk.get("similarity"))
+            evidence = {
+                "scope": context["scope"],
+                "path": entry["path"],
+                "snippet": str(chunk.get("content_with_weight") or chunk.get("snippet") or ""),
+                "citation_ref": None,
+                "page": page,
+                "positions": chunk.get("position_int") or chunk.get("positions") or [],
+                "score": score,
+                "vector_similarity": _finite_float(chunk.get("vector_similarity")),
+                "term_similarity": _finite_float(chunk.get("term_similarity")),
+                "images": service.search_images(document_id, chunk),
+            }
+            ranked.append(
+                (
+                    evidence,
+                    score,
+                    context["scope_index"],
+                    source_rank,
+                    document_id,
+                    {"chunk": chunk, "context": context, "entry": entry, "document": document, "document_id": document_id},
+                )
+            )
 
         ranked.sort(
             key=lambda item: (
@@ -250,25 +264,27 @@ class CorpusToolService:
                 item[2],
             )
         )
-        deduplicated: list[tuple[dict[str, Any], str]] = []
+        deduplicated: list[tuple[dict[str, Any], str, dict[str, Any]]] = []
         seen: set[tuple[str, str, int | None, str]] = set()
-        for evidence, _score, _scope_index, _source_rank, document_id in ranked:
+        for evidence, _score, _scope_index, _source_rank, document_id, source in ranked:
             snippet_hash = hashlib.sha256(" ".join(evidence["snippet"].split()).encode()).hexdigest()[:16]
             key = (evidence["scope"], evidence["path"], evidence["page"], snippet_hash)
             if key in seen:
                 continue
             seen.add(key)
-            deduplicated.append((evidence, document_id))
+            deduplicated.append((evidence, document_id, source))
 
         document_limited: list[dict[str, Any]] = []
+        document_limited_sources: list[dict[str, Any]] = []
         document_counts: dict[tuple[str, str], int] = {}
-        for evidence, document_id in deduplicated:
+        for evidence, document_id, source in deduplicated:
             key = (evidence["scope"], document_id)
             count = document_counts.get(key, 0)
             if count >= per_document_limit:
                 continue
             document_counts[key] = count + 1
             document_limited.append(evidence)
+            document_limited_sources.append(source)
 
         # Expose a stable, reproducible global rank (1-based) so downstream
         # evaluation can compute retrieval metrics (Hit@K / MRR / Recall@K)
@@ -279,6 +295,7 @@ class CorpusToolService:
             evidence["rank"] = rank
 
         items = document_limited[:limit]
+        await self._attach_citations(items, document_limited_sources[:limit], citation_contexts)
         return {
             "schema": CORPUS_EVIDENCE_SCHEMA,
             "items": items,
@@ -306,3 +323,42 @@ class CorpusToolService:
                 },
             },
         }
+
+    async def _attach_citations(
+        self,
+        items: list[dict[str, Any]],
+        sources: list[dict[str, Any]],
+        citation_contexts: dict[tuple[str, str], Any],
+    ) -> None:
+        """Resolve citation_ref/page for the returned items only.
+
+        ``ranked`` is built with the page each chunk states about itself, so the
+        source object is read here -- for at most ``limit`` documents instead of
+        every candidate.
+        """
+        for item, source in zip(items, sources):
+            context = source["context"]
+            document = source["document"]
+            document_id = source["document_id"]
+            citation_key = (context["dataset_id"], document_id)
+            citation_context = citation_contexts.get(citation_key)
+            if citation_context is None:
+                citation_context = citation_contexts[citation_key] = await self._run_sync_io(
+                    context["service"].citation_context,
+                    document,
+                )
+            target = context["service"].citation_target(
+                source["entry"],
+                document,
+                context["content_revision"],
+                chunk=source["chunk"],
+                context=citation_context,
+            )
+            item["citation_ref"] = self._citation_service.issue(
+                self.tenant_id,
+                context["dataset_id"],
+                document_id,
+                target,
+            )
+            if isinstance(target, dict) and target.get("page") is not None:
+                item["page"] = target["page"]

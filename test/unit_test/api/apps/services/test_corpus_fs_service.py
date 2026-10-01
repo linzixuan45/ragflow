@@ -17,6 +17,7 @@ from api.apps.services.corpus_fs_service import (
     is_unavailable_io,
 )
 from api.apps.services.document_markdown_service import DocumentMarkdownService, MarkdownVersionConflict, MarkdownVersionNotFound
+from api.db import FileType
 from api.apps.services.source_projection_service import SourceProjectionService
 from api.db.services.document_service import DocumentService
 from api.db.services.file2document_service import File2DocumentService
@@ -160,14 +161,38 @@ def test_replace_original_requires_matching_hash_and_updates_source(monkeypatch)
 
 def test_projection_uses_dataset_root_as_canonical_root(monkeypatch):
     service = CorpusFsService("tenant-1", "dataset-1", "actor")
-    monkeypatch.setattr(service, "_documents", list)
-    monkeypatch.setattr(service, "_dataset_file_root", lambda: {"id": "root"})
-    monkeypatch.setattr(service, "_descendant_files", lambda _root_id: {})
+    monkeypatch.setattr(service, "_dataset", lambda: SimpleNamespace(content_revision=1))
+    monkeypatch.setattr(service, "dataset_context", lambda _dataset: ({}, {}, [], {"id": "root"}))
 
     entries, children = service._projection()
 
     assert set(entries) == {"/"}
     assert children["/"] == []
+
+
+def test_descendant_files_loads_one_query_per_directory_level(monkeypatch):
+    service = CorpusFsService("tenant-1", "dataset-1", "actor")
+    levels = {
+        ("root",): {
+            "folder-a": {"id": "folder-a", "parent_id": "root", "type": FileType.FOLDER.value},
+            "file-a": {"id": "file-a", "parent_id": "root", "type": FileType.DOC.value},
+        },
+        ("folder-a",): {
+            "file-b": {"id": "file-b", "parent_id": "folder-a", "type": FileType.DOC.value},
+        },
+    }
+    calls: list[tuple[str, ...]] = []
+
+    def fake_files_by_parents(parent_ids):
+        calls.append(tuple(sorted(parent_ids)))
+        return levels.get(tuple(sorted(parent_ids)), {})
+
+    monkeypatch.setattr(CorpusFsService, "_files_by_parents", staticmethod(fake_files_by_parents))
+
+    files = service._descendant_files("root")
+
+    assert set(files) == {"folder-a", "file-a", "file-b"}
+    assert calls == [("root",), ("folder-a",)]
 
 
 def test_projection_document_selection_prefers_explicit_file_active_pointer():
@@ -181,8 +206,6 @@ def test_projection_document_selection_prefers_explicit_file_active_pointer():
 
 def test_dataset_file_root_is_resolved_without_mutating_file_hierarchy(monkeypatch):
     service = CorpusFsService("tenant-1", "dataset-1", "actor")
-    monkeypatch.setattr(service, "_dataset", lambda: SimpleNamespace(name="Policies"))
-    monkeypatch.setattr(service, "_documents", list)
     monkeypatch.setattr(FileService, "_find_root_folder", classmethod(lambda _cls, _tenant_id: {"id": "tenant-root"}))
     monkeypatch.setattr(FileService, "_find_kb_folder", classmethod(lambda _cls, _tenant_id, _root: {"id": "kb-root"}))
     monkeypatch.setattr(
@@ -194,7 +217,7 @@ def test_dataset_file_root_is_resolved_without_mutating_file_hierarchy(monkeypat
     monkeypatch.setattr(FileService, "new_a_file_from_kb", classmethod(lambda *_args: pytest.fail("read path must not create folders")))
     monkeypatch.setattr(FileService, "update_by_id", classmethod(lambda *_args: pytest.fail("read path must not rename folders")))
 
-    assert service._dataset_file_root() == {"id": "dataset-root", "name": "Policies"}
+    assert service._dataset_file_root(SimpleNamespace(name="Policies"), "kb-root", []) == {"id": "dataset-root", "name": "Policies"}
 
 
 @pytest.fixture(autouse=True)

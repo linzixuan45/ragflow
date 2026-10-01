@@ -176,6 +176,15 @@ class FulltextQueryer(QueryBase):
         return np.array(sims[0]) * vtweight + np.array(tksim) * tkweight, tksim, sims[0]
 
     def token_similarity(self, atks, btkss):
+        """Fraction of the query's term weight that each document contains.
+
+        ``similarity`` only tests term presence in the document dict, so a
+        document's term weights are irrelevant -- its *key set* is not. Building
+        that key set costs nothing, while ``tw.weights`` runs POS tagging and
+        frequency lookups per token, which dominated whole retrieval requests on
+        long chunks. Query weights are still computed: they carry the score.
+        """
+
         def to_dict(tks):
             if isinstance(tks, str):
                 tks = tks.split()
@@ -188,8 +197,16 @@ class FulltextQueryer(QueryBase):
                     d[t + _t] += max(c, _c) * 0.6
             return d
 
+        def keys(tks):
+            if isinstance(tks, str):
+                tks = tks.split()
+            tks = list(tks)
+            terms = set(tks)
+            terms.update(tks[i] + tks[i + 1] for i in range(len(tks) - 1))
+            return terms
+
         atks = to_dict(atks)
-        btkss = [to_dict(tks) for tks in btkss]
+        btkss = [keys(tks) for tks in btkss]
         return [self.similarity(atks, btks) for btks in btkss]
 
     def similarity(self, qtwt, dtwt):

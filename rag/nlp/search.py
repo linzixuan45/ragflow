@@ -612,8 +612,13 @@ class Dealer:
             bool(rerank_mdl),
         )
 
+        # All three rerank paths are synchronous and dominated by an HTTP call
+        # (external reranker) or by CPU tokenization. Running them on the event
+        # loop serializes every concurrent retrieval behind them, so submit them
+        # to the shared worker pool instead: the loop stays free while they run.
         if rerank_mdl and sres.total > 0:
-            sim, tsim, vsim = self.rerank_by_model(
+            sim, tsim, vsim = await thread_pool_exec(
+                self.rerank_by_model,
                 rerank_mdl,
                 sres,
                 question,
@@ -631,7 +636,8 @@ class Dealer:
             elif settings.DOC_ENGINE_OCEANBASE:
                 # OceanBase still returns chunk vectors in the result; use
                 # the historical local rerank that depends on them.
-                sim, tsim, vsim = self.rerank(
+                sim, tsim, vsim = await thread_pool_exec(
+                    self.rerank,
                     sres,
                     question,
                     term_similarity_weight,
@@ -644,7 +650,8 @@ class Dealer:
                 # with locally computed term similarity using the user's
                 # weight. Chunk vectors stay in the index.
                 knn_scores = await self._knn_scores(sres, idx_names, kb_ids)
-                sim, tsim, vsim = self.rerank_with_knn(
+                sim, tsim, vsim = await thread_pool_exec(
+                    self.rerank_with_knn,
                     sres,
                     question,
                     knn_scores,

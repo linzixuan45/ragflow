@@ -131,6 +131,31 @@ def test_internal_search_requires_at_least_one_dataset():
         KeywordSearchService().search_authorized("tenant", [], [], "VPN")
 
 
+def test_authorized_documents_accept_a_dataset_larger_than_one_thousand_documents(monkeypatch):
+    requested = [f"doc-{index}" for index in range(1912)]
+    monkeypatch.setattr(
+        "api.apps.services.keyword_search_service.KnowledgebaseService.get_by_id",
+        lambda _dataset_id: (True, SimpleNamespace(status="1", tenant_id="tenant")),
+    )
+    monkeypatch.setattr("api.apps.services.keyword_search_service.check_kb_team_permission", lambda *_args: True)
+    monkeypatch.setattr(
+        "api.apps.services.keyword_search_service.DocumentService.query",
+        lambda **_kwargs: [SimpleNamespace(id=document_id) for document_id in requested],
+    )
+
+    authorized = KeywordSearchService().authorized_document_ids("tenant", ["dataset"], requested)
+
+    assert authorized == requested
+
+
+def test_authorized_documents_reject_a_filter_beyond_the_store_limit():
+    service = KeywordSearchService()
+    oversized = ["doc"] * (service.MAX_FILTERED_DOCUMENTS + 1)
+
+    with pytest.raises(ValueError, match="filter limit"):
+        service.authorized_document_ids("tenant", ["dataset"], oversized)
+
+
 def test_internal_search_with_no_authorized_requested_document_does_not_query_dataset(monkeypatch):
     service = KeywordSearchService()
     monkeypatch.setattr(service, "authorized_document_ids", lambda tenant_id, dataset_ids, document_ids: [])

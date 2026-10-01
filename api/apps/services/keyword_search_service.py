@@ -20,6 +20,13 @@ class SearchUnavailableError(RuntimeError):
 
 
 class KeywordSearchService:
+    # The requested document ids become a single Elasticsearch ``terms`` clause
+    # (see ESConnection.search), so the bound is the store's own limit rather
+    # than a page size. The former 1000-document cutoff made every keyword
+    # search over a bigger dataset fail with INVALID_ARGUMENT (Corpus FS
+    # ``/fs/grep`` on a 1912-document dataset returned HTTP 400).
+    MAX_FILTERED_DOCUMENTS = 20000
+
     @staticmethod
     def page_state(result: dict, *, offset: int, returned_count: int, count_only: bool) -> dict:
         consumed_count = result["consumed_count"]
@@ -35,8 +42,11 @@ class KeywordSearchService:
     def authorized_document_ids(self, tenant_id: str, dataset_ids: list[str], document_ids: list[str] | None) -> list[str]:
         if not isinstance(dataset_ids, list) or not dataset_ids or len(dataset_ids) > 50 or not all(isinstance(dataset_id, str) and dataset_id for dataset_id in dataset_ids):
             raise ValueError("dataset_ids must be a non-empty list")
-        if document_ids is not None and (not isinstance(document_ids, list) or len(document_ids) > 1000 or not all(isinstance(document_id, str) and document_id for document_id in document_ids)):
-            raise ValueError("document_ids must be a list of non-empty strings")
+        if document_ids is not None:
+            if not isinstance(document_ids, list) or not all(isinstance(document_id, str) and document_id for document_id in document_ids):
+                raise ValueError("document_ids must be a list of non-empty strings")
+            if len(document_ids) > self.MAX_FILTERED_DOCUMENTS:
+                raise ValueError(f"document_ids exceeds the {self.MAX_FILTERED_DOCUMENTS}-document filter limit")
 
         requested = set(document_ids) if document_ids is not None else None
         authorized: list[str] = []
