@@ -46,6 +46,7 @@ class DatasetContextCache:
         self._lock = threading.Lock()
         self.hits = 0
         self.misses = 0
+        self.evictions = 0
 
     def get(self, key: tuple[str, str, int]) -> Any | None:
         now = time.monotonic()
@@ -69,6 +70,7 @@ class DatasetContextCache:
             self._entries.move_to_end(key)
             while len(self._entries) > self.max_entries:
                 self._entries.popitem(last=False)
+                self.evictions += 1
 
     def clear(self) -> None:
         with self._lock:
@@ -80,6 +82,7 @@ class DatasetContextCache:
                 "entries": len(self._entries),
                 "hits": self.hits,
                 "misses": self.misses,
+                "evictions": self.evictions,
                 "ttl_seconds": self.ttl_seconds,
                 "max_entries": self.max_entries,
                 "enabled": cache_enabled(),

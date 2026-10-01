@@ -9,8 +9,9 @@ from collections.abc import Callable
 from typing import Any
 
 from api.apps.services.corpus_citation_service import CorpusCitationService
-from api.apps.services.corpus_recall_service import CorpusRecallService
 from api.apps.services.corpus_fs_service import CorpusFsError, CorpusFsService, is_unavailable_io
+from api.apps.services.corpus_recall_service import CorpusRecallService
+from api.apps.services.corpus_search_diagnostics import stage
 from api.apps.services.corpus_secret_service import corpus_secret
 
 CORPUS_EVIDENCE_SCHEMA = "ragflow.corpus.evidence.v1"
@@ -135,7 +136,8 @@ class CorpusToolService:
         mode: str = "hybrid",
         use_kg: bool = False,
     ) -> dict[str, Any]:
-        normalized_scopes = self._normalize_scopes(scopes)
+        with stage("normalize"):
+            normalized_scopes = self._normalize_scopes(scopes)
         if not isinstance(query, str) or not query or len(query.encode()) > 4096:
             raise CorpusFsError("query is required")
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 50:
@@ -150,43 +152,45 @@ class CorpusToolService:
             raise CorpusFsError("vector_similarity_weight is invalid")
 
         contexts: list[dict[str, Any]] = []
-        for scope_index, scope in enumerate(normalized_scopes):
-            service = self._service_factory(scope["dataset_id"])
-            by_document, documents, content_revision = await self._run_sync_io(
-                service.search_context,
-                scope["path"],
-            )
-            contexts.append(
-                {
-                    **scope,
-                    "scope_index": scope_index,
-                    "service": service,
-                    "by_document": by_document,
-                    "documents": documents,
-                    "content_revision": content_revision,
-                }
-            )
+        with stage("context"):
+            for scope_index, scope in enumerate(normalized_scopes):
+                service = self._service_factory(scope["dataset_id"])
+                by_document, documents, content_revision = await self._run_sync_io(
+                    service.search_context,
+                    scope["path"],
+                )
+                contexts.append(
+                    {
+                        **scope,
+                        "scope_index": scope_index,
+                        "service": service,
+                        "by_document": by_document,
+                        "documents": documents,
+                        "content_revision": content_revision,
+                    }
+                )
 
         # One fused recall across every scope: a single query embedding, a single
         # strict window, a per-scope filter-only fallback only where the strict
         # query cannot reach the dataset, and a single rerank over the merged pool.
         effective_weight = CorpusFsService.search_vector_weight(mode, vector_similarity_weight)
-        chunks = await self._recall.recall(
-            scopes=[
-                {
-                    "scope": context["scope"],
-                    "dataset_id": context["dataset_id"],
-                    "path": context["path"],
-                    "visible": context["by_document"],
-                }
-                for context in contexts
-            ],
-            question=query,
-            similarity_threshold=similarity_threshold,
-            vector_similarity_weight=effective_weight,
-            mode=mode,
-            use_kg=bool(use_kg),
-        )
+        with stage("recall"):
+            chunks = await self._recall.recall(
+                scopes=[
+                    {
+                        "scope": context["scope"],
+                        "dataset_id": context["dataset_id"],
+                        "path": context["path"],
+                        "visible": context["by_document"],
+                    }
+                    for context in contexts
+                ],
+                question=query,
+                similarity_threshold=similarity_threshold,
+                vector_similarity_weight=effective_weight,
+                mode=mode,
+                use_kg=bool(use_kg),
+            )
         contexts_by_scope = {context["scope"]: context for context in contexts}
 
         # Ranking and de-duplication need a page number, not a citation. Reading the
@@ -218,21 +222,25 @@ class CorpusToolService:
             if (document.get("type") or "").lower() == "pdf":
                 citation_context = citation_contexts.get(citation_key)
                 if citation_context is None:
-                    citation_context = citation_contexts[citation_key] = await self._run_sync_io(
-                        service.citation_context,
+                    with stage("citation.context"):
+                        citation_context = citation_contexts[citation_key] = await self._run_sync_io(
+                            service.citation_context,
+                            document,
+                        )
+                with stage("citation.target"):
+                    target = service.citation_target(
+                        entry,
                         document,
+                        content_revision,
+                        chunk=chunk,
+                        context=citation_context,
                     )
-                target = service.citation_target(
-                    entry,
-                    document,
-                    content_revision,
-                    chunk=chunk,
-                    context=citation_context,
-                )
                 page = target.get("page") if isinstance(target, dict) else page
             score = _finite_float(chunk.get("score"))
             if score is None:
                 score = _finite_float(chunk.get("similarity"))
+            with stage("citation.images"):
+                images = service.search_images(document_id, chunk)
             evidence = {
                 "scope": context["scope"],
                 "path": entry["path"],
@@ -243,7 +251,7 @@ class CorpusToolService:
                 "score": score,
                 "vector_similarity": _finite_float(chunk.get("vector_similarity")),
                 "term_similarity": _finite_float(chunk.get("term_similarity")),
-                "images": service.search_images(document_id, chunk),
+                "images": images,
             }
             ranked.append(
                 (
@@ -295,7 +303,8 @@ class CorpusToolService:
             evidence["rank"] = rank
 
         items = document_limited[:limit]
-        await self._attach_citations(items, document_limited_sources[:limit], citation_contexts)
+        with stage("citation"):
+            await self._attach_citations(items, document_limited_sources[:limit], citation_contexts)
         return {
             "schema": CORPUS_EVIDENCE_SCHEMA,
             "items": items,
@@ -343,22 +352,25 @@ class CorpusToolService:
             citation_key = (context["dataset_id"], document_id)
             citation_context = citation_contexts.get(citation_key)
             if citation_context is None:
-                citation_context = citation_contexts[citation_key] = await self._run_sync_io(
-                    context["service"].citation_context,
+                with stage("citation.context"):
+                    citation_context = citation_contexts[citation_key] = await self._run_sync_io(
+                        context["service"].citation_context,
+                        document,
+                    )
+            with stage("citation.target"):
+                target = context["service"].citation_target(
+                    source["entry"],
                     document,
+                    context["content_revision"],
+                    chunk=source["chunk"],
+                    context=citation_context,
                 )
-            target = context["service"].citation_target(
-                source["entry"],
-                document,
-                context["content_revision"],
-                chunk=source["chunk"],
-                context=citation_context,
-            )
-            item["citation_ref"] = self._citation_service.issue(
-                self.tenant_id,
-                context["dataset_id"],
-                document_id,
-                target,
-            )
+            with stage("citation.issue"):
+                item["citation_ref"] = self._citation_service.issue(
+                    self.tenant_id,
+                    context["dataset_id"],
+                    document_id,
+                    target,
+                )
             if isinstance(target, dict) and target.get("page") is not None:
                 item["page"] = target["page"]

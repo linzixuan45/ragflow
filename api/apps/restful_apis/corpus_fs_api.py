@@ -21,6 +21,8 @@ from api.apps.services.corpus_cursor_service import CorpusCursorError, CorpusCur
 from api.apps.services.corpus_delegation_service import CorpusDelegationError, CorpusDelegationService
 from api.apps.services.corpus_fs_service import CorpusFsError, CorpusFsService, CorpusUnavailableError, InvalidConfirmationError, PreconditionRequiredError, is_unavailable_io
 from api.apps.services.corpus_path_service import AmbiguousPathError, CorpusPathError
+from api.apps.services.corpus_search_diagnostics import collect as collect_search_diagnostics
+from api.apps.services.corpus_search_diagnostics import stage as search_stage
 from api.apps.services.corpus_secret_service import corpus_secret
 from api.apps.services.corpus_tool_service import CorpusToolService
 from api.apps.services.keyword_search_service import KeywordSearchService, SearchUnavailableError
@@ -862,52 +864,65 @@ async def semantic_search(tenant_id: str, dataset_id: str):
 @login_required
 @add_tenant_id_to_kwargs
 async def corpus_search(tenant_id: str):
-    try:
-        payload = _body(
-            await request.get_json() or {},
-            {
-                "scopes",
-                "query",
-                "limit",
-                "per_document_limit",
-                "similarity_threshold",
-                "vector_similarity_weight",
-                "mode",
-                "use_kg",
-            },
-        )
-        scopes = payload.get("scopes")
-        actor_ref = tenant_id
-        delegation_token = request.headers.get("X-RAGFlow-Delegation")
-        if delegation_token:
-            delegation = CorpusDelegationService.verify(
-                delegation_token,
-                tenant_id,
-                audience=CorpusDelegationService.corpus_fs_audience,
-                purpose="corpus-fs",
-            )
-            requested_dataset_ids = {
-                scope.get("dataset_id")
-                for scope in scopes
-                if isinstance(scope, dict)
-            } if isinstance(scopes, list) else set()
-            if not requested_dataset_ids or not requested_dataset_ids.issubset(delegation.dataset_ids):
-                raise CorpusDelegationError("dataset is not delegated")
-            actor_ref = delegation.actor_id
-        result = await CorpusToolService(tenant_id, actor_ref).search(
-            scopes=scopes,
-            query=payload.get("query"),
-            limit=payload.get("limit", 10),
-            per_document_limit=payload.get("per_document_limit", 3),
-            similarity_threshold=payload.get("similarity_threshold", 0.0),
-            vector_similarity_weight=payload.get("vector_similarity_weight", 0.3),
-            mode=payload.get("mode", "hybrid"),
-            use_kg=_body_bool(payload, "use_kg", False),
-        )
-        return get_result(data=result)
-    except CorpusDelegationError:
-        response = get_error_data_result(message="NOT_FOUND")
-        response.status_code = 404
-        return response
-    except (ValueError, CorpusFsError, CorpusPathError) as error:
-        return _error(error)
+    with collect_search_diagnostics() as diagnostics:
+        started = time.perf_counter()
+        try:
+            with search_stage("handler.body"):
+                payload = _body(
+                    await request.get_json() or {},
+                    {
+                        "scopes",
+                        "query",
+                        "limit",
+                        "per_document_limit",
+                        "similarity_threshold",
+                        "vector_similarity_weight",
+                        "mode",
+                        "use_kg",
+                    },
+                )
+            scopes = payload.get("scopes")
+            actor_ref = tenant_id
+            delegation_token = request.headers.get("X-RAGFlow-Delegation")
+            if delegation_token:
+                delegation = CorpusDelegationService.verify(
+                    delegation_token,
+                    tenant_id,
+                    audience=CorpusDelegationService.corpus_fs_audience,
+                    purpose="corpus-fs",
+                )
+                requested_dataset_ids = {
+                    scope.get("dataset_id")
+                    for scope in scopes
+                    if isinstance(scope, dict)
+                } if isinstance(scopes, list) else set()
+                if not requested_dataset_ids or not requested_dataset_ids.issubset(delegation.dataset_ids):
+                    raise CorpusDelegationError("dataset is not delegated")
+                actor_ref = delegation.actor_id
+            with search_stage("handler.build"):
+                tool = CorpusToolService(tenant_id, actor_ref)
+            with search_stage("handler.search"):
+                result = await tool.search(
+                    scopes=scopes,
+                    query=payload.get("query"),
+                    limit=payload.get("limit", 10),
+                    per_document_limit=payload.get("per_document_limit", 3),
+                    similarity_threshold=payload.get("similarity_threshold", 0.0),
+                    vector_similarity_weight=payload.get("vector_similarity_weight", 0.3),
+                    mode=payload.get("mode", "hybrid"),
+                    use_kg=_body_bool(payload, "use_kg", False),
+                )
+            if diagnostics is not None:
+                # Recorded explicitly rather than with a `stage` context manager:
+                # the region has to be closed *before* the snapshot is serialised
+                # into the response, and `wall - handler.total` is exactly the
+                # pre-handler work (token auth) plus serialisation and transfer.
+                diagnostics.record("handler.total", time.perf_counter() - started)
+                result["search_meta"]["diagnostics"] = diagnostics.snapshot()
+            return get_result(data=result)
+        except CorpusDelegationError:
+            response = get_error_data_result(message="NOT_FOUND")
+            response.status_code = 404
+            return response
+        except (ValueError, CorpusFsError, CorpusPathError) as error:
+            return _error(error)

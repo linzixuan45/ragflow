@@ -28,6 +28,12 @@ services:
     # Strip the base command so the Server starts without the admin helper.
     # This keeps :9381/9382/9383/9384 quiet even if a future base file adds
     # them back. The standard entrypoint still runs task executor and API.
+    #
+    # ⚠ 测量纪律（M12，见 `优化实验记录/20-…`）：容器内 task executor 因 MinerU 解析
+    # 1800s 超时而崩溃重启循环，长期占约一个核，会污染一切耗时测量。做耗时采集时用
+    #   CORPUS_SEARCH_DIAGNOSTICS=1 docker compose ... run/up 并把本行临时改为
+    #   command: ["--disable-taskexecutor"]
+    # 取得静默实例；测完必须改回 `command: []`——关掉入库是测量手段，不是产品决定。
     command: []
     env_file:
       - .env.local
@@ -39,6 +45,10 @@ services:
       # 64 is the historical default; it is only set here explicitly so the
       # depth can be swept as a config flip instead of a code edit.
       CORPUS_POOL_BUDGET_CANDIDATES: "64"
+      # Per-request stage timings and cache hit/miss/eviction deltas in
+      # `search_meta.diagnostics`. Off unless a latency run asks for it, so the
+      # default response payload is unchanged.
+      CORPUS_SEARCH_DIAGNOSTICS: "${CORPUS_SEARCH_DIAGNOSTICS:-0}"
     ports: !override
       - "127.0.0.1:80:80"
       - "127.0.0.1:9380:9380"
@@ -60,6 +70,7 @@ services:
       - ../api/apps/services/corpus_recall_service.py:/ragflow/api/apps/services/corpus_recall_service.py:ro
       - ../api/apps/services/document_markdown_service.py:/ragflow/api/apps/services/document_markdown_service.py:ro
       - ../api/apps/services/corpus_path_service.py:/ragflow/api/apps/services/corpus_path_service.py:ro
+      - ../api/apps/services/corpus_search_diagnostics.py:/ragflow/api/apps/services/corpus_search_diagnostics.py:ro
       - ../api/apps/services/corpus_secret_service.py:/ragflow/api/apps/services/corpus_secret_service.py:ro
       - ../api/apps/services/corpus_revision_service.py:/ragflow/api/apps/services/corpus_revision_service.py:ro
       - ../api/apps/services/source_projection_service.py:/ragflow/api/apps/services/source_projection_service.py:ro

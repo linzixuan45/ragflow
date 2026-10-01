@@ -28,6 +28,7 @@ import os
 from collections import defaultdict
 from typing import Any
 
+from api.apps.services.corpus_search_diagnostics import stage
 from common import settings
 from common.constants import LLMType
 from common.misc_utils import thread_pool_exec
@@ -310,27 +311,28 @@ class CorpusRecallService:
             keywords=strict.keywords,
         )
 
-        if rerank_mdl is not None:
-            sim, tsim, vsim = await thread_pool_exec(
-                self._dealer.rerank_by_model,
-                rerank_mdl,
-                sres,
-                question,
-                1 - vector_similarity_weight,
-                vector_similarity_weight,
-                rank_feature=labels,
-            )
-        else:
-            knn_scores = await self._dealer._knn_scores(sres, idx_names, kb_ids)
-            sim, tsim, vsim = await thread_pool_exec(
-                self._dealer.rerank_with_knn,
-                sres,
-                question,
-                knn_scores,
-                1 - vector_similarity_weight,
-                vector_similarity_weight,
-                rank_feature=labels,
-            )
+        with stage("rerank"):
+            if rerank_mdl is not None:
+                sim, tsim, vsim = await thread_pool_exec(
+                    self._dealer.rerank_by_model,
+                    rerank_mdl,
+                    sres,
+                    question,
+                    1 - vector_similarity_weight,
+                    vector_similarity_weight,
+                    rank_feature=labels,
+                )
+            else:
+                knn_scores = await self._dealer._knn_scores(sres, idx_names, kb_ids)
+                sim, tsim, vsim = await thread_pool_exec(
+                    self._dealer.rerank_with_knn,
+                    sres,
+                    question,
+                    knn_scores,
+                    1 - vector_similarity_weight,
+                    vector_similarity_weight,
+                    rank_feature=labels,
+                )
 
         post_threshold = 0.0 if vector_similarity_weight <= 0 else similarity_threshold
         chunks: list[dict[str, Any]] = []
