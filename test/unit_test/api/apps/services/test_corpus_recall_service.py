@@ -233,6 +233,29 @@ def test_pool_stays_bounded_at_the_maximum_scope_count():
     assert CorpusRecallService.STRICT_POOL + 50 * CorpusRecallService.recovery_quota(50) == 140
 
 
+def test_pool_budget_is_configurable_for_depth_sweeps(monkeypatch):
+    """Per-library depth must be flippable as config, not a code edit.
+
+    This guards the sweep used to decide how deep each library has to be for
+    quality not to degrade as the scope count grows: the same arithmetic has to
+    follow the configured budget, and a bad override must not break startup or
+    silently remove the pool bound.
+    """
+
+    assert corpus_recall_service._positive_int("120", 64) == 120
+    assert corpus_recall_service._positive_int(None, 64) == 64
+    assert corpus_recall_service._positive_int("not-a-number", 64) == 64
+    assert corpus_recall_service._positive_int("0", 64) == 64
+    assert corpus_recall_service._positive_int("-5", 64) == 64
+
+    quota = CorpusRecallService.recovery_quota
+    monkeypatch.setattr(CorpusRecallService, "POOL_BUDGET_CANDIDATES", 120)
+    assert quota(12) == 10
+    assert quota(16) == 7
+    # Large scope counts are still bounded by the floor, not by the budget.
+    assert quota(50) == 2
+
+
 @pytest.mark.asyncio
 async def test_recovered_windows_use_the_per_scope_quota():
     captured: list[dict] = []

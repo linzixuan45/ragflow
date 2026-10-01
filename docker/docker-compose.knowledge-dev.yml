@@ -34,6 +34,11 @@ services:
     environment:
       DEVICE: "gpu"
       ENABLE_TIMEOUT_ASSERTION: "1"
+      # Per-library candidate depth = CORPUS_POOL_BUDGET_CANDIDATES // scope_count
+      # (floored at MIN_RECOVERY_PER_SCOPE, capped at FALLBACK_PER_SCOPE).
+      # 64 is the historical default; it is only set here explicitly so the
+      # depth can be swept as a config flip instead of a code edit.
+      CORPUS_POOL_BUDGET_CANDIDATES: "64"
     ports: !override
       - "127.0.0.1:80:80"
       - "127.0.0.1:9380:9380"

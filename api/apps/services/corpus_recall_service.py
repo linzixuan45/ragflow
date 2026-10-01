@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from collections import defaultdict
 from typing import Any
 
@@ -34,6 +35,15 @@ from rag.app.tag import label_question
 from rag.nlp import search as search_module
 
 logger = logging.getLogger(__name__)
+
+
+def _positive_int(raw: str | None, default: int) -> int:
+    try:
+        value = int(raw) if raw is not None else default
+    except (TypeError, ValueError):
+        logger.warning("CORPUS_POOL_BUDGET_CANDIDATES=%r is not an integer; using %d", raw, default)
+        return default
+    return value if value > 0 else default
 
 
 class CorpusRecallService:
@@ -51,7 +61,11 @@ class CorpusRecallService:
     # monopoly that the per-dataset recovery window exists to prevent. With
     # MIN_RECOVERY_PER_SCOPE the pool is bounded by
     # STRICT_POOL + MAX_SCOPES * MIN_RECOVERY_PER_SCOPE = 140 at 50 scopes.
-    POOL_BUDGET_CANDIDATES = 64
+    # Configurable so the per-library depth can be swept without editing this
+    # file. Read once at import time, so changing the environment needs a
+    # restart (and an overlay rewrite needs --force-recreate). Default keeps the
+    # historical behaviour.
+    POOL_BUDGET_CANDIDATES = _positive_int(os.environ.get("CORPUS_POOL_BUDGET_CANDIDATES"), 64)
     MIN_RECOVERY_PER_SCOPE = 2
     # At 50 scopes the recovery windows are issued as one gather of ~50
     # concurrent searches. Their Elasticsearch work runs in worker threads, but
