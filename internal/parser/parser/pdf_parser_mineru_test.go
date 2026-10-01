@@ -193,9 +193,10 @@ func TestPDFParser_ParseWithResult_MinerURequiresAPIServer(t *testing.T) {
 	}
 }
 
-// A MinerU 3.x server has no `tasks` submit route, so the submit must fall
-// through to the legacy `file_parse` route. The result route is shared.
-func TestPDFParser_ParseWithResult_MinerUFallsBackToLegacyProtocol(t *testing.T) {
+// A MinerU 3.x server has no /v1/health, so the parser takes the legacy path;
+// there the `tasks` submit route is also absent and the submit must fall
+// through to the older `file_parse` route. The result route is shared.
+func TestPDFParser_ParseWithResult_MinerULegacySubmitFallsBackAcrossRoutes(t *testing.T) {
 	var v1SubmitCalled, legacySubmitCalled atomic.Bool
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

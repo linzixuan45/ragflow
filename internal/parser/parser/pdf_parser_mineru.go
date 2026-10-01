@@ -10,23 +10,24 @@ import (
 )
 
 const minerUPollTimeout = 30 * time.Minute
-const minerUPollInterval = 200 * time.Millisecond
+const minerUPollInterval = 2 * time.Second
 
-// minerUProtocolCandidates lists the submit endpoints to try in order.
+// minerUProtocolCandidates lists the legacy (3.x) submit endpoints to try in
+// order.
 //
-// MinerU 4.x replaced the 3.x `file_parse` submit route with `tasks`;
-// the result route (`tasks/<id>/result`) is unchanged across both. The
-// server version is not discoverable up front, so — as the Docling
-// backend does for its `/v1` vs `/v1alpha` routes — we try the newer
-// protocol first and fall through to the legacy one when the submit is
-// rejected. Only a failed *submit* advances the candidate; once a task
-// id is issued the protocol is settled.
+// MinerU 4.x is detected through `/v1/health` and served by the V1 flow in
+// ParseFileV1, so this list only covers 3.x servers. Within 3.x the submit
+// route is not discoverable up front, so — as the Docling backend does for its
+// `/v1` vs `/v1alpha` routes — we try the later route first and fall through
+// when the submit is rejected. Only a failed *submit* advances the candidate;
+// once a task id is issued the protocol is settled. The result route
+// (`tasks/<id>/result`) is shared by both legacy routes.
 //
-// Any submit error advances the candidate, so a transient 5xx on the
-// preferred route costs one extra rejected POST before the error is
-// surfaced. That is deliberate: it cannot start a duplicate task (the
-// server rejected the submit), and distinguishing "wrong version" from
-// "server unhealthy" would otherwise need a separate probe.
+// Any submit error advances the candidate, so a transient 5xx on the preferred
+// route costs one extra rejected POST before the error is surfaced. That is
+// deliberate: it cannot start a duplicate task (the server rejected the
+// submit), and distinguishing "wrong route" from "server unhealthy" would
+// otherwise need a separate probe.
 var minerUProtocolCandidates = []string{"tasks", "file_parse"}
 
 func parseWithMinerU(filename string, data []byte, parser *PDFParser) ParseResult {
@@ -69,26 +70,26 @@ func parseWithMinerU(filename string, data []byte, parser *PDFParser) ParseResul
 		ImageAnalysis: &parser.MinerUImageAnalysis,
 	}
 
-	var (
-		taskID   string
-		driver   *models.MinerULocalModel
-		attempts []string
+	driver := models.NewMinerLocalUModel(
+		map[string]string{"default": apiServer},
+		models.URLSuffix{DocumentParse: minerUProtocolCandidates[0], Task: "tasks"},
 	)
-	for _, submitRoute := range minerUProtocolCandidates {
-		candidate := models.NewMinerLocalUModel(
-			map[string]string{"default": apiServer},
-			models.URLSuffix{DocumentParse: submitRoute, Task: "tasks"},
-		)
-		task, err := candidate.ParseFile(&backend, data, nil, apiConfig, submitConfig)
+
+	// MinerU 4.x answers `/v1/health` and is served by the V1 upload/job flow;
+	// 3.x has no such endpoint and keeps the legacy multipart submit. The
+	// probe cannot fail a parse: an unreachable or foreign server simply
+	// reports "legacy" and the 3.x path surfaces the real error.
+	if driver.MinerUHealth(apiConfig) {
+		result, err := driver.ParseFileV1(&backend, data, apiConfig, submitConfig)
 		if err != nil {
-			attempts = append(attempts, fmt.Sprintf("%s: %v", submitRoute, err))
-			continue
+			return ParseResult{Err: fmt.Errorf("parser: MinerU v1: %w", err)}
 		}
-		driver, taskID = candidate, task.TaskID
-		break
+		return parseMinerUTaskResult(filename, result, parser.OutputFormat)
 	}
-	if driver == nil {
-		return ParseResult{Err: fmt.Errorf("parser: MinerU submit failed for every protocol (%s)", strings.Join(attempts, "; "))}
+
+	taskID, err := submitLegacyMinerUTask(apiServer, &backend, data, apiConfig, submitConfig)
+	if err != nil {
+		return ParseResult{Err: err}
 	}
 
 	result, err := pollMinerUTask(driver, taskID, apiConfig, timeout)
@@ -96,6 +97,25 @@ func parseWithMinerU(filename string, data []byte, parser *PDFParser) ParseResul
 		return ParseResult{Err: fmt.Errorf("parser: MinerU result: %w", err)}
 	}
 	return parseMinerUTaskResult(filename, result, parser.OutputFormat)
+}
+
+// submitLegacyMinerUTask submits to a MinerU 3.x server, trying each legacy
+// submit route in order, and returns the issued task id.
+func submitLegacyMinerUTask(apiServer string, backend *string, data []byte, apiConfig *models.APIConfig, submitConfig *models.ParseFileConfig) (string, error) {
+	attempts := make([]string, 0, len(minerUProtocolCandidates))
+	for _, submitRoute := range minerUProtocolCandidates {
+		candidate := models.NewMinerLocalUModel(
+			map[string]string{"default": apiServer},
+			models.URLSuffix{DocumentParse: submitRoute, Task: "tasks"},
+		)
+		task, err := candidate.ParseFile(backend, data, nil, apiConfig, submitConfig)
+		if err != nil {
+			attempts = append(attempts, fmt.Sprintf("%s: %v", submitRoute, err))
+			continue
+		}
+		return task.TaskID, nil
+	}
+	return "", fmt.Errorf("parser: MinerU submit failed for every protocol (%s)", strings.Join(attempts, "; "))
 }
 
 func pollMinerUTask(driver *models.MinerULocalModel, taskID string, apiConfig *models.APIConfig, timeout time.Duration) (*models.TaskResponse, error) {
@@ -131,10 +151,15 @@ func parseMinerUTaskResult(filename string, task *models.TaskResponse, outputFor
 	pageCount := 0
 	items := make([]map[string]any, 0, len(task.Segments))
 	for _, segment := range task.Segments {
+		layout := segment.Layout
+		if segment.LayoutType != "" {
+			layout = segment.LayoutType
+		}
 		item := map[string]any{
 			"text":         segment.Content,
 			"doc_type_kwd": segment.Type,
-			"layout":       segment.Layout,
+			"layout":       layout,
+			"layout_type":  layout,
 		}
 		if segment.Image != "" {
 			item["image"] = segment.Image
