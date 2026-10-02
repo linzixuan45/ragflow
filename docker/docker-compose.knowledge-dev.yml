@@ -81,6 +81,10 @@ services:
       - ../api/db/services/tenant_llm_service.py:/ragflow/api/db/services/tenant_llm_service.py:ro
       - ../api/db/services/document_service.py:/ragflow/api/db/services/document_service.py:ro
       - ../api/db/services/file_service.py:/ragflow/api/db/services/file_service.py:ro
+      # The request teardown lives here; it must not sweep the connection pool
+      # (see 优化实验记录/21-版本V3.9 §3.5). Mounted so the dev instance runs the
+      # local teardown instead of the image's `close_stale(age=30)` call.
+      - ../api/apps/__init__.py:/ragflow/api/apps/__init__.py:ro
       - ../api/db/db_models.py:/ragflow/api/db/db_models.py:ro
       - ../common/misc_utils.py:/ragflow/common/misc_utils.py:ro
       - ../common/mineru_formats.py:/ragflow/common/mineru_formats.py:ro
