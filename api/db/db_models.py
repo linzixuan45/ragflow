@@ -289,6 +289,21 @@ class TransactionAwareConnectionMixin:
         return TransactionAwareConnectionContext(self)
 
 
+def _retry_backoff(delay: float, attempt: int) -> None:
+    """Sleep between connection retries, but never before the first one.
+
+    A stale pooled connection is a benign, recurring event: the retry path has
+    already replaced the connection through ``_handle_connection_loss``, so the
+    first retry runs against a fresh one. Sleeping a full ``delay`` there turned a
+    ~1ms reconnect into a one-second stall on whichever user request happened to
+    pick the dead connection up (measured as a 1.005s quantum in token auth and
+    in dataset/projection reads). Later attempts keep the exponential backoff so a
+    genuinely failing server is not hammered.
+    """
+    if attempt:
+        time.sleep(delay * (2 ** (attempt - 1)))
+
+
 class RetryingPooledMySQLDatabase(TransactionAwareConnectionMixin, PooledMySQLDatabase):
     def __init__(self, *args, **kwargs):
         self.max_retries = kwargs.pop("max_retries", 5)
@@ -307,7 +322,7 @@ class RetryingPooledMySQLDatabase(TransactionAwareConnectionMixin, PooledMySQLDa
                 if should_retry and attempt < self.max_retries:
                     logging.warning(f"Database connection issue (attempt {attempt + 1}/{self.max_retries}): {e}")
                     self._handle_connection_loss()
-                    time.sleep(self.retry_delay * (2**attempt))
+                    _retry_backoff(self.retry_delay, attempt)
                 else:
                     logging.error(f"DB execution failure: {e}")
                     raise
@@ -344,7 +359,7 @@ class RetryingPooledMySQLDatabase(TransactionAwareConnectionMixin, PooledMySQLDa
                 if should_retry and attempt < self.max_retries:
                     logging.warning(f"Lost connection during transaction (attempt {attempt + 1}/{self.max_retries})")
                     self._handle_connection_loss()
-                    time.sleep(self.retry_delay * (2**attempt))
+                    _retry_backoff(self.retry_delay, attempt)
                 else:
                     raise
         return None
@@ -375,7 +390,7 @@ class RetryingPooledPostgresqlDatabase(TransactionAwareConnectionMixin, PooledPo
                 if should_retry and attempt < self.max_retries:
                     logging.warning(f"PostgreSQL connection issue (attempt {attempt + 1}/{self.max_retries}): {e}")
                     self._handle_connection_loss()
-                    time.sleep(self.retry_delay * (2**attempt))
+                    _retry_backoff(self.retry_delay, attempt)
                 else:
                     logging.error(f"PostgreSQL execution failure: {e}")
                     raise
@@ -409,7 +424,7 @@ class RetryingPooledPostgresqlDatabase(TransactionAwareConnectionMixin, PooledPo
                 if should_retry and attempt < self.max_retries:
                     logging.warning(f"PostgreSQL connection lost during transaction (attempt {attempt + 1}/{self.max_retries})")
                     self._handle_connection_loss()
-                    time.sleep(self.retry_delay * (2**attempt))
+                    _retry_backoff(self.retry_delay, attempt)
                 else:
                     raise
         return None
@@ -447,7 +462,7 @@ class RetryingPooledOceanBaseDatabase(TransactionAwareConnectionMixin, PooledMyS
                 if should_retry and attempt < self.max_retries:
                     logging.warning(f"OceanBase connection issue (attempt {attempt + 1}/{self.max_retries}): {e}")
                     self._handle_connection_loss()
-                    time.sleep(self.retry_delay * (2**attempt))
+                    _retry_backoff(self.retry_delay, attempt)
                 else:
                     logging.error(f"OceanBase execution failure: {e}")
                     raise
@@ -482,7 +497,7 @@ class RetryingPooledOceanBaseDatabase(TransactionAwareConnectionMixin, PooledMyS
                 if should_retry and attempt < self.max_retries:
                     logging.warning(f"Lost connection during transaction (attempt {attempt + 1}/{self.max_retries})")
                     self._handle_connection_loss()
-                    time.sleep(self.retry_delay * (2**attempt))
+                    _retry_backoff(self.retry_delay, attempt)
                 else:
                     raise
         return None

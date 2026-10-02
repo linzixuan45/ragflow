@@ -23,7 +23,7 @@ from collections.abc import Iterator
 from contextvars import ContextVar
 from typing import Any
 
-from api.apps.services.corpus_context_cache import citation_manifest_cache, dataset_context_cache
+from api.apps.services.corpus_context_cache import citation_manifest_cache, dataset_context_cache, source_projection_cache
 
 _ENV = "CORPUS_SEARCH_DIAGNOSTICS"
 
@@ -43,6 +43,7 @@ class SearchDiagnostics:
         self._before = {
             "citation_manifest": citation_manifest_cache.stats(),
             "dataset_context": dataset_context_cache.stats(),
+            "source_projection": source_projection_cache.stats(),
         }
 
     @contextlib.contextmanager
@@ -79,6 +80,7 @@ class SearchDiagnostics:
         after = {
             "citation_manifest": citation_manifest_cache.stats(),
             "dataset_context": dataset_context_cache.stats(),
+            "source_projection": source_projection_cache.stats(),
         }
         return {
             "seconds": {name: round(value, 3) for name, value in sorted(self._seconds.items())},

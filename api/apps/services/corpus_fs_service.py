@@ -16,6 +16,7 @@ from peewee import InterfaceError, OperationalError, ProgrammingError
 
 from api.apps.services.corpus_context_cache import cache_enabled, citation_manifest_cache, dataset_context_cache
 from api.apps.services.corpus_path_service import AmbiguousPathError, CorpusPathRegistry, CorpusPathResolver
+from api.apps.services.corpus_search_diagnostics import stage
 from api.apps.services.corpus_secret_service import corpus_secret
 from api.apps.services.document_markdown_service import DocumentMarkdownService, MarkdownVersionConflict, MarkdownVersionNotFound
 from api.apps.services.source_projection_service import SourceProjectionService
@@ -148,18 +149,26 @@ class CorpusFsService:
         cached = dataset_context_cache.get(key) if cache_enabled() else None
         if cached is not None:
             return cached
-        docs = {document["id"]: document for document in self._document_rows()}
-        root, files, links = self._dataset_tree(docs, dataset)
+        with stage("context.docs"):
+            docs = {document["id"]: document for document in self._document_rows()}
+        with stage("context.tree"):
+            root, files, links = self._dataset_tree(docs, dataset)
         value = (docs, files, links, root)
         if cache_enabled():
             dataset_context_cache.put(key, value)
         return value
 
     def search_context(self, path: str) -> tuple[dict[str, dict], dict[str, dict[str, Any]], int]:
-        dataset = self._dataset()
+        with stage("context.dataset"):
+            dataset = self._dataset()
         docs, files, links, root = self.dataset_context(dataset)
-        entries, _ = self._build_projection(docs, files, links, root)
-        return self._scope_entries(entries, path), docs, self.revision(dataset)["content_revision"]
+        with stage("context.project"):
+            entries, _ = self._build_projection(docs, files, links, root)
+        with stage("context.scope"):
+            scoped = self._scope_entries(entries, path)
+        with stage("context.revision"):
+            revision = self.revision(dataset)["content_revision"]
+        return scoped, docs, revision
 
     @staticmethod
     def _select_active_document(file: dict, linked: list[dict]) -> dict:
@@ -919,12 +928,14 @@ class CorpusFsService:
     def citation_context(self, document: dict) -> tuple[dict, list[dict] | None]:
         if document.get("type", "").lower() == "pdf":
             try:
-                projection = SourceProjectionService.active(document)
+                with stage("citation.projection"):
+                    projection = SourceProjectionService.active(document)
             except (OperationalError, ProgrammingError):
                 projection = None
             if projection:
                 return projection
-        return self._storage_citation_context(document)
+        with stage("citation.manifest"):
+            return self._storage_citation_context(document)
 
     def _storage_citation_context(self, document: dict) -> tuple[dict, list[dict] | None]:
         """sha256 of the stored object, cached by the document's own fingerprint.

@@ -10,6 +10,7 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
+from api.apps.services.corpus_context_cache import cache_enabled, source_projection_cache
 from api.db.db_models import DB, DocumentProjection, Task
 from common import settings
 from common.misc_utils import get_uuid
@@ -171,11 +172,19 @@ class SourceProjectionService:
 
     @classmethod
     def _read_row(cls, row: DocumentProjection) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        key = (row.dataset_id, row.object_name, int(row.revision))
+        if cache_enabled():
+            cached = source_projection_cache.get(key)
+            if cached is not None:
+                return cached
         raw = settings.STORAGE_IMPL.get(row.dataset_id, row.object_name)
         if hasattr(raw, "read"):
             raw = raw.read()
         lines = gzip.decompress(raw).decode().splitlines()
-        return json.loads(lines[0]), [json.loads(line) for line in lines[1:]]
+        value = (json.loads(lines[0]), [json.loads(line) for line in lines[1:]])
+        if cache_enabled():
+            source_projection_cache.put(key, value)
+        return value
 
     @classmethod
     def _store_block_images(cls, dataset_id: str, document_id: str, revision: int, blocks: list[dict[str, Any]]) -> None:

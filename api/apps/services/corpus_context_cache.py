@@ -104,6 +104,18 @@ citation_manifest_cache = DatasetContextCache(
     max_entries=int(_config("CORPUS_CITATION_CACHE_MAX_ENTRIES", 128)),
 )
 
+# Parsed PDF source projections, keyed by (dataset_id, object_name, revision).
+# ``object_name`` embeds the document id and the projection revision, so the
+# stored bytes can never change under a key. Reading one costs a storage GET,
+# a gunzip and one JSON parse per line, and the largest projections run to
+# thousands of blocks; a twelve-dataset search resolved thirteen of them per
+# request, which is what made ``citation_context`` the largest stage of a
+# request that cites a PDF.
+source_projection_cache = DatasetContextCache(
+    ttl_seconds=_config("CORPUS_PROJECTION_CACHE_TTL_SECONDS", DEFAULT_TTL_SECONDS),
+    max_entries=int(_config("CORPUS_PROJECTION_CACHE_MAX_ENTRIES", 32)),
+)
+
 
 def cache_enabled() -> bool:
     return os.environ.get("CORPUS_CONTEXT_CACHE", "1") != "0"
