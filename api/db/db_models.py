@@ -676,14 +676,6 @@ DB = BaseDataBase().database_connection
 DB.lock = DatabaseLock[settings.DATABASE_TYPE.upper()].value
 
 
-def close_connection():
-    try:
-        if DB:
-            DB.close_stale(age=30)
-    except Exception as e:
-        logging.exception(e)
-
-
 class DataBaseModel(BaseModel):
     class Meta:
         database = DB

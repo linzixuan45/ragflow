@@ -57,7 +57,6 @@ def _load_apps_module(monkeypatch):
 
     db_models_mod = ModuleType("api.db.db_models")
     db_models_mod.APIToken = _DummyAPIToken
-    db_models_mod.close_connection = lambda: None
     monkeypatch.setitem(sys.modules, "api.db.db_models", db_models_mod)
 
     services_mod = ModuleType("api.db.services")

@@ -23,7 +23,7 @@ from quart import Blueprint, Quart, request, g, current_app, session, jsonify
 from itsdangerous.url_safe import URLSafeTimedSerializer as Serializer
 from quart_cors import cors
 from common.constants import StatusEnum, RetCode
-from api.db.db_models import close_connection, APIToken
+from api.db.db_models import APIToken
 from api.db.services import UserService
 from api.utils.json_encode import CustomJSONEncoder
 from api.utils import commands
@@ -419,7 +419,6 @@ async def handle_model_exception(error):
 
 
 @app.teardown_request
-def _db_close(exception):
+def _log_request_failure(exception):
     if exception:
         logging.exception(f"Request failed: {exception}")
-    close_connection()

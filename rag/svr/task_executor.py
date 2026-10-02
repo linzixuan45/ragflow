@@ -81,7 +81,6 @@ from api.db.services.task_service import TaskService, has_canceled, CANVAS_DEBUG
 from api.db.services.file2document_service import File2DocumentService
 from api.db.joint_services.tenant_model_service import get_tenant_default_model_by_type, get_model_config_from_provider_instance
 from common.versions import get_ragflow_version
-from api.db.db_models import close_connection
 from rag.app import laws, paper, presentation, manual, qa, table, book, resume, picture, naive, one, audio, email, tag
 from rag.nlp import search, rag_tokenizer, add_positions
 from rag.advanced_rag.knowlege_compile.raptor import (
@@ -189,7 +188,6 @@ def set_progress(task_id, from_page=0, to_page=-1, prog=None, msg="Processing...
 
         TaskService.update_progress(task_id, d)
 
-        close_connection()
         if cancel:
             raise TaskCanceledException(msg)
         logging.info(f"set_progress({task_id}), progress: {prog}, progress_msg: {msg}")
