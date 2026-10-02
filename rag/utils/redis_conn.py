@@ -477,25 +477,105 @@ class RedisDB:
             logging.exception("RedisDB.get_unacked_iterator got exception: ")
             self.__open__()
 
-    def get_pending_msg(self, queue, group_name):
+    def get_pending_msg(self, queue, group_name, count=1000):
         try:
-            messages = self.REDIS.xpending_range(queue, group_name, "-", "+", 10)
-            return messages
+            messages = self.REDIS.xpending_range(queue, group_name, "-", "+", count)
+            return messages or []
         except Exception as e:
             if "No such key" not in (str(e) or ""):
                 logging.warning("RedisDB.get_pending_msg " + str(queue) + " got exception: " + str(e))
         return []
 
-    def requeue_msg(self, queue: str, group_name: str, msg_id: str):
+    def queue_ack(self, queue: str, group_name: str, msg_id: str) -> bool:
+        try:
+            self.REDIS.xack(queue, group_name, msg_id)
+            return True
+        except Exception as e:
+            logging.warning("RedisDB.queue_ack " + str(queue) + " got exception: " + str(e))
+            self.__open__()
+        return False
+
+    def requeue_msg(self, queue: str, group_name: str, msg_id: str) -> bool:
+        """Copy a pending message to the stream tail and acknowledge the original.
+
+        Only the consumer that read a message can retry it, so a message left
+        pending by an executor that is gone would never be delivered again.
+        Republishing the entry makes it deliverable to any executor.
+        """
         for _ in range(3):
             try:
                 messages = self.REDIS.xrange(queue, msg_id, msg_id)
-                if messages:
-                    self.REDIS.xadd(queue, messages[0][1])
-                    self.REDIS.xack(queue, group_name, msg_id)
+                if not messages:
+                    return False
+                self.REDIS.xadd(queue, messages[0][1])
+                self.REDIS.xack(queue, group_name, msg_id)
+                return True
             except Exception as e:
-                logging.warning("RedisDB.get_pending_msg " + str(queue) + " got exception: " + str(e))
+                logging.warning("RedisDB.requeue_msg " + str(queue) + " got exception: " + str(e))
                 self.__open__()
+        return False
+
+    @staticmethod
+    def _task_id_of(fields) -> str | None:
+        try:
+            message = (fields or {}).get("message")
+            if not message:
+                return None
+            return json.loads(message).get("id")
+        except Exception:
+            return None
+
+    def queue_backlog(self, queue_names, group_name, stale_pending_ms, alive_consumers=()):
+        """Split the broker backlog into work that will still run and work that never will.
+
+        A message stays pending under the consumer that read it until it is
+        acked, so "pending" only means "will be processed again" while that
+        consumer is alive. Messages pending for a consumer that is gone are
+        invisible to every other executor.
+
+        Returns ``(inflight_task_ids, stale_pending)``:
+
+        * ``inflight_task_ids``: task ids whose message is still on the queue,
+          either not delivered yet (behind the group's ``last-delivered-id``)
+          or pending for a consumer listed in ``alive_consumers``.
+        * ``stale_pending``: ``(queue_name, message_id, task_id)`` triples for
+          messages pending for a consumer that has been gone for at least
+          ``stale_pending_ms``.
+        """
+        alive = set(alive_consumers or [])
+        inflight = set()
+        stale_pending = []
+        for queue_name in queue_names:
+            group = self.queue_info(queue_name, group_name)
+            if not group:
+                continue
+            last_id = group.get("last-delivered-id")
+            if last_id:
+                try:
+                    for _msg_id, fields in self.REDIS.xrange(queue_name, f"({last_id}", "+") or []:
+                        task_id = self._task_id_of(fields)
+                        if task_id:
+                            inflight.add(task_id)
+                except Exception as e:
+                    logging.warning(f"RedisDB.queue_backlog undelivered {queue_name} got exception: {e}")
+            for entry in self.get_pending_msg(queue_name, group_name):
+                msg_id = entry.get("message_id")
+                if not msg_id:
+                    continue
+                try:
+                    messages = self.REDIS.xrange(queue_name, msg_id, msg_id)
+                except Exception as e:
+                    logging.warning(f"RedisDB.queue_backlog pending {queue_name} got exception: {e}")
+                    continue
+                task_id = self._task_id_of(messages[0][1] if messages else None)
+                if not task_id:
+                    continue
+                idle_ms = int(entry.get("time_since_delivered") or 0)
+                if entry.get("consumer") not in alive and idle_ms >= stale_pending_ms:
+                    stale_pending.append((queue_name, msg_id, task_id))
+                else:
+                    inflight.add(task_id)
+        return inflight, stale_pending
 
     def queue_info(self, queue, group_name) -> dict | None:
         for _ in range(3):

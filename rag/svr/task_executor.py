@@ -77,7 +77,7 @@ from common.constants import LLMType, ParserType, PipelineTaskType
 from api.db.services.document_service import DocumentService
 from api.db.services.doc_metadata_service import DocMetadataService
 from api.db.services.llm_service import LLMBundle
-from api.db.services.task_service import TaskService, has_canceled, CANVAS_DEBUG_DOC_ID, GRAPH_RAPTOR_FAKE_DOC_ID
+from api.db.services.task_service import TaskService, has_canceled, requeue_orphaned_tasks, CANVAS_DEBUG_DOC_ID, GRAPH_RAPTOR_FAKE_DOC_ID
 from api.db.services.file2document_service import File2DocumentService
 from api.db.joint_services.tenant_model_service import get_tenant_default_model_by_type, get_model_config_from_provider_instance
 from common.versions import get_ragflow_version
@@ -156,6 +156,11 @@ FAILED_TASKS = 0
 CURRENT_TASKS = {}
 
 WORKER_HEARTBEAT_TIMEOUT = int(os.environ.get("WORKER_HEARTBEAT_TIMEOUT", "120"))
+# Interval between sweeps for unfinished tasks whose queue message was lost,
+# and the grace period that keeps a freshly queued task from being seen as lost
+# while the API is still publishing its message.
+ORPHAN_SWEEP_INTERVAL = int(os.environ.get("ORPHAN_SWEEP_INTERVAL", "300"))
+ORPHAN_GRACE_SECONDS = int(os.environ.get("ORPHAN_GRACE_SECONDS", "300"))
 stop_event = threading.Event()
 
 
@@ -1915,6 +1920,32 @@ async def report_status():
         await asyncio.sleep(30)
 
 
+async def recover_orphaned_tasks():
+    """Put unfinished tasks whose queue message was lost back on the queue.
+
+    Nothing links a task row to its message after it is published, and the
+    broker only redelivers to the consumer that read a message, so a message
+    that is acked or skipped without the task running leaves its document
+    RUNNING forever. See :func:`requeue_orphaned_tasks`.
+    """
+    redis_lock = RedisDistributedLock("recover_orphaned_tasks", lock_value=CONSUMER_NAME, timeout=max(ORPHAN_SWEEP_INTERVAL, 60))
+    # Let report_status register this executor before it starts judging which
+    # consumers are gone, otherwise it could steal a live executor's backlog.
+    await asyncio.sleep(30)
+    while True:
+        try:
+            if redis_lock.acquire():
+                try:
+                    requeued = requeue_orphaned_tasks(exclude_ids=set(CURRENT_TASKS), grace_seconds=ORPHAN_GRACE_SECONDS)
+                    if requeued:
+                        logging.warning(f"recover_orphaned_tasks requeued {len(requeued)} lost task(s): {requeued}")
+                finally:
+                    redis_lock.release()
+        except Exception as e:
+            logging.exception(f"recover_orphaned_tasks got exception: {e}")
+        await asyncio.sleep(ORPHAN_SWEEP_INTERVAL)
+
+
 async def task_manager():
     try:
         await handle_task()
@@ -1961,6 +1992,7 @@ async def main():
     signal.signal(signal.SIGTERM, signal_handler)
 
     report_task = asyncio.create_task(report_status())
+    recover_task = asyncio.create_task(recover_orphaned_tasks())
     tasks = []
 
     logging.info(f"RAGFlow ingestion is ready after {time.time() - start_ts}s initialization.")
@@ -1975,6 +2007,8 @@ async def main():
         await asyncio.gather(*tasks, return_exceptions=True)
         report_task.cancel()
         await asyncio.gather(report_task, return_exceptions=True)
+        recover_task.cancel()
+        await asyncio.gather(recover_task, return_exceptions=True)
     logging.error("BUG!!! You should not reach here!!!")
 
 

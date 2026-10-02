@@ -27,7 +27,7 @@ from api.db.db_utils import bulk_insert_into_db
 from api.db.services.common_service import CommonService
 from api.db.services.document_service import DocumentService
 from common import settings
-from common.constants import MAXIMUM_PAGE_NUMBER, MAXIMUM_TASK_PAGE_NUMBER, StatusEnum, TaskStatus
+from common.constants import MAXIMUM_PAGE_NUMBER, MAXIMUM_TASK_PAGE_NUMBER, SVR_CONSUMER_GROUP_NAME, StatusEnum, TaskStatus
 from common.misc_utils import get_uuid
 from common.time_utils import current_timestamp, get_format_time
 from deepdoc.parser import PdfParser
@@ -427,6 +427,109 @@ class TaskService(CommonService):
     def delete_by_doc_ids(cls, doc_ids):
         """Delete task associated with a document."""
         return cls.model.delete().where(cls.model.doc_id.in_(doc_ids)).execute()
+
+    @classmethod
+    @DB.connection_context()
+    def unfinished_parse_tasks_of_running_docs(cls, queue_suffix: str = "common"):
+        """Parse tasks that are still unfinished while their document is still RUNNING.
+
+        A task row is the only durable record of queued work, so a row that is
+        unfinished long after it was queued means its message is gone even
+        though the document still claims to be parsing. Special task types
+        (graphrag/raptor/memory/dataflow) carry extra fields on their message
+        that cannot be rebuilt from the row, and the ``resume`` parser uses its
+        own queue, so both are out of scope here.
+        """
+        parser_filter = (Document.parser_id == "resume") if queue_suffix == "resume" else (Document.parser_id != "resume")
+        query = (
+            cls.model.select(cls.model.id, cls.model.doc_id, cls.model.from_page, cls.model.to_page, cls.model.priority, cls.model.create_time)
+            .join(Document, on=(cls.model.doc_id == Document.id))
+            .where((cls.model.task_type == "") & (cls.model.progress < 1) & (Document.run == TaskStatus.RUNNING.value) & parser_filter)
+        )
+        return list(query.dicts())
+
+    @classmethod
+    @DB.connection_context()
+    def progress_by_ids(cls, task_ids):
+        """Map task id to progress for the given ids; ids without a row are absent."""
+        if not task_ids:
+            return {}
+        rows = cls.model.select(cls.model.id, cls.model.progress).where(cls.model.id.in_(list(task_ids)))
+        return {row["id"]: row["progress"] for row in rows.dicts()}
+
+
+def requeue_orphaned_tasks(exclude_ids=frozenset(), grace_seconds: int = 300, queue_suffix: str = "common", stale_pending_ms: int = 120_000):
+    """Re-enqueue unfinished tasks whose queue message no longer exists.
+
+    A task is published once, when parsing starts; afterwards nothing links the
+    task row to its message. If that message is lost (acked without running, or
+    skipped), the row stays unfinished and the document stays RUNNING forever
+    with no way to recover, because the broker only ever redelivers to the
+    consumer that read it. Messages left pending by an executor that is gone
+    are just as unreachable.
+
+    This is the missing sweep. Unfinished tasks on documents still marked
+    RUNNING whose message is neither waiting on the queue nor pending for a
+    live executor are published again; pending messages of tasks that still
+    need to run are republished, and pending messages of tasks that are gone or
+    finished are acknowledged so they stop blocking the backlog view. The retry
+    cap in :meth:`TaskService.get_task` still applies, so a task that cannot
+    finish is abandoned after three attempts instead of looping.
+
+    ``grace_seconds`` protects the window between inserting the task rows and
+    publishing their messages.
+
+    Returns the ids of the tasks that were put back on the queue.
+    """
+    queues = settings.get_svr_queue_names(queue_suffix)
+    try:
+        alive_consumers = set(REDIS_CONN.smembers("TASKEXE") or [])
+    except Exception as e:
+        logging.warning(f"requeue_orphaned_tasks cannot read TASKEXE: {e}")
+        alive_consumers = set()
+    inflight, stale_pending = REDIS_CONN.queue_backlog(queues, SVR_CONSUMER_GROUP_NAME, stale_pending_ms, alive_consumers)
+
+    # Read the task rows before touching the backlog: if the database is
+    # unreachable, no pending message may be judged obsolete.
+    unfinished = TaskService.unfinished_parse_tasks_of_running_docs(queue_suffix)
+    stale_ids = {task_id for _queue_name, _msg_id, task_id in stale_pending}
+    stale_progress = TaskService.progress_by_ids([task_id for task_id in stale_ids if task_id not in exclude_ids])
+
+    requeued = []
+    for queue_name, msg_id, task_id in stale_pending:
+        if task_id in exclude_ids:
+            continue
+        progress = stale_progress.get(task_id)
+        if progress is None or progress >= 1:
+            # The row is gone or the task is finished (or failed): this message
+            # is obsolete, so acknowledge it instead of leaving it pending.
+            if REDIS_CONN.queue_ack(queue_name, SVR_CONSUMER_GROUP_NAME, msg_id):
+                logging.warning(f"requeue_orphaned_tasks dropped obsolete pending task {task_id} of {queue_name}")
+            continue
+        if REDIS_CONN.requeue_msg(queue_name, SVR_CONSUMER_GROUP_NAME, msg_id):
+            requeued.append(task_id)
+            logging.warning(f"requeue_orphaned_tasks republished pending task {task_id} of {queue_name}")
+
+    cutoff_ms = current_timestamp() - grace_seconds * 1000
+    for task in unfinished:
+        if task["id"] in inflight or task["id"] in stale_ids or task["id"] in exclude_ids:
+            continue
+        if task["create_time"] >= cutoff_ms:
+            # The API may still be publishing this task's message.
+            continue
+        priority = task.get("priority") or 0
+        message = {
+            "id": task["id"],
+            "doc_id": task["doc_id"],
+            "from_page": task["from_page"],
+            "to_page": task["to_page"],
+            "task_type": "",
+            "priority": priority,
+        }
+        if REDIS_CONN.queue_product(settings.get_svr_queue_name(priority, queue_suffix), message=message):
+            requeued.append(task["id"])
+            logging.warning(f"requeue_orphaned_tasks requeued lost task {task['id']} (doc {task['doc_id']})")
+    return requeued
 
 
 def queue_tasks(doc: dict, bucket: str, name: str, priority: int):

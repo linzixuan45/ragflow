@@ -80,6 +80,10 @@ services:
       - ../api/db/joint_services/tenant_model_service.py:/ragflow/api/db/joint_services/tenant_model_service.py:ro
       - ../api/db/services/tenant_llm_service.py:/ragflow/api/db/services/tenant_llm_service.py:ro
       - ../api/db/services/document_service.py:/ragflow/api/db/services/document_service.py:ro
+      # ``requeue_orphaned_tasks`` lives here: a task row is the only durable
+      # record of queued work, so recovering tasks whose queue message was lost
+      # needs both the task table and the Redis backlog scan.
+      - ../api/db/services/task_service.py:/ragflow/api/db/services/task_service.py:ro
       - ../api/db/services/file_service.py:/ragflow/api/db/services/file_service.py:ro
       # The request teardown lives here; it must not sweep the connection pool
       # (see 优化实验记录/21-版本V3.9 §3.5). Mounted so the dev instance runs the
@@ -99,6 +103,10 @@ services:
       - ../rag/nlp/query.py:/ragflow/rag/nlp/query.py:ro
       - ../rag/prompts/generator.py:/ragflow/rag/prompts/generator.py:ro
       - ../rag/utils/es_conn.py:/ragflow/rag/utils/es_conn.py:ro
+      # Consumer groups only redeliver to the consumer that read a message, so
+      # the backlog scan (``queue_backlog``) and ``requeue_msg`` are needed to
+      # keep messages abandoned by a dead executor from becoming unreachable.
+      - ../rag/utils/redis_conn.py:/ragflow/rag/utils/redis_conn.py:ro
       - ../rag/utils/chunk_metrics.py:/ragflow/rag/utils/chunk_metrics.py:ro
       - ../rag/utils/mineru_adapter.py:/ragflow/rag/utils/mineru_adapter.py:ro
       - ../rag/utils/source_projection.py:/ragflow/rag/utils/source_projection.py:ro
