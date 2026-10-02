@@ -114,10 +114,12 @@ services:
       - ../rag/graphrag/general/index.py:/ragflow/rag/graphrag/general/index.py:ro
       - ../rag/llm/chat_model.py:/ragflow/rag/llm/chat_model.py:ro
       - ../rag/svr/task_executor.py:/ragflow/rag/svr/task_executor.py:ro
-      - ../rag/svr/task_executor_refactor/chunk_builder.py:/ragflow/rag/svr/task_executor_refactor/chunk_builder.py:ro
-      - ../rag/svr/task_executor_refactor/chunk_service.py:/ragflow/rag/svr/task_executor_refactor/chunk_service.py:ro
-      - ../rag/svr/task_executor_refactor/task_handler.py:/ragflow/rag/svr/task_executor_refactor/task_handler.py:ro
-      - ../rag/svr/task_executor_refactor/dataflow_service.py:/ragflow/rag/svr/task_executor_refactor/dataflow_service.py:ro
+      # The whole package, not per-file: mounting only some of its modules makes the
+      # mounted importers import names the image's stale siblings do not define, and
+      # the executor then dies at import time on every entrypoint restart
+      # (`ImportError: cannot import name 'apply_built_in_metadata'`). The host
+      # directory contains every file the image ships.
+      - ../rag/svr/task_executor_refactor:/ragflow/rag/svr/task_executor_refactor:ro
     depends_on:
       mysql:
         condition: service_healthy
