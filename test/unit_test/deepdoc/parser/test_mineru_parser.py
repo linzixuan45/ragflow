@@ -1,5 +1,7 @@
+import base64
 import importlib.util
 import inspect
+import json
 import logging
 import sys
 import threading
@@ -1391,3 +1393,153 @@ def test_run_mineru_v1_does_not_retry_a_failed_first_upload(monkeypatch, tmp_pat
 
     assert state["uploads"] == 1
     assert state["jobs"] == 1
+
+
+def _write_content_list(output_dir: Path, items: list) -> None:
+    (output_dir / "sample_content_list.json").write_text(json.dumps(items, ensure_ascii=False), encoding="utf-8")
+
+
+def test_read_output_inlines_table_body_html_image_as_data_url(monkeypatch, tmp_path):
+    """表格单元格图只以相对引用存在，内联后引用预览才能出图。"""
+    module = _load_mineru_parser(monkeypatch)
+    parser = module.MinerUParser()
+    images = tmp_path / "images"
+    images.mkdir()
+    payload = b"png-bytes"
+    (images / "x.png").write_bytes(payload)
+    _write_content_list(
+        tmp_path,
+        [{"type": "table", "table_body": '<table><tr><td><img alt="长沙" src="images/x.png"/></td></tr></table>'}],
+    )
+
+    outputs = parser._read_output(tmp_path, "sample")
+
+    body = outputs[0]["table_body"]
+    assert "images/x.png" not in body
+    assert "data:image/png;base64," in body
+    encoded = body.split("base64,", 1)[1].split('"', 1)[0]
+    assert base64.b64decode(encoded) == payload
+
+
+def test_read_output_inlines_table_body_markdown_image(monkeypatch, tmp_path):
+    module = _load_mineru_parser(monkeypatch)
+    parser = module.MinerUParser()
+    images = tmp_path / "images"
+    images.mkdir()
+    (images / "x.jpg").write_bytes(b"jpeg-bytes")
+    _write_content_list(tmp_path, [{"type": "table", "table_body": "![图](images/x.jpg)"}])
+
+    outputs = parser._read_output(tmp_path, "sample")
+
+    body = outputs[0]["table_body"]
+    assert "images/x.jpg" not in body
+    assert "data:image/jpeg;base64," in body
+
+
+def test_read_output_keeps_unresolvable_table_image_reference(monkeypatch, tmp_path):
+    module = _load_mineru_parser(monkeypatch)
+    parser = module.MinerUParser()
+    (tmp_path / "images").mkdir()
+    body = '<table><tr><td><img src="images/missing.png"/></td></tr></table>'
+    _write_content_list(tmp_path, [{"type": "table", "table_body": body}])
+
+    outputs = parser._read_output(tmp_path, "sample")
+
+    assert outputs[0]["table_body"] == body
+
+
+def test_read_output_does_not_inline_table_image_outside_output_dir(monkeypatch, tmp_path):
+    module = _load_mineru_parser(monkeypatch)
+    parser = module.MinerUParser()
+    (tmp_path.parent / "secret.png").write_bytes(b"secret")
+    body = '<table><tr><td><img src="images/../../secret.png"/></td></tr></table>'
+    _write_content_list(tmp_path, [{"type": "table", "table_body": body}])
+
+    outputs = parser._read_output(tmp_path, "sample")
+
+    assert outputs[0]["table_body"] == body
+
+
+def test_inline_local_image_refs_compresses_images_over_the_size_limit(monkeypatch, tmp_path):
+    """超过单图上限的图片要被压缩后内联，而不是留下取不到的相对引用。"""
+    module = _load_mineru_parser(monkeypatch)
+    images = tmp_path / "images"
+    images.mkdir()
+    source = images / "big.png"
+    module.Image.new("RGB", (900, 700), (120, 30, 200)).save(source)
+    monkeypatch.setattr(module, "_INLINE_IMAGE_LADDER", ((64, 10),))
+    monkeypatch.setattr(module, "_INLINE_IMAGE_MAX_BYTES", 1000)
+    assert source.stat().st_size > 1000
+
+    result = module._inline_local_image_refs('<img src="images/big.png"/>', tmp_path)
+
+    assert 'src="images/big.png"' not in result
+    assert "data:image/jpeg;base64," in result
+    encoded = result.split("base64,", 1)[1].split('"', 1)[0]
+    assert len(base64.b64decode(encoded)) <= 1000
+
+
+def test_inline_local_image_refs_compresses_remaining_images_after_threshold(monkeypatch, tmp_path):
+    """累计超过阈值后，后面的图压缩后仍然全部内联，不留占位。"""
+    module = _load_mineru_parser(monkeypatch)
+    images = tmp_path / "images"
+    images.mkdir()
+    for name in ("a.png", "b.png"):
+        module.Image.new("RGB", (200, 200), (10, 160, 90)).save(images / name)
+    monkeypatch.setattr(module, "_INLINE_IMAGE_LADDER", ((64, 10),))
+    monkeypatch.setattr(module, "_TABLE_BODY_IMAGE_COMPRESS_AFTER_BYTES", 0)
+
+    result = module._inline_local_image_refs('<img src="images/a.png"/><img src="images/b.png"/>', tmp_path)
+
+    # 两张图都必须被内联；跨过阈值之后的那张走压缩（JPEG）。
+    assert "images/a.png" not in result
+    assert "images/b.png" not in result
+    assert result.count("data:image/") == 2
+    assert result.count("data:image/jpeg;base64,") == 1
+
+
+def test_compressed_image_bytes_returns_none_for_unreadable_payload(monkeypatch, tmp_path):
+    module = _load_mineru_parser(monkeypatch)
+    broken = tmp_path / "broken.png"
+    broken.write_bytes(b"not-an-image")
+
+    assert module._compressed_image_bytes(broken) is None
+
+
+def test_inline_local_image_refs_inlines_present_images_next_to_missing_ones(monkeypatch, tmp_path):
+    """缺图不能连带把同一表格里存在的图片一起放弃。"""
+    module = _load_mineru_parser(monkeypatch)
+    images = tmp_path / "images"
+    images.mkdir()
+    (images / "present.png").write_bytes(b"png-bytes")
+    text = '<img src="images/present.png"/><img src="images/missing.png"/>'
+
+    result = module._inline_local_image_refs(text, tmp_path)
+
+    assert "data:image/png;base64," in result
+    assert 'src="images/present.png"' not in result
+    assert 'src="images/missing.png"' in result
+
+
+def test_read_output_tolerates_non_dict_content_list_entries(monkeypatch, tmp_path):
+    module = _load_mineru_parser(monkeypatch)
+    parser = module.MinerUParser()
+    images = tmp_path / "images"
+    images.mkdir()
+    (images / "x.png").write_bytes(b"png-bytes")
+    _write_content_list(
+        tmp_path,
+        ["stray string entry", {"type": "table", "table_body": '<img src="images/x.png"/>'}],
+    )
+
+    outputs = parser._read_output(tmp_path, "sample")
+
+    assert outputs[0] == "stray string entry"
+    assert "data:image/png;base64," in outputs[1]["table_body"]
+
+
+def test_inline_local_image_refs_is_idempotent(monkeypatch, tmp_path):
+    module = _load_mineru_parser(monkeypatch)
+    text = "![图](data:image/png;base64,AAAA)"
+
+    assert module._inline_local_image_refs(text, tmp_path) == text

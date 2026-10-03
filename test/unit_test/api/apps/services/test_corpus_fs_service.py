@@ -1,4 +1,6 @@
+import base64
 import hashlib
+import json
 from contextlib import nullcontext
 from types import SimpleNamespace
 
@@ -967,3 +969,122 @@ def test_is_unavailable_io_maps_closed_sockets_not_missing_files():
     assert is_unavailable_io(OSError(9, "Bad file descriptor")) is True
     assert is_unavailable_io(FileNotFoundError("missing object")) is False
     assert is_unavailable_io(OSError("storage unavailable")) is False
+
+
+class _InlineStorage:
+    def __init__(self, objects=None):
+        self.objects = dict(objects or {})
+        self.puts = []
+
+    def put(self, dataset_id, object_name, data):
+        self.puts.append((dataset_id, object_name))
+        self.objects[(dataset_id, object_name)] = data
+
+    def get(self, dataset_id, object_name):
+        return self.objects.get((dataset_id, object_name))
+
+    def obj_exist(self, dataset_id, object_name):
+        return (dataset_id, object_name) in self.objects
+
+
+def test_parsed_content_materializes_inline_images_with_consistent_offsets(monkeypatch):
+    payload = b"\x89PNG-inline"
+    encoded = base64.b64encode(payload).decode("ascii")
+
+    class DocStore:
+        @staticmethod
+        def search(*_args, **_kwargs):
+            return object()
+
+        @staticmethod
+        def get_fields(*_args, **_kwargs):
+            return {"chunk-1": {"content_with_weight": f'前<img src="data:image/png;base64,{encoded}">后'}}
+
+    storage = _InlineStorage()
+    monkeypatch.setattr(settings, "docStoreConn", DocStore())
+    monkeypatch.setattr(settings, "STORAGE_IMPL", storage)
+    service = CorpusFsService("tenant-1", "dataset-1", "actor")
+    monkeypatch.setattr(service, "_document_fs_path", lambda _document_id: "/notes.md")
+
+    content, source, _images, blocks = service.content_text({"id": "document-1", "run": TaskStatus.DONE.value, "type": "pdf"})
+
+    object_name = f"inline/{hashlib.sha256(payload).hexdigest()}.png"
+    image_id = f"dataset-1-{object_name}"
+    assert source == "parsed_chunks"
+    assert "data:image" not in content
+    assert f"[[image:dataset/dataset-1/notes.md|image_ref={service._image_ref('document-1', image_id)}]]" in content
+    assert storage.objects[("dataset-1", object_name)] == payload
+    block = blocks[0]
+    assert content.encode("utf-8")[block["start"] : block["end"]] == block["content"].encode("utf-8")
+
+
+def test_chunk_citation_preview_materializes_before_the_byte_slice(monkeypatch):
+    payload = b"preview-bytes"
+    encoded = base64.b64encode(payload).decode("ascii")
+    image_tag = f'<img src="data:image/png;base64,{encoded}">'
+    chunk_text = "X" + image_tag + "Y"
+    source = b"stored-source-object"
+    storage = _InlineStorage({("bucket", "note.txt"): source})
+
+    class DocStore:
+        @staticmethod
+        def search(*_args, **_kwargs):
+            return object()
+
+        @staticmethod
+        def get_fields(*_args, **_kwargs):
+            return {"chunk-1": {"content_with_weight": chunk_text}}
+
+    service = CorpusFsService("tenant-1", "dataset-1", "actor")
+    document = {"id": "doc-1", "kb_id": "dataset-1", "status": "1", "type": "txt"}
+    monkeypatch.setattr(service, "_documents", lambda: [document])
+    monkeypatch.setattr(service, "_projection", lambda: ({"/note.txt": {"kind": "file", "path": "/note.txt", "_document_id": "doc-1"}}, {}))
+    monkeypatch.setattr("api.apps.services.corpus_fs_service.File2DocumentService.get_storage_address", classmethod(lambda _cls, **_kwargs: ("bucket", "note.txt")))
+    monkeypatch.setattr(settings, "docStoreConn", DocStore())
+    monkeypatch.setattr(settings, "STORAGE_IMPL", storage)
+
+    object_name = f"inline/{hashlib.sha256(payload).hexdigest()}.png"
+    image_id = f"dataset-1-{object_name}"
+    materialized = f"X[[image:dataset/dataset-1/note.txt|image_ref={service._image_ref('doc-1', image_id)}]]Y"
+    target = {
+        "path": "/note.txt",
+        "content_revision": 2,
+        "projection_revision": None,
+        "page": None,
+        "block_ref": service._chunk_ref("doc-1", "chunk-1"),
+        # 区间由 citation_target 在 content_text 的产物（已资产化）上算出。
+        "range": {"start": 0, "end": len(materialized.encode())},
+        "source_hash": hashlib.sha256(source).hexdigest(),
+    }
+
+    preview = service.citation_preview("doc-1", target)
+
+    assert preview["content"] == materialized
+
+
+def test_image_data_resolves_inline_manifest_assets(monkeypatch):
+    payload = b"inline-asset-bytes"
+    object_name = f"inline/{hashlib.sha256(payload).hexdigest()}.png"
+    image_id = f"dataset-1-{object_name}"
+    manifest_name = "inline/document-1.index.json"
+
+    class DocStore:
+        @staticmethod
+        def search(*_args, **_kwargs):
+            return object()
+
+        @staticmethod
+        def get_fields(*_args, **_kwargs):
+            return {}
+
+    storage = _InlineStorage(
+        {
+            ("dataset-1", manifest_name): json.dumps({"image_ids": [image_id]}).encode("utf-8"),
+            ("dataset-1", object_name): payload,
+        }
+    )
+    monkeypatch.setattr(settings, "docStoreConn", DocStore())
+    monkeypatch.setattr(settings, "STORAGE_IMPL", storage)
+    service = CorpusFsService("tenant-1", "dataset-1", "actor")
+
+    assert service.image_data({"id": "document-1"}, service._image_ref("document-1", image_id)) == (payload, object_name)

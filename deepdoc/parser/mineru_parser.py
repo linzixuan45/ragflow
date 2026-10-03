@@ -13,6 +13,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 #
+import base64
 import hashlib
 import html
 import json
@@ -121,6 +122,114 @@ def _cached_vlm_description(image_path: str, vision_model, prompt: str, generate
 LOCK_KEY_pdfplumber = "global_shared_lock_pdfplumber"
 if LOCK_KEY_pdfplumber not in sys.modules:
     sys.modules[LOCK_KEY_pdfplumber] = threading.Lock()
+
+# MinerU 的表格体里，单元格图片只以相对路径 `images/<name>.<ext>` 出现（形如
+# `<img src="images/<sha256>.png"/>`）。这些字节只存在于解析输出目录中，相对引用
+# 在浏览器侧必然 404；内联成 data URL 后，下游（知识库引用预览、工作台、导出）
+# 无需额外取图通道即可显示。`md_content` 侧的同类做法见 Go 路径的
+# `inlineMinerUImages`。
+_LOCAL_TABLE_IMAGE_RE = re.compile(r'(?:src\s*=\s*["\']|!\[[^\]]*\]\(\s*)(?P<path>images/[^"\'\s)]+)(?:["\']|\))')
+
+# 单张图的内联上限：超过它就先用压缩阶梯（见 _INLINE_IMAGE_LADDER）压到上限以内再内联，
+# 保证表格里的每张图最终都能被引用。
+_INLINE_IMAGE_MAX_BYTES = 32 * 1024 * 1024
+
+# 一条 table_body 已内联到这个体积之后，剩下的图一律先压缩再内联——不是丢弃，避免个别
+# 多图表把 chunk 撑到 ES/嵌入都吃不下。
+_TABLE_BODY_IMAGE_COMPRESS_AFTER_BYTES = 32 * 1024 * 1024
+
+# 压缩阶梯：最长边降采样 + JPEG 质量，逐级收紧。放得下的图不走这里，不损失画质。
+_INLINE_IMAGE_LADDER = ((1600, 75), (1280, 68), (1024, 62), (800, 55), (640, 48), (480, 40), (320, 32))
+
+
+def _compressed_image_bytes(path: Path) -> bytes | None:
+    """Downscale and re-encode an image so it fits ``_INLINE_IMAGE_MAX_BYTES``.
+
+    Walks ``_INLINE_IMAGE_LADDER`` from gentle to aggressive and returns the first
+    result within the limit (or the smallest attempt, so the image is still
+    referenced). Returns ``None`` when the file is not a readable image, in which
+    case the caller keeps the original reference.
+    """
+    try:
+        with Image.open(path) as source:
+            source.load()
+            rgba = source.convert("RGBA")
+            canvas = Image.new("RGB", rgba.size, (255, 255, 255))
+            canvas.paste(rgba, mask=rgba.split()[-1])
+    except (OSError, ValueError, MemoryError, Image.DecompressionBombError):
+        return None
+
+    smallest: bytes | None = None
+    for max_edge, quality in _INLINE_IMAGE_LADDER:
+        try:
+            image = canvas.copy()
+            image.thumbnail((max_edge, max_edge))
+            buffer = BytesIO()
+            image.save(buffer, format="JPEG", quality=quality, optimize=True)
+        except (OSError, ValueError, MemoryError):
+            continue
+        encoded = buffer.getvalue()
+        if len(encoded) <= _INLINE_IMAGE_MAX_BYTES:
+            return encoded
+        if smallest is None or len(encoded) < len(smallest):
+            smallest = encoded
+    return smallest
+
+
+def _inline_local_image_refs(text: str, base_dir: Path) -> str:
+    """Replace ``images/<name>`` references with data URLs read from ``base_dir``.
+
+    Every reference the output directory can satisfy is inlined: images within
+    ``_INLINE_IMAGE_MAX_BYTES`` keep their original bytes, larger ones — and, once a
+    table already carries ``_TABLE_BODY_IMAGE_COMPRESS_AFTER_BYTES``, the remaining
+    ones as well — are downscaled instead of dropped, so a big table never ends up
+    with missing pictures. A reference whose file is missing or escapes ``base_dir``
+    keeps its original relative form. Idempotent: an already-inlined document
+    carries no bare ``images/`` reference.
+    """
+    matches = list(_LOCAL_TABLE_IMAGE_RE.finditer(text))
+    if not matches:
+        return text
+
+    base = base_dir.resolve()
+    parts: list[str] = []
+    cursor = 0
+    encoded_total = 0
+    for match in matches:
+        candidate = (base_dir / match.group("path")).resolve()
+        if base not in candidate.parents or not candidate.is_file():
+            continue
+        try:
+            size = candidate.stat().st_size
+        except OSError:
+            continue
+
+        if size > _INLINE_IMAGE_MAX_BYTES or encoded_total > _TABLE_BODY_IMAGE_COMPRESS_AFTER_BYTES:
+            compressed = _compressed_image_bytes(candidate)
+            if compressed is not None:
+                encoded = base64.b64encode(compressed).decode("ascii")
+                encoded_total += len(encoded)
+                parts.append(text[cursor : match.start("path")])
+                parts.append(f"data:image/jpeg;base64,{encoded}")
+                cursor = match.end("path")
+                continue
+            if size > _INLINE_IMAGE_MAX_BYTES:
+                continue
+
+        try:
+            payload = candidate.read_bytes()
+        except OSError:
+            continue
+        encoded = base64.b64encode(payload).decode("ascii")
+        encoded_total += len(encoded)
+        parts.append(text[cursor : match.start("path")])
+        parts.append(f"data:{mineru_mime_type(candidate.name)};base64,{encoded}")
+        cursor = match.end("path")
+
+    if not parts:
+        return text
+    parts.append(text[cursor:])
+    return "".join(parts)
 
 
 class MinerUContentType(StrEnum):
@@ -1227,9 +1336,14 @@ class MinerUParser(RAGFlowPdfParser):
             data = json.load(f)
 
         for item in data:
+            if not isinstance(item, dict):
+                continue
             for key in ("img_path", "table_img_path", "equation_img_path"):
                 if key in item and item[key]:
                     item[key] = str((subdir / item[key]).resolve())
+            table_body = item.get("table_body")
+            if isinstance(table_body, str):
+                item["table_body"] = _inline_local_image_refs(table_body, subdir)
         return data
 
     @staticmethod

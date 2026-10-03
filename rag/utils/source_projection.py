@@ -27,7 +27,7 @@ def _offset_positions(positions, page_offset):
     ]
 
 
-def source_projection_blocks(sections, tables, *, section_page_offset=0):
+def source_projection_blocks(sections, tables, *, section_page_offset=0, section_images=None):
     blocks = []
     for source_index, section in enumerate(sections or []):
         if isinstance(section, dict):
@@ -53,6 +53,15 @@ def source_projection_blocks(sections, tables, *, section_page_offset=0):
                 block["positions"] = _offset_positions(positions or [], section_page_offset)
             block["source_ref"] = f"section:{source_index}"
             blocks.append(block)
+            image = section_images[source_index] if section_images and source_index < len(section_images) else None
+            if image is not None:
+                blocks.append({
+                    "text": "解析图片",
+                    "layout_type": "image",
+                    "positions": block.get("positions", []),
+                    "source_ref": f"section-image:{source_index}",
+                    "image": image,
+                })
     for source_index, table in enumerate(tables or []):
         if not isinstance(table, (tuple, list)) or len(table) != 2:
             continue

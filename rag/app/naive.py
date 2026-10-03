@@ -1034,11 +1034,6 @@ def chunk(filename, binary=None, from_page=0, to_page=MAXIMUM_PAGE_NUMBER, lang=
         if not sections and not tables:
             return []
 
-        source_projection_blocks = build_source_projection_blocks(
-            projection_sections,
-            tables,
-            section_page_offset=from_page,
-        )
         if table_context_size or image_context_size:
             tables = append_context2table_image4pdf(sections, tables, image_context_size)
         if suffix != "pdf":
@@ -1052,6 +1047,12 @@ def chunk(filename, binary=None, from_page=0, to_page=MAXIMUM_PAGE_NUMBER, lang=
                 tables,
                 getattr(pdf_parser, "source_projection_media_indexes", None),
             )
+        source_projection_blocks = build_source_projection_blocks(
+            projection_sections,
+            tables,
+            section_page_offset=from_page,
+            section_images=section_images,
+        )
         if int(parser_config.get("chunk_token_num", 0)) <= 0:
             parser_config["chunk_token_num"] = 0
         res = tokenize_table(tables, doc, is_english, language=lang)

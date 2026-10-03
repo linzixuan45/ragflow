@@ -66,6 +66,7 @@ services:
       - ../api/apps/services/corpus_cursor_service.py:/ragflow/api/apps/services/corpus_cursor_service.py:ro
       - ../api/apps/services/corpus_delegation_service.py:/ragflow/api/apps/services/corpus_delegation_service.py:ro
       - ../api/apps/services/corpus_fs_service.py:/ragflow/api/apps/services/corpus_fs_service.py:ro
+      - ../api/apps/services/inline_image_assets.py:/ragflow/api/apps/services/inline_image_assets.py:ro
       - ../api/apps/services/corpus_tool_service.py:/ragflow/api/apps/services/corpus_tool_service.py:ro
       - ../api/apps/services/corpus_recall_service.py:/ragflow/api/apps/services/corpus_recall_service.py:ro
       - ../api/apps/services/document_markdown_service.py:/ragflow/api/apps/services/document_markdown_service.py:ro

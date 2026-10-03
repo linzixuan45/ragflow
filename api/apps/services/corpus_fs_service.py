@@ -19,6 +19,7 @@ from api.apps.services.corpus_path_service import AmbiguousPathError, CorpusPath
 from api.apps.services.corpus_search_diagnostics import stage
 from api.apps.services.corpus_secret_service import corpus_secret
 from api.apps.services.document_markdown_service import DocumentMarkdownService, MarkdownVersionConflict, MarkdownVersionNotFound
+from api.apps.services.inline_image_assets import load_manifest, materialize_inline_images
 from api.apps.services.source_projection_service import SourceProjectionService
 from api.common.check_team_permission import check_file_team_permission, check_kb_team_permission
 from api.db import FileType
@@ -816,6 +817,25 @@ class CorpusFsService:
             return (2, order, 0, 0, chunk_id)
         return (3, 0, 0, 0, chunk_id)
 
+    def _materialize_inline_images(self, document: dict, text: str, *, fs_path: str | None = None) -> str:
+        """Swap chunk data URLs for corpus image placeholders; best-effort, never raises."""
+        if fs_path is None:
+            try:
+                fs_path = self._document_fs_path(document["id"])
+            except Exception:  # 契约：资产化失败一律退化为原样返回，不因它破坏读路径
+                return text
+        materialized, _ = materialize_inline_images(
+            text,
+            dataset_id=self.dataset_id,
+            document_id=document["id"],
+            fs_path=fs_path,
+            image_ref_of=lambda image_id: self._image_ref(document["id"], image_id),
+            put=lambda bucket, object_name, data: settings.STORAGE_IMPL.put(bucket, object_name, data),
+            exists=lambda bucket, object_name: settings.STORAGE_IMPL.obj_exist(bucket, object_name),
+            get=lambda bucket, object_name: settings.STORAGE_IMPL.get(bucket, object_name),
+        )
+        return materialized
+
     def content_text(
         self,
         document: dict,
@@ -872,6 +892,13 @@ class CorpusFsService:
                 pass
         fields = self._chunk_fields(document["id"])
         chunks = sorted(fields.items(), key=lambda item: self._chunk_position_key(*item))
+        # 只有确实存在内联图时才解析 fs 路径：该解析要构建一次投影，按 chunk 反复做会成倍放大读路径开销。
+        inline_fs_path: str | None = None
+        if any("data:image" in (chunk.get("content_with_weight") or "") for _, chunk in chunks):
+            try:
+                inline_fs_path = self._document_fs_path(document["id"])
+            except Exception:  # 同上：拿不到路径就退回原始正文，不影响读取
+                inline_fs_path = None
         content_parts: list[str] = []
         images: list[dict] = []
         blocks: list[dict] = []
@@ -879,6 +906,9 @@ class CorpusFsService:
         for index, (chunk_id, chunk) in enumerate(chunks):
             prefix = "\n\n" if index else ""
             chunk_content = chunk.get("content_with_weight") or ""
+            # 偏移必须基于替换后的文本，否则分块游标会与返回正文错位。
+            if inline_fs_path is not None and "data:image" in chunk_content:
+                chunk_content = self._materialize_inline_images(document, chunk_content, fs_path=inline_fs_path)
             content_part = prefix + chunk_content
             start = offset + len(prefix.encode("utf-8"))
             content_parts.append(content_part)
@@ -1015,6 +1045,10 @@ class CorpusFsService:
             "source_hash": manifest["source_sha256"],
         }
 
+    def _document_fs_path(self, document_id: str) -> str:
+        """Filesystem path of a document, resolved through the citation projection mapping."""
+        return self.authorize_citation(document_id)[1]["path"]
+
     def authorize_citation(self, document_id: str) -> tuple[dict, dict]:
         documents = {document["id"]: document for document in self._documents()}
         document = documents.get(document_id)
@@ -1029,6 +1063,7 @@ class CorpusFsService:
     def citation_preview(self, document_id: str, target: dict) -> dict:
         document, entry = self.authorize_citation(document_id)
         projection_revision = target.get("projection_revision")
+        materialize_inline = False
         if projection_revision is not None:
             projection = SourceProjectionService.revision(document_id, projection_revision, target["source_hash"])
             if projection is None:
@@ -1067,6 +1102,10 @@ class CorpusFsService:
                 if chunk is None:
                     raise NotFoundError("citation block not found")
                 content = chunk.get("content_with_weight") or ""
+                # 引用区间是在 content_text 的产物（已资产化）上算出的，故这里也必须先替换再切片，
+                # 否则会在原始文本上切到半个 data URL、既匹配不上正则、也把区间算错。
+                if "data:image" in content:
+                    content = self._materialize_inline_images(document, content, fs_path=entry["path"])
             blocks = [{"block_ref": target.get("block_ref"), "page": target.get("page"), "content": content}]
 
         byte_range = target.get("range")
@@ -1122,6 +1161,23 @@ class CorpusFsService:
                     if data:
                         return data, object_name
                 break
+        manifest_ids = load_manifest(
+            dataset_id=self.dataset_id,
+            document_id=document["id"],
+            get=lambda bucket, object_name: settings.STORAGE_IMPL.get(bucket, object_name),
+        )
+        prefix = f"{self.dataset_id}-"
+        for image_id in manifest_ids:
+            if not hmac.compare_digest(image_ref, self._image_ref(document["id"], image_id)):
+                continue
+            if not image_id.startswith(prefix):
+                continue
+            object_name = image_id[len(prefix) :]
+            if not object_name.startswith("inline/"):
+                continue
+            data = settings.STORAGE_IMPL.get(self.dataset_id, object_name)
+            if data:
+                return data, object_name
         raise ImageNotFoundError("image not found")
 
     @staticmethod
