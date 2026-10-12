@@ -296,10 +296,11 @@ def _body_paths(payload: dict, name: str = "paths", maximum: int = 100) -> list[
 def tree(tenant_id: str, dataset_id: str):
     try:
         limit = int(request.args.get("limit", 50))
+        recursive = _query_bool("recursive", False)
         service = _service(tenant_id, dataset_id)
         path = request.args.get("path", "/")
-        offset, context = _page_offset(service, "tree", {"path": path, "limit": limit}, request.args.get("cursor"))
-        items, more = service.tree(path, limit, offset)
+        offset, context = _page_offset(service, "tree", {"path": path, "limit": limit, "recursive": recursive}, request.args.get("cursor"))
+        items, more = service.tree(path, limit, offset, recursive=recursive)
         return _success(service, {"items": items, "next_cursor": _next_page_cursor(context, offset + len(items), more)})
     except (ValueError, CorpusFsError, CorpusPathError, CorpusCursorError) as error:
         return _error(error)

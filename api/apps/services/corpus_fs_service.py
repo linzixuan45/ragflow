@@ -555,14 +555,25 @@ class CorpusFsService:
     def search_vector_weight(mode: str, configured_weight: float) -> float:
         return 1.0 if mode == "semantic" else configured_weight
 
-    def tree(self, path: str, limit: int, offset: int = 0) -> tuple[list[dict], bool]:
+    def tree(self, path: str, limit: int, offset: int = 0, *, recursive: bool = False) -> tuple[list[dict], bool]:
         path = CorpusPathResolver.normalize(path)
         if limit < 1 or limit > 200 or offset < 0:
             raise CorpusFsError("invalid pagination")
         entries, children = self._projection()
         if path not in entries or entries[path]["kind"] != "directory":
             raise NotFoundError("path not found")
-        values = sorted(children.get(path, []), key=lambda item: (item["kind"] != "directory", item["name"], item["path"]))
+        if recursive:
+            # Whole-scope flat listing: files only, and every ``path`` is the real
+            # Corpus FS path (folder structure comes from file.parent_id, never
+            # from document metadata), so callers can hand it straight back to
+            # path-based endpoints such as parse retry.
+            prefix = path.rstrip("/") + "/"
+            values = sorted(
+                (item for item_path, item in entries.items() if item["kind"] == "file" and item_path.startswith(prefix)),
+                key=lambda item: item["path"],
+            )
+        else:
+            values = sorted(children.get(path, []), key=lambda item: (item["kind"] != "directory", item["name"], item["path"]))
         for value in values:
             self.registry.put(self.tenant_id, self.dataset_id, self.actor_digest, value["path"], {key: value[key] for key in ("_document_id", "_file_id", "_content_hash") if key in value})
         return [self.public_entry(value, len(children.get(value["path"], []))) for value in values[offset : offset + limit]], offset + limit < len(values)

@@ -206,6 +206,71 @@ def test_projection_document_selection_prefers_explicit_file_active_pointer():
     assert CorpusFsService._select_active_document({}, linked) == {"id": "old-document"}
 
 
+def _tree_projection():
+    entries = {
+        "/": {"kind": "directory", "name": "/", "path": "/", "_file_id": "root"},
+        "/docs": {"kind": "directory", "name": "docs", "path": "/docs", "_file_id": "folder-docs"},
+        "/docs/a.pdf": {"kind": "file", "name": "a.pdf", "path": "/docs/a.pdf", "_document_id": "doc-a", "parse_status": "FAILED"},
+        "/docs/nested": {"kind": "directory", "name": "nested", "path": "/docs/nested", "_file_id": "folder-nested"},
+        "/docs/nested/b.pdf": {"kind": "file", "name": "b.pdf", "path": "/docs/nested/b.pdf", "_document_id": "doc-b", "parse_status": "DONE"},
+        "/top.md": {"kind": "file", "name": "top.md", "path": "/top.md", "_document_id": "doc-top", "parse_status": "RUNNING"},
+    }
+    children = {
+        "/": [entries["/docs"], entries["/top.md"]],
+        "/docs": [entries["/docs/a.pdf"], entries["/docs/nested"]],
+        "/docs/nested": [entries["/docs/nested/b.pdf"]],
+    }
+    return entries, children
+
+
+def _tree_service(monkeypatch):
+    service = CorpusFsService("tenant-1", "dataset-1", "actor")
+    monkeypatch.setattr(service, "_projection", _tree_projection)
+    monkeypatch.setattr(service, "registry", SimpleNamespace(put=lambda *args, **kwargs: None))
+    return service
+
+
+def test_tree_recursive_lists_only_files_under_the_scope(monkeypatch):
+    service = _tree_service(monkeypatch)
+
+    items, more = service.tree("/", 50, 0, recursive=True)
+
+    assert [item["path"] for item in items] == ["/docs/a.pdf", "/docs/nested/b.pdf", "/top.md"]
+    assert all(item["kind"] == "file" for item in items)
+    assert more is False
+
+
+def test_tree_recursive_scopes_to_the_requested_subdirectory(monkeypatch):
+    service = _tree_service(monkeypatch)
+
+    items, more = service.tree("/docs", 50, 0, recursive=True)
+
+    assert [item["path"] for item in items] == ["/docs/a.pdf", "/docs/nested/b.pdf"]
+    assert more is False
+
+
+def test_tree_recursive_paginates_and_reports_more(monkeypatch):
+    service = _tree_service(monkeypatch)
+
+    first, more_first = service.tree("/", 2, 0, recursive=True)
+    second, more_second = service.tree("/", 2, 2, recursive=True)
+
+    assert [item["path"] for item in first] == ["/docs/a.pdf", "/docs/nested/b.pdf"]
+    assert more_first is True
+    assert [item["path"] for item in second] == ["/top.md"]
+    assert more_second is False
+
+
+def test_tree_without_recursive_keeps_direct_children_only(monkeypatch):
+    service = _tree_service(monkeypatch)
+
+    items, more = service.tree("/", 50, 0)
+
+    assert [item["path"] for item in items] == ["/docs", "/top.md"]
+    assert items[0]["child_count"] == 2
+    assert more is False
+
+
 def test_dataset_file_root_is_resolved_without_mutating_file_hierarchy(monkeypatch):
     service = CorpusFsService("tenant-1", "dataset-1", "actor")
     monkeypatch.setattr(FileService, "_find_root_folder", classmethod(lambda _cls, _tenant_id: {"id": "tenant-root"}))
