@@ -1014,6 +1014,56 @@ def test_middle_json_to_content_list_from_v1_fixture(monkeypatch):
             assert all(0 <= value <= 1000 for value in item["bbox"])
 
 
+def test_middle_json_code_body_with_inline_spans_stays_text(monkeypatch):
+    """MinerU 4.x 的 code/algorithm 实体在真实输出里是 inline span 列表。
+
+    原样透传会在 ``_transfer_to_sections`` 的 ``code_body + caption`` 处抛
+    ``TypeError: can only concatenate list (not "str") to list``，把整篇文档判为
+    解析失败（progress_msg 里就是这句）。
+    """
+    module = _load_mineru_parser(monkeypatch)
+    middle_json = {
+        "pages": [
+            {
+                "page_idx": 12,
+                "blocks": [
+                    {
+                        "type": "code",
+                        "index": 0,
+                        "bbox": [0.1, 0.2, 0.9, 0.4],
+                        "content": [
+                            {
+                                "type": "algorithm_body",
+                                "index": 0,
+                                "bbox": [0.1, 0.2, 0.9, 0.4],
+                                "content": [
+                                    {"type": "text", "content": "sort("},
+                                    {"type": "text", "content": "list)"},
+                                ],
+                            },
+                            {
+                                "type": "code_caption",
+                                "index": 1,
+                                "content": [{"type": "text", "content": "Algorithm 1"}],
+                            },
+                        ],
+                    },
+                ],
+            }
+        ]
+    }
+
+    items = module.middle_json_to_content_list(middle_json)
+
+    assert items[0]["type"] == "code"
+    assert items[0]["code_body"] == "sort(list)"
+
+    parser = module.MinerUParser()
+    sections = parser._transfer_to_sections(items, parse_method="raw")
+
+    assert sections and "sort(list)" in sections[0][0]
+
+
 def test_middle_json_to_content_list_visuals_lists_and_fallbacks(monkeypatch):
     module = _load_mineru_parser(monkeypatch)
     middle_json = {

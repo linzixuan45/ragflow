@@ -491,6 +491,13 @@ def _render_visual_item(block: dict, block_type: str) -> dict:
     item[f"{annotation_prefix}_caption"] = _annotation_texts(block, frozenset({f"{annotation_prefix}_caption"}))
     item[f"{annotation_prefix}_footnote"] = _annotation_texts(block, frozenset({f"{annotation_prefix}_footnote"}))
     body_content = body.get("content") or ""
+    if isinstance(body_content, list):
+        # Bodies may carry inline spans instead of a plain string (code/algorithm
+        # blocks do this in real MinerU 4.x output). Every consumer — section
+        # assembly, table text, image semantics — treats the body as text, and a
+        # list leaking through raises TypeError while chunking and fails the
+        # whole document.
+        body_content = _render_inline(body_content)
     if block_type == "table":
         if body_content:
             item["table_body"] = body_content
