@@ -123,6 +123,59 @@ def test_dataset_context_skips_the_cache_when_it_is_disabled(monkeypatch):
     assert len(loads) == 2
 
 
+def test_discard_dataset_drops_every_entry_of_that_dataset():
+    cache = DatasetContextCache(ttl_seconds=60, max_entries=8)
+    cache.put(("tenant-1", "dataset-1", 1), "a")
+    cache.put(("tenant-2", "dataset-1", 7), "b")
+    cache.put(("tenant-1", "dataset-2", 1), "c")
+
+    cache.discard_dataset("dataset-1")
+
+    assert cache.get(("tenant-1", "dataset-1", 1)) is None
+    assert cache.get(("tenant-2", "dataset-1", 7)) is None
+    assert cache.get(("tenant-1", "dataset-2", 1)) == "c"
+
+
+def test_creating_a_document_discards_the_cached_context(monkeypatch):
+    """The plain upload API inserts a document without moving the revision.
+
+    ``content_revision`` only moves for Corpus FS mutations, so a document
+    added through ``POST /files`` or RAGFlow's own upload API would otherwise
+    stay invisible to the projection until the TTL expired.
+    """
+    from api.db.services.document_service import DocumentService
+
+    service = _service()
+    loads: list[int] = []
+    rows = [{"id": "doc-1", "status": "1"}]
+
+    def document_rows():
+        loads.append(1)
+        return [dict(row) for row in rows]
+
+    monkeypatch.setattr(service, "_document_rows", document_rows)
+    monkeypatch.setattr(service, "_dataset_tree", lambda _docs, _dataset: ({"id": "root"}, {}, []))
+    dataset = SimpleNamespace(content_revision=7)
+
+    service.dataset_context(dataset)
+    service.dataset_context(dataset)
+
+    assert len(loads) == 1
+
+    monkeypatch.setattr(DocumentService, "save", classmethod(lambda _cls, **_doc: True))
+    monkeypatch.setattr(
+        "api.db.services.document_service.KnowledgebaseService.atomic_increase_doc_num_by_id",
+        classmethod(lambda _cls, _kb_id: 1),
+    )
+    rows.append({"id": "doc-2", "status": "1"})
+    DocumentService.insert.__func__.__wrapped__(DocumentService, {"id": "doc-2", "kb_id": "dataset-1"})
+
+    docs, _files, _links, _root = service.dataset_context(dataset)
+
+    assert len(loads) == 2
+    assert set(docs) == {"doc-1", "doc-2"}
+
+
 def test_cache_keys_are_scoped_to_the_calling_tenant(monkeypatch):
     service_a = CorpusFsService("tenant-1", "dataset-1", "actor")
     service_b = CorpusFsService("tenant-2", "dataset-1", "actor")

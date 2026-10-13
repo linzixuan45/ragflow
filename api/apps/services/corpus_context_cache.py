@@ -72,6 +72,18 @@ class DatasetContextCache:
                 self._entries.popitem(last=False)
                 self.evictions += 1
 
+    def discard_dataset(self, dataset_id: str) -> None:
+        """Drop every entry for one dataset, whatever the tenant or revision.
+
+        Creating a document inserts a row the projection reads, but only Corpus
+        FS mutations move ``content_revision`` — a document added through the
+        plain upload API would otherwise stay invisible until the TTL expired.
+        """
+        with self._lock:
+            stale = [key for key in self._entries if isinstance(key, tuple) and len(key) > 1 and key[1] == dataset_id]
+            for key in stale:
+                del self._entries[key]
+
     def clear(self) -> None:
         with self._lock:
             self._entries.clear()

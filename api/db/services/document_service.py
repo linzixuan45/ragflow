@@ -464,6 +464,13 @@ class DocumentService(CommonService):
             raise RuntimeError("Database error (Document)!")
         if not KnowledgebaseService.atomic_increase_doc_num_by_id(doc["kb_id"]):
             raise RuntimeError("Database error (Knowledgebase)!")
+        # A new document changes what the Corpus FS projection reads, but this
+        # path never moves ``content_revision``, so drop the dataset's cached
+        # projection rather than let it stand until the TTL expires. Imported
+        # here because api.db must not import api.apps at module scope.
+        from api.apps.services.corpus_context_cache import dataset_context_cache
+
+        dataset_context_cache.discard_dataset(doc["kb_id"])
         return Document(**doc)
 
     @classmethod
