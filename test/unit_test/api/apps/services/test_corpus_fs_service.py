@@ -18,6 +18,7 @@ from api.apps.services.corpus_fs_service import (
     VersionNotFoundError,
     is_unavailable_io,
 )
+from api.apps.services.corpus_context_cache import dataset_context_cache
 from api.apps.services.document_markdown_service import DocumentMarkdownService, MarkdownVersionConflict, MarkdownVersionNotFound
 from api.db import FileType
 from api.apps.services.source_projection_service import SourceProjectionService
@@ -325,6 +326,49 @@ def test_content_mutation_increments_revision_only_after_success(monkeypatch):
         pass
     with pytest.raises(RevisionConflictError), service.content_mutation(6):
         pass
+
+
+def test_content_mutation_reads_the_rows_it_wrote_despite_the_context_cache(monkeypatch):
+    """A mutation must see its own writes.
+
+    ``dataset_context`` is cached by ``content_revision``, and that counter only
+    moves once the mutation commits. A snapshot taken before the mutation is
+    therefore still keyed as current from inside it, so serving the cache hid
+    the rows ``FileService.upload_document`` had just inserted: the upload's
+    final read raised "uploaded document is not visible" and every Corpus FS
+    upload answered 400 INVALID_ARGUMENT.
+    """
+    dataset_context_cache.clear()
+    monkeypatch.setenv("CORPUS_CONTEXT_CACHE", "1")
+
+    service = CorpusFsService("tenant-1", "dataset-1", "actor")
+    dataset = type("Dataset", (), {"status": "1", "content_revision": 7})()
+    rows = [{"id": "doc-1", "status": "1"}]
+
+    class UpdateQuery:
+        def where(self, *_args):
+            return self
+
+        def execute(self):
+            return 1
+
+    monkeypatch.setattr(service, "_document_rows", lambda: [dict(row) for row in rows])
+    monkeypatch.setattr(service, "_dataset_tree", lambda _docs, _dataset: ({"id": "root"}, {}, []))
+    monkeypatch.setattr(service, "_dataset", lambda: dataset)
+    monkeypatch.setattr(service, "_locked_dataset", lambda: dataset, raising=False)
+    monkeypatch.setattr("api.apps.services.corpus_fs_service.DB.atomic", nullcontext, raising=False)
+    monkeypatch.setattr("api.apps.services.corpus_fs_service.Knowledgebase.update", lambda **_kwargs: UpdateQuery())
+
+    # Warm the cache with the pre-mutation snapshot under the current revision.
+    docs, _files, _links, _root = service.dataset_context(dataset)
+    assert set(docs) == {"doc-1"}
+
+    with service.content_mutation(7):
+        rows.append({"id": "doc-2", "status": "1"})
+        docs, _files, _links, _root = service.dataset_context(dataset)
+        assert set(docs) == {"doc-1", "doc-2"}
+
+    assert service._in_mutation is False
 
 
 def test_move_rejects_destination_inside_source(monkeypatch):

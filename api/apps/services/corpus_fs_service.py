@@ -125,6 +125,7 @@ class CorpusFsService:
         self.dataset_id = dataset_id
         self.actor_digest = actor_digest
         self.actor_ref = actor_ref or tenant_id
+        self._in_mutation = False
 
     def _dataset(self):
         ok, dataset = KnowledgebaseService.get_by_id(self.dataset_id)
@@ -147,7 +148,12 @@ class CorpusFsService:
         """
         revision = getattr(dataset, "content_revision", 1)
         key = (self.tenant_id, self.dataset_id, revision)
-        cached = dataset_context_cache.get(key) if cache_enabled() else None
+        # Inside a content mutation the key still points at the pre-mutation
+        # revision, so a cached snapshot would hide the rows the mutation just
+        # wrote (upload_document → uploaded_entries raised "uploaded document
+        # is not visible" and every Corpus FS upload returned 400).
+        use_cache = cache_enabled() and not self._in_mutation
+        cached = dataset_context_cache.get(key) if use_cache else None
         if cached is not None:
             return cached
         with stage("context.docs"):
@@ -155,7 +161,7 @@ class CorpusFsService:
         with stage("context.tree"):
             root, files, links = self._dataset_tree(docs, dataset)
         value = (docs, files, links, root)
-        if cache_enabled():
+        if use_cache:
             dataset_context_cache.put(key, value)
         return value
 
@@ -521,14 +527,18 @@ class CorpusFsService:
         if not isinstance(expected_revision, int) or expected_revision < 1:
             raise PreconditionRequiredError("If-Match must contain a positive content revision")
         self._dataset()
-        with DB.atomic():
-            dataset = self._locked_dataset()
-            if dataset.content_revision != expected_revision:
-                raise RevisionConflictError("content revision changed")
-            yield
-            updated = Knowledgebase.update(content_revision=expected_revision + 1).where((Knowledgebase.id == self.dataset_id) & (Knowledgebase.content_revision == expected_revision)).execute()
-            if updated != 1:
-                raise RevisionConflictError("content revision changed")
+        self._in_mutation = True
+        try:
+            with DB.atomic():
+                dataset = self._locked_dataset()
+                if dataset.content_revision != expected_revision:
+                    raise RevisionConflictError("content revision changed")
+                yield
+                updated = Knowledgebase.update(content_revision=expected_revision + 1).where((Knowledgebase.id == self.dataset_id) & (Knowledgebase.content_revision == expected_revision)).execute()
+                if updated != 1:
+                    raise RevisionConflictError("content revision changed")
+        finally:
+            self._in_mutation = False
 
     def _locked_dataset(self):
         dataset = Knowledgebase.select().where(Knowledgebase.id == self.dataset_id).for_update().first()
