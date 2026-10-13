@@ -8,6 +8,7 @@ must never be able to serve a file the current caller may not see.
 from __future__ import annotations
 
 import time
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
@@ -174,6 +175,80 @@ def test_creating_a_document_discards_the_cached_context(monkeypatch):
 
     assert len(loads) == 2
     assert set(docs) == {"doc-1", "doc-2"}
+
+
+def test_deleting_a_document_discards_the_cached_context(monkeypatch):
+    """The mirror of the case above: RAGFlow's own delete API leaves the
+    revision untouched, so the projection kept listing a removed document."""
+    from api.db.services.document_service import DocumentService
+
+    service = _service()
+    loads: list[int] = []
+    rows = [{"id": "doc-1", "status": "1"}]
+
+    def document_rows():
+        loads.append(1)
+        return [dict(row) for row in rows]
+
+    monkeypatch.setattr(service, "_document_rows", document_rows)
+    monkeypatch.setattr(service, "_dataset_tree", lambda _docs, _dataset: ({"id": "root"}, {}, []))
+    dataset = SimpleNamespace(content_revision=7)
+
+    service.dataset_context(dataset)
+    service.dataset_context(dataset)
+
+    assert len(loads) == 1
+
+    class _Row:
+        id = "doc-1"
+        kb_id = "dataset-1"
+        token_num = 0
+        chunk_num = 0
+
+    class _Select:
+        def where(self, *_args):
+            return self
+
+        def for_update(self):
+            return self
+
+        def get_or_none(self):
+            return _Row()
+
+    class _Execute:
+        def where(self, *_args):
+            return self
+
+        def execute(self):
+            return 1
+
+    monkeypatch.setattr("api.db.services.document_service.DB.atomic", nullcontext, raising=False)
+    monkeypatch.setattr(
+        DocumentService,
+        "model",
+        SimpleNamespace(
+            id=None,
+            kb_id=None,
+            token_num=None,
+            chunk_num=None,
+            select=lambda *_args: _Select(),
+            delete=lambda: _Execute(),
+        ),
+    )
+    monkeypatch.setattr("api.db.services.document_service.Knowledgebase.update", lambda **_kwargs: _Execute())
+
+    rows.clear()
+    # Two decorators wrap this one (retry_deadlock_operation over
+    # connection_context), so unwrap twice to exercise the body without MySQL.
+    raw_delete = DocumentService.delete_document_and_update_kb_counts.__func__.__wrapped__.__wrapped__
+    removed = raw_delete(DocumentService, "doc-1")
+
+    assert removed is True
+
+    docs, _files, _links, _root = service.dataset_context(dataset)
+
+    assert len(loads) == 2
+    assert set(docs) == set()
 
 
 def test_cache_keys_are_scoped_to_the_calling_tenant(monkeypatch):

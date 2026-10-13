@@ -741,6 +741,11 @@ class DocumentService(CommonService):
                 chunk_num=Knowledgebase.chunk_num - doc.chunk_num,
                 doc_num=Knowledgebase.doc_num - 1,
             ).where(Knowledgebase.id == doc.kb_id).execute()
+        # Same reason as ``insert``: this path does not move content_revision,
+        # so without this the projection keeps listing a document that is gone.
+        from api.apps.services.corpus_context_cache import dataset_context_cache
+
+        dataset_context_cache.discard_dataset(doc.kb_id)
         return True
 
     @classmethod
