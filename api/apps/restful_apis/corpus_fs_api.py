@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import logging
 import mimetypes
 import re
 import time
@@ -33,6 +34,8 @@ from api.db.services.file_service import FileService
 from api.db.services.task_service import TaskService, queue_tasks
 from api.utils.api_utils import add_tenant_id_to_kwargs, get_error_data_result, get_result
 from common.constants import TaskStatus
+
+logger = logging.getLogger(__name__)
 
 
 def _actor_digest(tenant_id: str) -> str:
@@ -65,9 +68,18 @@ def _error(error: Exception):
         response.status_code = 409
         return response
     if isinstance(error, CorpusFsError):
+        if error.code == CorpusFsError.code:
+            # The body can only carry ``error.code``, so a plain CorpusFsError
+            # reaches the caller as an opaque INVALID_ARGUMENT. Log the reason
+            # here or it never leaves the process: "uploaded document is not
+            # visible" hid behind this 400 while every Corpus FS upload failed.
+            logger.warning("corpus_fs.error code=%s status=%s type=%s detail=%s", error.code, error.status, type(error).__name__, error)
         response = get_error_data_result(message=error.code)
         response.status_code = error.status
         return response
+    # CorpusPathError and unexpected failures collapse into the same
+    # INVALID_ARGUMENT, so record what actually happened.
+    logger.warning("corpus_fs.error code=INVALID_ARGUMENT status=400 type=%s detail=%s", type(error).__name__, error)
     response = get_error_data_result(message="INVALID_ARGUMENT")
     response.status_code = 400
     return response
