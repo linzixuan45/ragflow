@@ -56,6 +56,13 @@ services:
     volumes:
       # Keep the development container on the published runtime image while
       # loading the local Corpus FS implementation for restart-safe testing.
+      #
+      # These are SINGLE-FILE bind mounts, so editing one of the files below is
+      # not enough: the mount pins the inode (replacing the file on the host
+      # leaves the container on the old bytes) and the already-imported Python
+      # module keeps running the old code even when the bytes do change. Every
+      # edit owes a restart -- run ../check_source_drift.sh to see whether one
+      # is still outstanding, and ./re_start.sh which verifies it afterwards.
       - ../web/dist:/ragflow/web/dist:ro
       - ./nginx/ragflow.conf.python:/etc/nginx/conf.d/ragflow.conf.python:ro
       - ../api/apps/restful_apis/corpus_fs_api.py:/ragflow/api/apps/restful_apis/corpus_fs_api.py:ro

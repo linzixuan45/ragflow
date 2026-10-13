@@ -78,3 +78,15 @@ echo "Deploying RAGFlow from ${SCRIPT_DIR}..."
 echo
 echo "RAGFlow service status:"
 "${COMPOSE[@]}" ps
+
+# The compose overlay mounts the checkout file-by-file, so a recreate can
+# silently come back with stale bytes. Verify rather than assume.
+RAGFLOW_CONTAINER="$("${COMPOSE[@]}" ps -q ragflow-gpu 2>/dev/null | head -1)"
+if [ -n "${RAGFLOW_CONTAINER}" ]; then
+    echo
+    echo "Verifying the container picked up the mounted sources..."
+    if ! "${SCRIPT_DIR}/check_source_drift.sh" "${RAGFLOW_CONTAINER}"; then
+        echo "The container is up but is not running the current checkout." >&2
+        exit 1
+    fi
+fi
