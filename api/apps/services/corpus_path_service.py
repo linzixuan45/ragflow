@@ -1,10 +1,7 @@
-"""Path validation and short-lived display-path mappings for Corpus FS."""
+"""Canonical path validation and display-name disambiguation for Corpus FS."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
-from threading import RLock
 from typing import Any
 
 
@@ -18,37 +15,6 @@ class InvalidPathError(CorpusPathError):
 
 class AmbiguousPathError(CorpusPathError):
     code = "AMBIGUOUS_PATH"
-
-
-@dataclass(frozen=True)
-class _RegistryItem:
-    value: dict[str, Any]
-    expires_at: datetime
-
-
-class CorpusPathRegistry:
-    """An authorization-scoped cache; callers must still verify database state."""
-
-    def __init__(self, ttl_seconds: int = 300):
-        self._ttl = timedelta(seconds=ttl_seconds)
-        self._entries: dict[tuple[str, str, str, str], _RegistryItem] = {}
-        self._lock = RLock()
-
-    def put(self, tenant_id: str, dataset_id: str, actor_digest: str, path: str, value: dict[str, Any]) -> None:
-        key = (tenant_id, dataset_id, actor_digest, CorpusPathResolver.normalize(path))
-        with self._lock:
-            self._entries[key] = _RegistryItem(dict(value), datetime.now(UTC) + self._ttl)
-
-    def get(self, tenant_id: str, dataset_id: str, actor_digest: str, path: str) -> dict[str, Any] | None:
-        key = (tenant_id, dataset_id, actor_digest, CorpusPathResolver.normalize(path))
-        with self._lock:
-            item = self._entries.get(key)
-            if item is None:
-                return None
-            if item.expires_at <= datetime.now(UTC):
-                self._entries.pop(key, None)
-                return None
-            return dict(item.value)
 
 
 class CorpusPathResolver:

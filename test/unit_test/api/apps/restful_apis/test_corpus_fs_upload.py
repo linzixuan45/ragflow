@@ -91,7 +91,7 @@ def test_upload_runs_content_mutation_off_the_event_loop_thread(monkeypatch):
 
 def test_upload_maps_closed_mysql_connection_to_unavailable(monkeypatch):
     from api.apps.restful_apis import corpus_fs_api
-    from api.apps.services.corpus_fs_service import CorpusUnavailableError
+    from api.apps.services.corpus_errors import CorpusUnavailableError
     from api.db.services.file_service import FileService
 
     captured = {}

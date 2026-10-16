@@ -1,9 +1,7 @@
 import pytest
 
-
 from api.apps.services.corpus_path_service import (
     AmbiguousPathError,
-    CorpusPathRegistry,
     CorpusPathResolver,
     InvalidPathError,
 )
@@ -15,17 +13,7 @@ def test_normalize_rejects_non_canonical_paths(path):
         CorpusPathResolver.normalize(path)
 
 
-def test_registry_resolves_only_its_authorized_scope():
-    registry = CorpusPathRegistry(ttl_seconds=60)
-    registry.put("tenant-a", "dataset-a", "actor-a", "/files/handbook.md", {"document_id": "doc-a"})
-
-    assert registry.get("tenant-a", "dataset-a", "actor-a", "/files/handbook.md") == {"document_id": "doc-a"}
-    assert registry.get("tenant-b", "dataset-a", "actor-a", "/files/handbook.md") is None
-    assert registry.get("tenant-a", "dataset-b", "actor-a", "/files/handbook.md") is None
-    assert registry.get("tenant-a", "dataset-a", "actor-b", "/files/handbook.md") is None
-
-
-def test_duplicate_display_name_requires_a_registry_alias():
+def test_duplicate_display_name_requires_a_discriminant():
     resolver = CorpusPathResolver()
     entries = [
         {"name": "policy.pdf", "document_id": "one", "updated_at": "2026-01-01"},

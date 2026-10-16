@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import errno
 import hashlib
 import hmac
 import mimetypes
@@ -12,10 +11,22 @@ from contextlib import contextmanager
 from typing import Any
 
 import xxhash
-from peewee import InterfaceError, OperationalError, ProgrammingError
+from peewee import OperationalError, ProgrammingError
 
 from api.apps.services.corpus_context_cache import cache_enabled, citation_manifest_cache, dataset_context_cache
-from api.apps.services.corpus_path_service import AmbiguousPathError, CorpusPathRegistry, CorpusPathResolver
+from api.apps.services.corpus_errors import (
+    CorpusFsError,
+    DocumentNotReadyError,
+    EntryConflictError,
+    ImageNotFoundError,
+    MoveCycleError,
+    NotFoundError,
+    PreconditionRequiredError,
+    RevisionConflictError,
+    UnsupportedContentError,
+    VersionNotFoundError,
+)
+from api.apps.services.corpus_path_service import CorpusPathResolver
 from api.apps.services.corpus_search_diagnostics import stage
 from api.apps.services.corpus_secret_service import corpus_secret
 from api.apps.services.document_markdown_service import DocumentMarkdownService, MarkdownVersionConflict, MarkdownVersionNotFound
@@ -36,90 +47,7 @@ from common.misc_utils import get_uuid
 from rag.nlp import search
 
 
-class CorpusFsError(ValueError):
-    code = "INVALID_ARGUMENT"
-    status = 400
-
-
-class NotFoundError(CorpusFsError):
-    code = "NOT_FOUND"
-    status = 404
-
-
-class VersionNotFoundError(CorpusFsError):
-    code = "VERSION_NOT_FOUND"
-    status = 404
-
-
-class DocumentNotReadyError(CorpusFsError):
-    code = "DOCUMENT_NOT_READY"
-    status = 409
-
-
-class UnsupportedContentError(CorpusFsError):
-    code = "UNSUPPORTED_CONTENT"
-    status = 415
-
-
-class ImageNotFoundError(CorpusFsError):
-    code = "IMAGE_NOT_FOUND"
-    status = 404
-
-
-class MoveCycleError(CorpusFsError):
-    code = "MOVE_CYCLE"
-    status = 422
-
-
-class EntryConflictError(CorpusFsError):
-    code = "ENTRY_CONFLICT"
-    status = 409
-
-
-class InvalidConfirmationError(CorpusFsError):
-    code = "INVALID_CONFIRMATION"
-    status = 409
-
-
-class RevisionConflictError(CorpusFsError):
-    code = "REVISION_CONFLICT"
-    status = 409
-
-
-class PreconditionRequiredError(CorpusFsError):
-    code = "PRECONDITION_REQUIRED"
-    status = 428
-
-
-class CorpusUnavailableError(CorpusFsError):
-    """Transient Corpus FS I/O, not a client argument error."""
-
-    code = "UNAVAILABLE"
-    status = 503
-
-
-_UNAVAILABLE_ERRNOS = {
-    errno.EBADF,
-    errno.EPIPE,
-    errno.ECONNRESET,
-    errno.ECONNABORTED,
-    errno.ENOTCONN,
-    errno.ETIMEDOUT,
-}
-
-
-def is_unavailable_io(error: BaseException) -> bool:
-    """True for closed/reset MySQL sockets, not missing files or permission errors."""
-    if isinstance(error, (InterfaceError, OperationalError)):
-        return True
-    if isinstance(error, FileNotFoundError):
-        return False
-    return isinstance(error, OSError) and error.errno in _UNAVAILABLE_ERRNOS
-
-
 class CorpusFsService:
-    registry = CorpusPathRegistry()
-
     def __init__(self, tenant_id: str, dataset_id: str, actor_digest: str, actor_ref: str | None = None):
         self.tenant_id = tenant_id
         self.dataset_id = dataset_id
@@ -303,12 +231,9 @@ class CorpusFsService:
 
         project(root["id"], "/")
         for path, values in list(children.items()):
-            try:
-                children[path] = CorpusPathResolver.display_names(path, values)
-                for value in children[path]:
-                    entries[value["path"]] = value
-            except AmbiguousPathError:
-                raise
+            children[path] = CorpusPathResolver.display_names(path, values)
+            for value in children[path]:
+                entries[value["path"]] = value
         return entries, children
 
     def resolve_writable(self, path: str, *, folder: bool | None = None) -> dict:
@@ -404,17 +329,17 @@ class CorpusFsService:
                 document_ids = list(dict.fromkeys([link.document_id for link in links] + DocumentMarkdownService.publication_document_ids(file_id)))
                 try:
                     source_bucket, source_object = File2DocumentService.get_storage_address(file_id=file_id)
-                except Exception:
+                except Exception:  # noqa: BLE001
                     source_bucket, source_object = None, None
                 try:
                     DocumentMarkdownService.delete_objects(file_id)
-                except Exception:
+                except Exception:  # noqa: BLE001
                     errors.append(f"failed to remove version objects for path target {file_id}")
                     continue
                 if source_bucket and source_object:
                     try:
                         settings.STORAGE_IMPL.rm(source_bucket, source_object)
-                    except Exception:
+                    except Exception:  # noqa: BLE001
                         errors.append(f"failed to remove source object for path target {file_id}; version objects already removed, metadata and File retained for retry")
                         continue
                 document_cleanup_failed = False
@@ -429,13 +354,13 @@ class CorpusFsService:
                 try:
                     DocumentMarkdownService.delete_rows(file_id)
                     File2DocumentService.delete_by_file_id(file_id)
-                except Exception:
+                except Exception:  # noqa: BLE001
                     errors.append(f"failed to remove version metadata for path target {file_id}")
                     continue
             try:
                 FileService.delete(file)
                 success_count += 1
-            except Exception:
+            except Exception:  # noqa: BLE001
                 errors.append(f"failed to remove path target {file_id}")
         return {
             "success_count": success_count,
@@ -584,8 +509,6 @@ class CorpusFsService:
             )
         else:
             values = sorted(children.get(path, []), key=lambda item: (item["kind"] != "directory", item["name"], item["path"]))
-        for value in values:
-            self.registry.put(self.tenant_id, self.dataset_id, self.actor_digest, value["path"], {key: value[key] for key in ("_document_id", "_file_id", "_content_hash") if key in value})
         return [self.public_entry(value, len(children.get(value["path"], []))) for value in values[offset : offset + limit]], offset + limit < len(values)
 
     def find(self, name: str, path: str, limit: int, offset: int = 0, *, recursive: bool = True, match: str = "contains") -> tuple[list[dict], bool]:
@@ -728,7 +651,7 @@ class CorpusFsService:
         }
 
     def markdown_current(self, path: str) -> dict:
-        entry, document = self.resolve_document(path)
+        entry, _document = self.resolve_document(path)
         result = DocumentMarkdownService.current(entry["_file_id"])
         if result is None:
             raise NotFoundError("markdown derivative not found")
@@ -737,7 +660,7 @@ class CorpusFsService:
         return {"path": entry["path"], **result}
 
     def markdown_versions(self, path: str) -> dict:
-        entry, document = self.resolve_document(path)
+        entry, _document = self.resolve_document(path)
         return {"path": entry["path"], "items": DocumentMarkdownService.versions(entry["_file_id"])}
 
     def save_markdown(self, path: str, content: str, expected_version: int) -> dict:
@@ -841,9 +764,10 @@ class CorpusFsService:
     def _materialize_inline_images(self, document: dict, text: str, *, fs_path: str | None = None) -> str:
         """Swap chunk data URLs for corpus image placeholders; best-effort, never raises."""
         if fs_path is None:
+            # 契约：资产化失败一律退化为原样返回，不因它破坏读路径。
             try:
                 fs_path = self._document_fs_path(document["id"])
-            except Exception:  # 契约：资产化失败一律退化为原样返回，不因它破坏读路径
+            except Exception:  # noqa: BLE001
                 return text
         materialized, _ = materialize_inline_images(
             text,
@@ -916,9 +840,10 @@ class CorpusFsService:
         # 只有确实存在内联图时才解析 fs 路径：该解析要构建一次投影，按 chunk 反复做会成倍放大读路径开销。
         inline_fs_path: str | None = None
         if any("data:image" in (chunk.get("content_with_weight") or "") for _, chunk in chunks):
+            # 同上：拿不到路径就退回原始正文，不影响读取。
             try:
                 inline_fs_path = self._document_fs_path(document["id"])
-            except Exception:  # 同上：拿不到路径就退回原始正文，不影响读取
+            except Exception:  # noqa: BLE001
                 inline_fs_path = None
         content_parts: list[str] = []
         images: list[dict] = []
@@ -1084,7 +1009,6 @@ class CorpusFsService:
     def citation_preview(self, document_id: str, target: dict) -> dict:
         document, entry = self.authorize_citation(document_id)
         projection_revision = target.get("projection_revision")
-        materialize_inline = False
         if projection_revision is not None:
             projection = SourceProjectionService.revision(document_id, projection_revision, target["source_hash"])
             if projection is None:

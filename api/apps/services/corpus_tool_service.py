@@ -9,7 +9,8 @@ from collections.abc import Callable
 from typing import Any
 
 from api.apps.services.corpus_citation_service import CorpusCitationService
-from api.apps.services.corpus_fs_service import CorpusFsError, CorpusFsService, is_unavailable_io
+from api.apps.services.corpus_errors import CorpusFsError, is_unavailable_io
+from api.apps.services.corpus_fs_service import CorpusFsService
 from api.apps.services.corpus_recall_service import CorpusRecallService
 from api.apps.services.corpus_search_diagnostics import stage
 from api.apps.services.corpus_secret_service import corpus_secret
@@ -31,14 +32,6 @@ def _finite_float(value: object) -> float | None:
     except (TypeError, ValueError):
         return None
     return parsed if math.isfinite(parsed) else None
-
-
-def _page(chunk: dict[str, Any]) -> int | None:
-    value = chunk.get("page")
-    if value is None:
-        pages = chunk.get("page_num_int")
-        value = pages[0] if isinstance(pages, list) and pages else pages
-    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _chunk_document_ids(chunk: dict[str, Any], by_document: dict[str, Any], *, use_kg: bool) -> list[str]:
@@ -326,10 +319,7 @@ class CorpusToolService:
                     "vector_similarity_weight": vector_similarity_weight,
                     "use_kg": bool(use_kg),
                 },
-                "content_revisions": {
-                    str(context["scope"]): context["content_revision"]
-                    for context in contexts
-                },
+                "content_revisions": {str(context["scope"]): context["content_revision"] for context in contexts},
             },
         }
 

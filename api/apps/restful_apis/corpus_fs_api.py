@@ -20,7 +20,8 @@ from api.apps import login_required
 from api.apps.services.corpus_citation_service import CorpusCitationError, CorpusCitationService
 from api.apps.services.corpus_cursor_service import CorpusCursorError, CorpusCursorService, CorpusPageCursorService
 from api.apps.services.corpus_delegation_service import CorpusDelegationError, CorpusDelegationService
-from api.apps.services.corpus_fs_service import CorpusFsError, CorpusFsService, CorpusUnavailableError, InvalidConfirmationError, PreconditionRequiredError, is_unavailable_io
+from api.apps.services.corpus_errors import CorpusFsError, CorpusUnavailableError, InvalidConfirmationError, PreconditionRequiredError, is_unavailable_io
+from api.apps.services.corpus_fs_service import CorpusFsService
 from api.apps.services.corpus_path_service import AmbiguousPathError, CorpusPathError
 from api.apps.services.corpus_search_diagnostics import collect as collect_search_diagnostics
 from api.apps.services.corpus_search_diagnostics import stage as search_stage
@@ -224,7 +225,11 @@ def _delete_snapshot(dataset_id: str, paths: list[str], target_ids: list[str]) -
 
 
 def _issue_delete_token(service: CorpusFsService, paths: list[str], target_ids: list[str]) -> str:
-    payload = json.dumps({"actor": service.actor_digest, "dataset": service.dataset_id, "paths": paths, "snapshot": _delete_snapshot(service.dataset_id, paths, target_ids), "exp": int(time.time()) + 300}, separators=(",", ":"), sort_keys=True).encode()
+    payload = json.dumps(
+        {"actor": service.actor_digest, "dataset": service.dataset_id, "paths": paths, "snapshot": _delete_snapshot(service.dataset_id, paths, target_ids), "exp": int(time.time()) + 300},
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
     return f"{payload.hex()}.{hmac.new(_delete_secret(), payload, hashlib.sha256).hexdigest()}"
 
 
@@ -236,7 +241,13 @@ def _parse_delete_token(service: CorpusFsService, paths: list[str], token: str) 
         expected = hmac.new(_delete_secret(), payload, hashlib.sha256).hexdigest()
     except Exception as exc:
         raise InvalidConfirmationError("invalid delete confirmation") from exc
-    if not hmac.compare_digest(expected, supplied) or data.get("actor") != service.actor_digest or data.get("dataset") != service.dataset_id or data.get("paths") != paths or int(data.get("exp", 0)) < int(time.time()):
+    if (
+        not hmac.compare_digest(expected, supplied)
+        or data.get("actor") != service.actor_digest
+        or data.get("dataset") != service.dataset_id
+        or data.get("paths") != paths
+        or int(data.get("exp", 0)) < int(time.time())
+    ):
         raise InvalidConfirmationError("delete confirmation expired or mismatched")
     return data
 
@@ -568,19 +579,22 @@ def content(tenant_id: str, dataset_id: str):
         for block in visible_blocks:
             target = service.citation_target(entry, document, content_revision, block=block, context=citation_context)
             block["citation_ref"] = _issue_citation(service, document, target)
-        return _success(service, {
-            "path": entry["path"],
-            "content": segment,
-            "content_source": source,
-            "ranges": [{"start": range_start, "end": range_end}],
-            "blocks": visible_blocks,
-            "images": visible_images,
-            "citation_ref": visible_blocks[0]["citation_ref"] if visible_blocks else None,
-            "next_cursor": next_cursor,
-            "projection_revision": projection_revision,
-            "block_count": len(blocks),
-            "returned_count": len(visible_blocks),
-        })
+        return _success(
+            service,
+            {
+                "path": entry["path"],
+                "content": segment,
+                "content_source": source,
+                "ranges": [{"start": range_start, "end": range_end}],
+                "blocks": visible_blocks,
+                "images": visible_images,
+                "citation_ref": visible_blocks[0]["citation_ref"] if visible_blocks else None,
+                "next_cursor": next_cursor,
+                "projection_revision": projection_revision,
+                "block_count": len(blocks),
+                "returned_count": len(visible_blocks),
+            },
+        )
     except CorpusCursorError:
         return _error(CorpusFsError("invalid cursor"))
     except (ValueError, CorpusFsError, CorpusPathError) as error:
@@ -796,7 +810,9 @@ async def grep(tenant_id: str, dataset_id: str):
             offset, page_context = _page_offset(service, "grep", grep_scope, cursor)
             by_document = service.search_scope(path)
             document_ids = list(by_document)
-            result = KeywordSearchService().search_authorized(tenant_id, [dataset_id], document_ids, query, match=match, exclude=exclude, offset=offset, limit=limit, highlight=highlight, count_only=count_only)
+            result = KeywordSearchService().search_authorized(
+                tenant_id, [dataset_id], document_ids, query, match=match, exclude=exclude, offset=offset, limit=limit, highlight=highlight, count_only=count_only
+            )
             documents = {document["id"]: document for document in service._documents()}
             content_revision = page_context["revision"]["content_revision"]
             citation_contexts = {}
@@ -809,7 +825,15 @@ async def grep(tenant_id: str, dataset_id: str):
                     if citation_context is None:
                         citation_context = citation_contexts[document["id"]] = service.citation_context(document)
                     target = service.citation_target(entry, document, content_revision, chunk=chunk, context=citation_context)
-                    items.append({"path": entry["path"], "snippet": chunk.get("content_with_weight", ""), "citation_ref": _issue_citation(service, document, target), "page": target["page"], "images": service.search_images(document["id"], chunk)})
+                    items.append(
+                        {
+                            "path": entry["path"],
+                            "snippet": chunk.get("content_with_weight", ""),
+                            "citation_ref": _issue_citation(service, document, target),
+                            "page": target["page"],
+                            "images": service.search_images(document["id"], chunk),
+                        }
+                    )
             page = KeywordSearchService.page_state(result, offset=offset, returned_count=len(items), count_only=count_only)
             return {
                 "total": page["total"],
@@ -864,10 +888,7 @@ async def semantic_search(tenant_id: str, dataset_id: str):
             mode=mode,
             use_kg=use_kg,
         )
-        result["items"] = [
-            {key: value for key, value in item.items() if key != "scope"}
-            for item in result["items"]
-        ]
+        result["items"] = [{key: value for key, value in item.items() if key != "scope"} for item in result["items"]]
         return await _commit_read(service, lambda: result)
     except (ValueError, CorpusFsError, CorpusPathError) as error:
         return _error(error)
@@ -904,11 +925,7 @@ async def corpus_search(tenant_id: str):
                     audience=CorpusDelegationService.corpus_fs_audience,
                     purpose="corpus-fs",
                 )
-                requested_dataset_ids = {
-                    scope.get("dataset_id")
-                    for scope in scopes
-                    if isinstance(scope, dict)
-                } if isinstance(scopes, list) else set()
+                requested_dataset_ids = {scope.get("dataset_id") for scope in scopes if isinstance(scope, dict)} if isinstance(scopes, list) else set()
                 if not requested_dataset_ids or not requested_dataset_ids.issubset(delegation.dataset_ids):
                     raise CorpusDelegationError("dataset is not delegated")
                 actor_ref = delegation.actor_id

@@ -120,7 +120,7 @@ ES 中只有 `*_vec` 是 `dense_vector`，没有任何 img / image 向量字段�
 ### 6.4 已知缺口（改动前自行兜底）
 
 - **外部副作用不在事务内**：mutation 体里的对象存储、索引与任务队列动作不受 `DB.atomic()` 保护。DB 回滚撤不回已上传的对象、已删除的索引或已投递的任务，且 revision 不变 → 会留下孤儿对象，且重试同一 revision 是被允许的。仓库内**没有** outbox / 补偿 / 操作状态机，删除部分成功只通过 `error_count` 反映。
-- **revision 事件覆盖不全**：`CorpusRevisionService` 提供了 `bump_content` / `bump_acl`，但当前只有 `document_api_service.py` 的 3 处调用 `bump_content`，**`bump_acl` 没有任何调用者**。移动、改名、权限变更、projection `ACTIVE`/`RETIRED` 切换都不会递增 revision → 旧 cursor、旧缓存与旧路径投影可能继续命中。
+- **revision 事件覆盖不全**：`CorpusRevisionService.bump_content` 只被 `document_api_service.py` 的 3 处调用；移动、改名、权限变更、projection `ACTIVE`/`RETIRED` 切换都不会递增 revision → 旧 cursor、旧缓存与旧路径投影可能继续命中。
 - **dataset 改名不更新目录、也不递增 revision**；历史缺失的目录结构只有明确报错（`NOT_FOUND`），没有可审计的修复入口。
 - **重解析期间旧检索结果不保证可用**：阅读投影与 Chunk 检索索引走不同发布路径。已有 ACTIVE source projection 可独立读取，Corpus FS 在文档 `RUNNING` 时优先返回它，所以**旧阅读投影在重解析期间仍可预览**（由 `test_pdf_content_keeps_active_projection_readable_during_reparse` 固化）；但 ingestion 会在重解析开始前删除旧 Chunk 索引，**没有 active/pending 代际切换机制**，旧检索结果无法保证服务到新结果成功。正确修复需要解析代际或影子索引：新一代完整成功后原子发布并清理旧代，**不能同时混用新旧 Chunk**（会产生重复与版本不一致的检索结果）。批量 retry / cancel 统一走 `POST /datasets/{dataset_id}/fs/parse` 并返回逐路径结果。
 - 尚未验收：跨租户 / 跨 dataset 授权、并发 `If-Match`、丢映射时的多页 cursor 不重复、大目录性能（1K / 10K / 100K）。

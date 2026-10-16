@@ -38,9 +38,6 @@ class CorpusCitationService:
         token = self._fernet.encrypt(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()).decode()
         return self._PREFIX + token
 
-    def resolve(self, citation_ref: str, tenant_id: str, dataset_id: str) -> dict:
-        return self.resolve_locator(citation_ref, tenant_id, dataset_id)[1]
-
     def resolve_locator(self, citation_ref: str, tenant_id: str, dataset_id: str) -> tuple[str, dict]:
         if not isinstance(citation_ref, str) or not citation_ref.startswith(self._PREFIX):
             raise CorpusCitationError("invalid citation")

@@ -2,7 +2,8 @@ import threading
 
 import pytest
 
-from api.apps.services.corpus_fs_service import CorpusFsError, CorpusFsService, NotFoundError
+from api.apps.services.corpus_errors import CorpusFsError, NotFoundError
+from api.apps.services.corpus_fs_service import CorpusFsService
 from api.apps.services.corpus_tool_service import (
     CORPUS_EVIDENCE_SCHEMA,
     CorpusSearchUnavailableError,
@@ -464,10 +465,7 @@ async def test_citation_sources_are_only_read_for_returned_items():
             reads.append(document["id"])
             return {}, None
 
-    chunks = [
-        {"chunk_id": f"c{index}", "doc_id": f"doc-{index}", "content_with_weight": f"text-{index}", "page_num_int": [1], "similarity": 0.9 - index / 100}
-        for index in range(documents)
-    ]
+    chunks = [{"chunk_id": f"c{index}", "doc_id": f"doc-{index}", "content_with_weight": f"text-{index}", "page_num_int": [1], "similarity": 0.9 - index / 100} for index in range(documents)]
     service = CorpusToolService(
         "tenant-1",
         service_factory=lambda _dataset_id: _CountingService("dataset-1", {"/": entries}),

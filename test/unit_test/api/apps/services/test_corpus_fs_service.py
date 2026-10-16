@@ -7,9 +7,9 @@ from types import SimpleNamespace
 import pytest
 import xxhash
 
-from api.apps.services.corpus_fs_service import (
+from api.apps.services.corpus_context_cache import dataset_context_cache
+from api.apps.services.corpus_errors import (
     CorpusFsError,
-    CorpusFsService,
     EntryConflictError,
     MoveCycleError,
     NotFoundError,
@@ -18,10 +18,10 @@ from api.apps.services.corpus_fs_service import (
     VersionNotFoundError,
     is_unavailable_io,
 )
-from api.apps.services.corpus_context_cache import dataset_context_cache
+from api.apps.services.corpus_fs_service import CorpusFsService
 from api.apps.services.document_markdown_service import DocumentMarkdownService, MarkdownVersionConflict, MarkdownVersionNotFound
-from api.db import FileType
 from api.apps.services.source_projection_service import SourceProjectionService
+from api.db import FileType
 from api.db.services.document_service import DocumentService
 from api.db.services.file2document_service import File2DocumentService
 from api.db.services.file_service import FileService
@@ -151,9 +151,7 @@ def test_replace_original_requires_matching_hash_and_updates_source(monkeypatch)
     with pytest.raises(RevisionConflictError):
         service.replace_original("/report.xlsx", replacement, "stale")
 
-    result = service.replace_original(
-        "/report.xlsx", replacement, current_hash
-    )
+    result = service.replace_original("/report.xlsx", replacement, current_hash)
 
     assert stored[("bucket", "report.xlsx")] == replacement
     assert result["path"] == "/report.xlsx"
@@ -201,9 +199,7 @@ def test_descendant_files_loads_one_query_per_directory_level(monkeypatch):
 def test_projection_document_selection_prefers_explicit_file_active_pointer():
     linked = [{"id": "old-document"}, {"id": "shadow-document"}]
 
-    assert CorpusFsService._select_active_document(
-        {"active_document_id": "shadow-document"}, linked
-    ) == {"id": "shadow-document"}
+    assert CorpusFsService._select_active_document({"active_document_id": "shadow-document"}, linked) == {"id": "shadow-document"}
     assert CorpusFsService._select_active_document({}, linked) == {"id": "old-document"}
 
 
@@ -227,7 +223,6 @@ def _tree_projection():
 def _tree_service(monkeypatch):
     service = CorpusFsService("tenant-1", "dataset-1", "actor")
     monkeypatch.setattr(service, "_projection", _tree_projection)
-    monkeypatch.setattr(service, "registry", SimpleNamespace(put=lambda *args, **kwargs: None))
     return service
 
 
@@ -279,7 +274,11 @@ def test_dataset_file_root_is_resolved_without_mutating_file_hierarchy(monkeypat
     monkeypatch.setattr(
         FileService,
         "query",
-        classmethod(lambda _cls, **kwargs: [SimpleNamespace(to_dict=lambda: {"id": "dataset-root", "name": "Policies"})] if kwargs == {"tenant_id": "tenant-1", "parent_id": "kb-root", "name": "Policies"} else []),
+        classmethod(
+            lambda _cls, **kwargs: (
+                [SimpleNamespace(to_dict=lambda: {"id": "dataset-root", "name": "Policies"})] if kwargs == {"tenant_id": "tenant-1", "parent_id": "kb-root", "name": "Policies"} else []
+            )
+        ),
     )
     monkeypatch.setattr(FileService, "init_knowledgebase_docs", classmethod(lambda *_args: pytest.fail("read path must not initialize folders")))
     monkeypatch.setattr(FileService, "new_a_file_from_kb", classmethod(lambda *_args: pytest.fail("read path must not create folders")))
@@ -317,10 +316,9 @@ def test_content_mutation_increments_revision_only_after_success(monkeypatch):
     assert calls == ["mutate", "bump"]
 
     calls.clear()
-    with pytest.raises(RuntimeError):
-        with service.content_mutation(7):
-            calls.append("mutate")
-            raise RuntimeError("mutation failed")
+    with pytest.raises(RuntimeError), service.content_mutation(7):
+        calls.append("mutate")
+        raise RuntimeError("mutation failed")
     assert calls == ["mutate"]
     with pytest.raises(PreconditionRequiredError), service.content_mutation(0):
         pass
@@ -560,9 +558,7 @@ def test_pdf_content_exposes_source_projection_heading_level(monkeypatch):
     )
     service = CorpusFsService("tenant-1", "dataset-1", "actor")
 
-    _, _, _, blocks = service.content_text(
-        {"id": "document-1", "run": TaskStatus.DONE.value, "type": "pdf"}
-    )
+    _, _, _, blocks = service.content_text({"id": "document-1", "run": TaskStatus.DONE.value, "type": "pdf"})
 
     assert blocks[0]["level"] == 2
 
@@ -1066,9 +1062,7 @@ def test_pdf_content_keeps_active_projection_readable_during_reparse(monkeypatch
     )
     service = CorpusFsService("tenant-1", "dataset-1", "actor")
 
-    content, source, _, _ = service.content_text(
-        {"id": "document-1", "run": TaskStatus.RUNNING.value, "type": "pdf"}
-    )
+    content, source, _, _ = service.content_text({"id": "document-1", "run": TaskStatus.RUNNING.value, "type": "pdf"})
 
     assert content == "previous active projection"
     assert source == "source_projection:7"
