@@ -50,8 +50,7 @@ jobs:
         env:
           CHECK_FILES_FILES: ${{ needs.changed-files.outputs.files }}
         run: |
-          # Mirrors the check_files.py jobs in lefthook.yml, nothing more:
-          # `comment-ascii` exists in the script but no pipeline runs it.
+          # Mirrors the check_files.py jobs in lefthook.yml, nothing more.
           status=0
           for check in eof trailing-whitespace mixed-line-ending \
                        merge-conflict json yaml case-conflict symlinks; do
