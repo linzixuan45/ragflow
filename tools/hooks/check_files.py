@@ -171,14 +171,19 @@ def _repo_root() -> Path:
 
 
 def _docs_set(root: Path, extra: list[Path]) -> list[Path]:
-    """Curated Docs-as-Code set: the entry file plus engineering/ topic docs.
+    """Curated Docs-as-Code set: the entry files plus engineering/ topic docs.
 
     Historical experiment records (records/, baseline/, annotations/) are data,
     not maintained prose, so they are excluded from the structure checks.
     """
     excluded = ("records", "baseline", "annotations")
     docs: list[Path] = []
-    for candidate in [root / "AGENTS.md", root / "ARCHITECTURE.md", *sorted((root / "engineering").rglob("*.md"))]:
+    for candidate in [
+        root / "AGENTS.md",
+        root / "ARCHITECTURE.md",
+        root / "README_zh.md",
+        *sorted((root / "engineering").rglob("*.md")),
+    ]:
         if not candidate.is_file():
             continue
         if any(part in excluded for part in candidate.parts):
@@ -206,6 +211,22 @@ def _headings(text: str) -> list[tuple[int, int, str]]:
         if match:
             headings.append((len(match.group(1)), index, match.group(2).strip()))
     return headings
+
+
+# Badge markup nests an image inside a link: `[![alt](img)](target)`. A plain
+# link regex consumes the inner image and misses the outer target, so unwrap the
+# nested form first and validate both halves.
+_NESTED_LINK_RE = re.compile(r"\[!\[[^\]]*\]\(([^)]*)\)\]\(([^)]*)\)")
+_LINK_RE = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
+
+
+def _link_targets(prose: str) -> list[str]:
+    """Every markdown link/image target in ``prose``, nested badges included."""
+    targets: list[str] = []
+    for image_target, link_target in _NESTED_LINK_RE.findall(prose):
+        targets.extend((image_target, link_target))
+    targets.extend(_LINK_RE.findall(_NESTED_LINK_RE.sub("", prose)))
+    return [target for target in targets if target]
 
 
 def _slug(title: str) -> str:
@@ -257,7 +278,7 @@ def check_docs(paths: list[Path], fix: bool = False) -> int:
             # Inline code spans hold illustrative markup, not real links.
             prose = re.sub(r"`[^`]*`", "", line)
             targets: list[Path] = []
-            for target in re.findall(r"\[[^\]]*\]\(([^)]+)\)", prose):
+            for target in _link_targets(prose):
                 if target.startswith(("http://", "https://", "mailto:", "#")):
                     continue
                 file_part, _, anchor = target.partition("#")
@@ -379,6 +400,9 @@ _SUFFIX_WORDS = {
 _BANNED_IN_TOKEN = set("<>*{}|~\"'`")
 _PATH_TOKEN = re.compile(r"^[\w.\-/]+$")
 _GIT_REF_TOKEN = re.compile(r"^(?:upstream|origin)/[\w.\-]+$")
+# Registry / hostname prefixes such as `swr.cn-north-4.myhuaweicloud.com/ns/repo`
+# address a remote service, not a file in this checkout.
+_HOSTNAME_TOKEN = re.compile(r"^[a-z0-9][a-z0-9\-]*(?:\.[a-z0-9][a-z0-9\-]*)+/")
 _HTTP_VERBS_TOKEN = re.compile(r"^[A-Z]+(?:/[A-Z]+)+$")
 _CALL_TOKEN = re.compile(r"^([A-Za-z_]\w*)\(")
 _CONST_TOKEN = re.compile(r"^([A-Z][A-Z0-9_]{2,})(?:=|$)")
@@ -458,6 +482,8 @@ def _symbol_errors(root: Path, docs: list[Path]) -> list[str]:
                     if token in _REFERENCE_ALLOW:
                         continue
                     if "..." in token or _GIT_REF_TOKEN.match(token) or _HTTP_VERBS_TOKEN.match(token):
+                        continue
+                    if _HOSTNAME_TOKEN.match(token):
                         continue
                     segments = [part for part in token.rstrip("/").split("/") if part]
                     if segments and all(part in _SUFFIX_WORDS for part in segments):

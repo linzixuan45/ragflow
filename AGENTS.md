@@ -251,7 +251,7 @@ Corpus 多库检索的性能实验数据与逐版本记录在 `engineering/exper
 
 1. **与代码同仓同分支**：正文在 `engineering/`，与代码一起评审、一起回滚。**文档正本必须在仓库内**；仓库外只允许放可再生成的原始数据与采集脚本（例：Corpus 检索实验的 raw log 与 scripts）。
 2. **单一定位**：一条事实只写一处；入口文件只保留索引、硬约束与维护规则，正文一律进 `engineering/`。
-3. **可机械校验**：`python3 tools/hooks/check_files.py docs` 强制悬空链接与锚点、`§` 小节引用、索引覆盖、小节编号连续性，以及内联引用的**路径 / 函数 / 常量 / 测试名**是否仍存在。三道口子跑同一条命令：[lefthook.yml](lefthook.yml) 的 `check-docs`（提交前）、[.github/workflows/docs.yml](.github/workflows/docs.yml)（`*.md` 改动）、以及手动执行。
+3. **可机械校验**：`python3 tools/hooks/check_files.py docs` 强制悬空链接与锚点、`§` 小节引用、索引覆盖、小节编号连续性，以及内联引用的**路径 / 函数 / 常量 / 测试名**是否仍存在。覆盖范围是 `AGENTS.md`、`ARCHITECTURE.md`、`README_zh.md` 与 `engineering/`（`experiments/*/{records,baseline,annotations}` 按数据对待）；嵌套徽章 `[![alt](img)](target)` 的两侧目标都会校验。三道口子跑同一条命令：[lefthook.yml](lefthook.yml) 的 `check-docs`（提交前）、[.github/workflows/docs.yml](.github/workflows/docs.yml)（`*.md` 改动）、以及手动执行。
 4. **带状态与日期**：事故与验证记录必须标状态（已修 / 未修 / 已接受）与日期；标「已修」必须给可复现的验证证据或测试名，标「已接受」必须写重启条件。口径变化要显式声明新旧不可比。
 5. **过期即删**：描述已被取代设计的文档直接删除，不留「以后清理」的占位、不留新旧两份并存。
 

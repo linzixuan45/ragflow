@@ -1,60 +1,17 @@
-<div align="center">
-<a href="https://cloud.ragflow.io/">
-<img src="https://raw.githubusercontent.com/infiniflow/ragflow/main/web/src/assets/logo-with-text.svg" width="520" alt="ragflow logo">
-</a>
-</div>
+# RAGFlow（本 fork）
 
-<p align="center">
-  <a href="./README.md"><img alt="README in English" src="https://img.shields.io/badge/English-DFE0E5"></a>
-  <a href="./README_zh.md"><img alt="简体中文版自述文件" src="https://img.shields.io/badge/简体中文-DBEDFA"></a>
-  <a href="./README_tzh.md"><img alt="繁體版中文自述文件" src="https://img.shields.io/badge/繁體中文-DFE0E5"></a>
-  <a href="./README_ja.md"><img alt="日本語のREADME" src="https://img.shields.io/badge/日本語-DFE0E5"></a>
-  <a href="./README_ko.md"><img alt="한국어" src="https://img.shields.io/badge/한국어-DFE0E5"></a>
-  <a href="./README_fr.md"><img alt="README en Français" src="https://img.shields.io/badge/Français-DFE0E5"></a>
-  <a href="./README_id.md"><img alt="Bahasa Indonesia" src="https://img.shields.io/badge/Bahasa Indonesia-DFE0E5"></a>
-  <a href="./README_pt_br.md"><img alt="Português(Brasil)" src="https://img.shields.io/badge/Português(Brasil)-DFE0E5"></a>
-  <a href="./README_ar.md"><img alt="README in Arabic" src="https://img.shields.io/badge/Arabic-DFE0E5"></a>
-  <a href="./README_tr.md"><img alt="Türkçe README" src="https://img.shields.io/badge/Türkçe-DFE0E5"></a>
-</p>
+> 本仓库是 [infiniflow/ragflow](https://github.com/infiniflow/ragflow) 的 fork：差异化能力全部在 Python 侧，与上游 Go 侧**双栈共存**。
+> **本 fork 的工程文档以仓库内为准**：[AGENTS.md](AGENTS.md)（操作指南、架构索引与硬约束）、[ARCHITECTURE.md](ARCHITECTURE.md)（双栈边界与路由/DB 契约）、[engineering/](engineering/README.md)（各子系统正文）。
+> 以下正文来自上游 `README_zh.md`，尚未按本 fork 逐条复核；与本仓库工程文档冲突时，以工程文档为准。
 
-<p align="center">
-    <a href="https://x.com/intent/follow?screen_name=infiniflowai" target="_blank">
-        <img src="https://img.shields.io/twitter/follow/infiniflow?logo=X&color=%20%23f5f5f5" alt="follow on X(Twitter)">
-    </a>
-    <a href="https://cloud.ragflow.io" target="_blank">
-        <img alt="Static Badge" src="https://img.shields.io/badge/Get-Started-4e6b99">
-    </a>
-    <a href="https://hub.docker.com/r/infiniflow/ragflow" target="_blank">
-        <img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/infiniflow/ragflow-stats/main/badges/docker-pulls.json&style=flat-square&logo=docker&logoColor=white" alt="docker pull infiniflow/ragflow:v0.26.4">
-    </a>
-    <a href="https://github.com/infiniflow/ragflow/releases/latest">
-        <img src="https://img.shields.io/github/v/release/infiniflow/ragflow?color=blue&label=Latest%20Release" alt="Latest Release">
-    </a>
-    <a href="https://github.com/infiniflow/ragflow/blob/main/LICENSE">
-        <img height="21" src="https://img.shields.io/badge/License-Apache--2.0-ffffff?labelColor=d4eaf7&color=2e6cc4" alt="license">
-    </a>
-    <a href="https://deepwiki.com/infiniflow/ragflow">
-        <img alt="Ask DeepWiki" src="https://deepwiki.com/badge.svg">
-    </a>
-</p>
+[Cloud](https://cloud.ragflow.io) | [Document](https://ragflow.io/docs/dev/) | [Roadmap](https://github.com/infiniflow/ragflow/issues/12241) | [Discord](https://discord.gg/NjYzJD3GM3)
 
-<h4 align="center">
-  <a href="https://cloud.ragflow.io">Cloud</a> |
-  <a href="https://ragflow.io/docs/dev/">Document</a> |
-  <a href="https://github.com/infiniflow/ragflow/issues/12241">Roadmap</a> |
-  <a href="https://discord.gg/NjYzJD3GM3">Discord</a>
-</h4>
+![](https://raw.githubusercontent.com/infiniflow/ragflow-docs/refs/heads/image/image/ragflow-octoverse.png)
 
-<div align="center" style="margin-top:20px;margin-bottom:20px;">
-<img src="https://raw.githubusercontent.com/infiniflow/ragflow-docs/refs/heads/image/image/ragflow-octoverse.png" width="1200"/>
-</div>
+[![Trendshift](https://trendshift.io/api/badge/repositories/9064)](https://trendshift.io/repositories/9064)
 
-<div align="center">
-<a href="https://trendshift.io/repositories/9064" target="_blank"><img src="https://trendshift.io/api/badge/repositories/9064" alt="infiniflow%2Fragflow | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
-</div>
 
-<details open>
-<summary><b>📕 目录</b></summary>
+## 📕 目录
 
 - 💡 [RAGFlow 是什么？](#-RAGFlow-是什么)
 - 🎮 [快速开始](#-快速开始)
@@ -70,7 +27,6 @@
 - 🙌 [加入社区](#-加入社区)
 - 🤝 [商务合作](#-商务合作)
 
-</details>
 
 ## 💡 RAGFlow 是什么？
 
@@ -80,10 +36,8 @@
 
 请登录网址 [https://cloud.ragflow.io](https://cloud.ragflow.io) 体验云服务。
 
-<div align="center" style="margin-top:20px;margin-bottom:20px;">
-<img src="https://raw.githubusercontent.com/infiniflow/ragflow-docs/refs/heads/image/image/chunking.gif" width="1200"/>
-<img src="https://raw.githubusercontent.com/infiniflow/ragflow-docs/refs/heads/image/image/agentic-dark.gif" width="1200"/>
-</div>
+![](https://raw.githubusercontent.com/infiniflow/ragflow-docs/refs/heads/image/image/chunking.gif)
+![](https://raw.githubusercontent.com/infiniflow/ragflow-docs/refs/heads/image/image/agentic-dark.gif)
 
 ## 🔥 近期更新
 
@@ -105,9 +59,7 @@
 
 ⭐️ 点击右上角的 Star 关注 RAGFlow，可以获取最新发布的实时通知 !🌟
 
-<div align="center" style="margin-top:20px;margin-bottom:20px;">
-<img src="https://github.com/user-attachments/assets/18c9707e-b8aa-4caf-a154-037089c105ba" width="1200"/>
-</div>
+![](https://github.com/user-attachments/assets/18c9707e-b8aa-4caf-a154-037089c105ba)
 
 ## 🌟 主要功能
 
@@ -139,9 +91,7 @@
 
 ## 🔎 系统架构
 
-<div align="center" style="margin-top:20px;margin-bottom:20px;">
-<img src="https://github.com/user-attachments/assets/31b0dd6f-ca4f-445a-9457-70cb44a381b2" width="1000"/>
-</div>
+![](https://github.com/user-attachments/assets/31b0dd6f-ca4f-445a-9457-70cb44a381b2)
 
 ## 🎬 自主托管
 
@@ -426,6 +376,4 @@ RAGFlow 只有通过开源协作才能蓬勃发展。秉持这一精神,我们�
 
 扫二维码添加 RAGFlow 小助手，进 RAGFlow 交流群。
 
-<p align="center">
-  <img src="https://github.com/infiniflow/ragflow/assets/7248/bccf284f-46f2-4445-9809-8f1030fb7585" width=50% height=50%>
-</p>
+![](https://github.com/infiniflow/ragflow/assets/7248/bccf284f-46f2-4445-9809-8f1030fb7585)
