@@ -1,0 +1,8 @@
+{
+  "name": "ragflow-dev-tooling",
+  "private": true,
+  "description": "Root-level hook tooling only. The application lives in web/; this file exists so `npm install` puts lefthook where the git hooks look for it (node_modules/).",
+  "devDependencies": {
+    "lefthook": "^1.13.6"
+  }
+}

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import re
 import subprocess
 import sys
@@ -10,7 +11,6 @@ import tokenize
 from pathlib import Path
 
 import yaml
-
 
 MERGE_PATTERNS = ("<<<<<<< ", "=======\n", ">>>>>>> ")
 
@@ -24,6 +24,14 @@ def _read_bytes(path: Path) -> bytes:
 
 
 def _staged_paths() -> list[Path]:
+    """Paths to check: staged files locally, or an explicit list in CI.
+
+    ``CHECK_FILES_FILES`` (newline separated) overrides the staged set so CI can
+    reuse every check on a pull request's changed files.
+    """
+    override = os.environ.get("CHECK_FILES_FILES")
+    if override is not None:
+        return [Path(line) for line in override.splitlines() if line.strip()]
     proc = subprocess.run(
         ["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR"],
         check=True,
@@ -48,7 +56,7 @@ def check_json(paths: list[Path], fix: bool = False) -> int:
             continue
         try:
             json.loads(path.read_text(encoding="utf-8"))
-        except Exception as exc:
+        except (ValueError, OSError, UnicodeDecodeError) as exc:
             errors.append(f"invalid json: {path}: {exc}")
     return _report(errors)
 
@@ -60,7 +68,7 @@ def check_yaml(paths: list[Path], fix: bool = False) -> int:
             continue
         try:
             yaml.safe_load(path.read_text(encoding="utf-8"))
-        except Exception as exc:
+        except (yaml.YAMLError, OSError, UnicodeDecodeError) as exc:
             errors.append(f"invalid yaml: {path}: {exc}")
     return _report(errors)
 
@@ -91,7 +99,7 @@ def check_trailing_whitespace(paths: list[Path], fix: bool = False) -> int:
             continue
         try:
             text = path.read_text(encoding="utf-8", errors="ignore")
-        except Exception:
+        except (OSError, UnicodeDecodeError):
             continue
         if not text:
             continue
@@ -210,6 +218,10 @@ def check_comment_ascii(paths: list[Path], fix: bool = False) -> int:
     return _report(errors)
 
 
+def _repo_root() -> Path:
+    return Path(subprocess.run(["git", "rev-parse", "--show-toplevel"], check=True, capture_output=True, text=True).stdout.strip())
+
+
 def _docs_set(root: Path, extra: list[Path]) -> list[Path]:
     """Curated Docs-as-Code set: the entry file plus engineering/ topic docs.
 
@@ -261,13 +273,11 @@ def check_docs(paths: list[Path], fix: bool = False) -> int:
     * local markdown links and `#anchor` targets that resolve;
     * `§N` / `§N.M` section references existing in the document they point at;
     * every engineering/*.md topic doc being reachable from AGENTS.md;
-    * continuous section numbering (## N. and ### N.M).
+    * continuous section numbering (## N. and ### N.M);
+    * inline-code citations (paths, functions, constants, test names) that still
+      resolve — see ``_symbol_errors``.
     """
-    root = Path(
-        subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"], check=True, capture_output=True, text=True
-        ).stdout.strip()
-    )
+    root = _repo_root()
     docs = _docs_set(root, paths)
     entry = (root / "AGENTS.md").read_text(encoding="utf-8")
     readme = root / "engineering" / "README.md"
@@ -336,19 +346,16 @@ def check_docs(paths: list[Path], fix: bool = False) -> int:
             if level == 2 and top:
                 found = int(top.group(1))
                 if found != top_expected:
-                    errors.append(
-                        f"section numbering gap: {_label(doc)}:{line_no}: "
-                        f"expected ## {top_expected}, found ## {found}"
-                    )
+                    errors.append(f"section numbering gap: {_label(doc)}:{line_no}: expected ## {top_expected}, found ## {found}")
                 top_expected, sub_expected = found + 1, 1
             elif level == 3 and sub:
                 found_top, found_sub = int(sub.group(1)), int(sub.group(2))
                 if (found_top, found_sub) != (top_expected - 1, sub_expected):
-                    errors.append(
-                        f"section numbering gap: {_label(doc)}:{line_no}: "
-                        f"expected ### {top_expected - 1}.{sub_expected}, found ### {found_top}.{found_sub}"
-                    )
+                    errors.append(f"section numbering gap: {_label(doc)}:{line_no}: expected ### {top_expected - 1}.{sub_expected}, found ### {found_top}.{found_sub}")
                 sub_expected = found_sub + 1
+
+    # Inline code citations: paths, functions, constants and test names.
+    errors.extend(_symbol_errors(root, docs))
 
     # Index coverage: topic docs must be reachable from the entry file.
     for topic in sorted((root / "engineering").glob("*.md")):
@@ -362,6 +369,181 @@ def check_docs(paths: list[Path], fix: bool = False) -> int:
     return _report(errors)
 
 
+# Inline-code references whose absence from the checkout is expected, with the
+# reason. Keep this list short: it is the escape hatch, not a dumping ground.
+_REFERENCE_ALLOW = {
+    # Named in the docs but living in another repository.
+    "runtime/dev/config.yaml",  # deer-flow development config
+    "config.example.yaml",  # deer-flow config template
+    "config.yaml",  # deer-flow runtime config
+    "../多库检索优化方案-2026-10-01.md",  # LocalAgentOps planning doc
+    "../后续实验计划-修订版-2026-10-01.md",  # LocalAgentOps planning doc
+    "../corpus_fs多库检索耗时分析-2026-10-01.md",  # LocalAgentOps analysis doc
+    # Repository-relative, but produced by the build rather than checked in.
+    "bin/ragflow_server",
+    # Route fragments and HTTP header names, not filesystem paths.
+    "datasets/search",
+    "datasets/keyword-search",
+    "fs/image",
+    # Upstream-only packages: the docs name them to say they are absent here.
+    "internal/ingestion/task/",
+    "internal/ingestion/service/",
+    "internal/service/document/",
+    # Names owned by another component or protocol, not by this repository.
+    "UPSTREAM_UNAVAILABLE",  # DeerFlow error envelope
+    "XREADGROUP",  # Redis command
+    "UV_CACHE_DIR",  # uv environment variable
+}
+# Opt a line out when it quotes markup or names that are deliberately not code.
+_SYMBOL_SKIP_MARKER = "docs-symbols: skip-line"
+# Suffix words that combine into extension lists such as `png/jpeg/gif`.
+_SUFFIX_WORDS = {
+    "pdf",
+    "png",
+    "jpeg",
+    "jpg",
+    "jp2",
+    "webp",
+    "gif",
+    "bmp",
+    "tiff",
+    "doc",
+    "docx",
+    "ppt",
+    "pptx",
+    "xls",
+    "xlsx",
+    "csv",
+    "txt",
+    "md",
+    "json",
+    "yaml",
+    "yml",
+    "py",
+    "go",
+    "ts",
+    "tsx",
+    "js",
+    "sh",
+    "sql",
+    "html",
+}
+_BANNED_IN_TOKEN = set("<>*{}|~\"'`")
+_PATH_TOKEN = re.compile(r"^[\w.\-/]+$")
+_GIT_REF_TOKEN = re.compile(r"^(?:upstream|origin)/[\w.\-]+$")
+_HTTP_VERBS_TOKEN = re.compile(r"^[A-Z]+(?:/[A-Z]+)+$")
+_CALL_TOKEN = re.compile(r"^([A-Za-z_]\w*)\(")
+_CONST_TOKEN = re.compile(r"^([A-Z][A-Z0-9_]{2,})(?:=|$)")
+_TEST_TOKEN = re.compile(r"^(test_[a-z0-9_]{4,})$")
+
+
+def _code_spans(line: str) -> list[str]:
+    return re.findall(r"`([^`]+)`", line)
+
+
+def _symbol_index(root: Path, names: set[str]) -> set[str]:
+    """Which of ``names`` occur in tracked, non-documentation repository files.
+
+    Two stages: one ``git grep -l`` narrows to the files that contain at least
+    one candidate (fast), then those files are scanned in memory for the rest.
+    A single ``git grep -o`` over every candidate is an order of magnitude
+    slower because it emits each occurrence.
+    """
+    if not names:
+        return set()
+    args = ["git", "grep", "-l", "-I", "-F"]
+    for name in sorted(names):
+        args += ["-e", name]
+    args += ["--", ".", ":(exclude)engineering/**", ":(exclude)*.md"]
+    proc = subprocess.run(args, cwd=root, capture_output=True, text=True, check=False)
+    blobs: list[str] = []
+    for line in proc.stdout.splitlines():
+        if not line:
+            continue
+        try:
+            blobs.append((root / line).read_text(encoding="utf-8", errors="ignore"))
+        except OSError:
+            continue
+    haystack = "\n".join(blobs)
+    return {name for name in names if name in haystack}
+
+
+def _symbol_errors(root: Path, docs: list[Path]) -> list[str]:
+    """Inline-code references to code that no longer exists.
+
+    Curated docs cite files, functions, constants and test names inline. This
+    check keeps those citations honest — the documentation drift that no other
+    check catches. Historical experiment records are excluded (they cite the
+    state of the tree at the time of the experiment).
+
+    Candidates and their rules:
+
+    * a token containing ``/`` must resolve as a path, relative to the document
+      first and to the repository root second;
+    * ``name(...)`` / ``name()`` must occur in tracked non-doc files;
+    * ``ALL_CAPS`` (optionally ``=value``) must occur in tracked non-doc files;
+    * ``test_x`` must occur likewise.
+
+    Globs, angle-bracket placeholders, URLs, absolute paths and names listed in
+    ``_REFERENCE_ALLOW`` are skipped; a line carrying
+    ``docs-symbols: skip-line`` opts out entirely.
+    """
+    errors: list[str] = []
+    symbols: dict[str, tuple[Path, int]] = {}
+
+    for doc in docs:
+        in_fence = False
+        for line_no, line in enumerate(doc.read_text(encoding="utf-8").splitlines(), start=1):
+            if line.lstrip().startswith("```"):
+                in_fence = not in_fence
+                continue
+            if in_fence or _SYMBOL_SKIP_MARKER in line:
+                continue
+            for span in _code_spans(line):
+                for token in (part.strip() for part in re.split(r"[\s,;]+", span)):
+                    if not token:
+                        continue
+                    if any(char in _BANNED_IN_TOKEN for char in token) or "://" in token:
+                        continue
+                    if token.startswith(("/", "~")):
+                        continue
+                    if token in _REFERENCE_ALLOW:
+                        continue
+                    if "..." in token or _GIT_REF_TOKEN.match(token) or _HTTP_VERBS_TOKEN.match(token):
+                        continue
+                    segments = [part for part in token.rstrip("/").split("/") if part]
+                    if segments and all(part in _SUFFIX_WORDS for part in segments):
+                        continue
+                    # Single-segment directory names are shorthand ("prompts/"),
+                    # not repository paths; require at least two segments.
+                    if "/" in token and len(segments) >= 2 and _PATH_TOKEN.match(token):
+                        relative = token.rstrip("/")
+                        if (doc.parent / relative).exists() or (root / relative).exists():
+                            continue
+                        errors.append(f"stale path reference: {doc.relative_to(root)}:{line_no}: {token}")
+                        continue
+                    name = None
+                    for pattern in (_CALL_TOKEN, _CONST_TOKEN, _TEST_TOKEN):
+                        match = pattern.match(token)
+                        if match:
+                            name = match.group(1)
+                            break
+                    if name:
+                        symbols.setdefault(name, (doc, line_no))
+
+    found = _symbol_index(root, set(symbols))
+    for name, (doc, line_no) in sorted(symbols.items()):
+        if name not in found:
+            errors.append(f"stale symbol reference: {doc.relative_to(root)}:{line_no}: {name}")
+    return errors
+
+
+def check_symbols(paths: list[Path], fix: bool = False) -> int:
+    """Standalone entry point for the symbol-drift check (see ``_symbol_errors``)."""
+    root = _repo_root()
+    return _report(_symbol_errors(root, _docs_set(root, paths)))
+
+
 CHECKS = {
     "json": check_json,
     "yaml": check_yaml,
@@ -373,6 +555,7 @@ CHECKS = {
     "case-conflict": check_case_conflicts,
     "comment-ascii": check_comment_ascii,
     "docs": check_docs,
+    "symbols": check_symbols,
 }
 
 

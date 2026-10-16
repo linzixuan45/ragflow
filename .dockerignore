@@ -14,6 +14,7 @@ __pycache__/
 
 # ── Frontend dependencies and build outputs ─────────────────────────────────
 web/node_modules/
+node_modules/
 web/dist/
 
 # ── Runtime logs ────────────────────────────────────────────────────────────

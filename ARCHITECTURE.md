@@ -214,7 +214,7 @@ git fetch upstream --unshallow     # 首次必须，浅克隆会让 merge-base �
    `/v1/parse/jobs` → `/v1/files/<id>/content`（zip）→ `middle_json.json`
    投影为 Content List V1；含按内容哈希的上传复用与 `tier` 映射
 5. legacy（3.x）提交路由回落：`tasks` → `file_parse`（`pdf_parser_mineru.go`）
-6. `FileTypeVISUAL` 映射（`utility/file.go`）
+6. `FileTypeVISUAL` 映射（`internal/utility/file.go`）
 
 其余为采纳上游契约的结果，**不构成分叉**：`parser.ParseResult` 已统一
 （上游独立收敛到相同字段），`ctx` 参数与 `buildParserOutputs` 签名同理。

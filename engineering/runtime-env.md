@@ -93,9 +93,12 @@ PY'
   ```
 
 - refactor 全套测试在**收集** `test_dataflow_service.py` 时需要本机 OCR 模型缓存，缺缓存且网络不可达会中止（是环境问题，不是断言失败）。`uv` 也可能因无法下载 spaCy 模型失败。
+- **本机 `uv` 缓存不可写**（`~/.cache/uv/archive-v0` 属于 root，历史 `sudo` 留下的）：`uv lock` / `uv run --group ...` 会以 `failed to rename file ... Permission denied` 失败。绕过：`UV_CACHE_DIR=/tmp/uv-cache uv ...`；根治：`sudo chown -R "$(id -un)" ~/.cache/uv`。
+- Git 钩子：`.git/hooks/*` 由 lefthook 生成，它按「PATH → 仓库根 `node_modules/` → …」的顺序找二进制，**最后才回退 `uv run lefthook`**；而 lefthook 不在依赖里，`uv run` 会联网解析并挂住整次提交。因此根目录提供 [package.json](../package.json)（只含 lefthook），先 `npm install` 再提交；CI 不依赖钩子，直接跑同样的检查命令。
 - Go 侧：**禁止裸 `go test` / `go build`**，必须走 [build.sh](../build.sh)（CGO + 原生静态库 `office_oxide` / `pdfium-static` / `pdf_oxide` + clang/lld）。无 CGO 依赖的包可 `CGO_ENABLED=0 go test ./internal/entity/models/...` 直跑。
 
 ## 4. lint 口径
 
+- ruff 版本以 [pyproject.toml](../pyproject.toml) 的 `lint` 依赖组（`ruff==0.16.1`）+ `uv.lock` 为准，用 `uv run --group lint ruff`；裸 `ruff` 会取 PATH 上任意版本（本机当前是 conda 里那份），与 CI 可能不一致。
 - `ruff I001`（Import block is un-sorted or un-formatted）会被**在 import 块与首个 `def` 之间插入模块级常量/注释**触发：HEAD 版本通过、插入后不通过。`ruff check --fix` 可自动修复，diff 无副作用。
-- 目标大文件上存在既存的日志、宽异常捕获与旧式注解债务，全规则扫描必红 → 用基础错误规则单独验证，**不要声称「ruff 全绿」**。
+- 目标大文件上存在既存的日志、宽异常捕获与旧式注解债务，全规则扫描必红 → 用基础错误规则单独验证，**不要声称「ruff 全绿」**。改了这类文件时，lefthook 会只对**暂存的文件**跑 ruff/ruff-format（并自动修好再暂存）；CI 同样只查变更文件，见 [.github/workflows/lint.yml](../.github/workflows/lint.yml)。

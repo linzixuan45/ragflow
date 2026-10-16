@@ -181,6 +181,9 @@ dependencies = [
 ]
 
 [dependency-groups]
+lint = [
+    "ruff==0.16.1",
+]
 test = [
     "hypothesis>=6.132.0",
     "openpyxl>=3.1.5",

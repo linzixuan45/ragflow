@@ -1,0 +1,29 @@
+name: docs
+
+# Docs-as-Code gate. Runs the same command as the local `check-docs` hook job,
+# so a broken link / stale section reference / unindexed topic doc / dangling
+# code citation fails the pull request instead of waiting for a human.
+on:
+  push:
+    paths:
+      - "**/*.md"
+      - "tools/hooks/check_files.py"
+      - ".github/workflows/docs.yml"
+  pull_request:
+    paths:
+      - "**/*.md"
+      - "tools/hooks/check_files.py"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  docs-as-code:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Docs-as-Code checks
+        run: python3 tools/hooks/check_files.py docs
