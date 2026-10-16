@@ -55,13 +55,26 @@ def check_json(paths: list[Path], fix: bool = False) -> int:
     return _report(errors)
 
 
+def _load_yaml(text: str):
+    """Parse YAML that may carry Compose-only tags (``!override``, ``!reset``).
+
+    ``yaml.safe_load`` rejects an unknown tag outright, which made the compose
+    overlays uncommittable even though Compose accepts them. Retry without
+    resolving tags so the document is still checked for syntax errors.
+    """
+    try:
+        return yaml.safe_load(text)
+    except yaml.constructor.ConstructorError:
+        return yaml.compose(text)
+
+
 def check_yaml(paths: list[Path], fix: bool = False) -> int:
     errors: list[str] = []
     for path in paths:
         if path.suffix not in {".yaml", ".yml"} or not path.is_file():
             continue
         try:
-            yaml.safe_load(path.read_text(encoding="utf-8"))
+            _load_yaml(path.read_text(encoding="utf-8"))
         except (yaml.YAMLError, OSError, UnicodeDecodeError) as exc:
             errors.append(f"invalid yaml: {path}: {exc}")
     return _report(errors)
