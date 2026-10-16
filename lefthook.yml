@@ -123,3 +123,8 @@ pre-commit:
       run: python3 tools/hooks/check_files.py merge-conflict
     - name: check-symlinks
       run: python3 tools/hooks/check_files.py symlinks
+    # Docs-as-Code gate: links, `§` references, index coverage, section numbering.
+    # Read-only, so it behaves the same locally and under LEFTHOOK_CHECK_ONLY=1.
+    - name: check-docs
+      glob: "*.md"
+      run: python3 tools/hooks/check_files.py docs

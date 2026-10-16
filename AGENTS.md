@@ -95,6 +95,7 @@ bash build.sh --all
 
 ## Validation preference
 - Run the narrowest relevant test, lint, or build command after a change.
+- For docs changes, run `python3 tools/hooks/check_files.py docs` (links, `§` references, index coverage, section numbering). The `check-docs` job in [lefthook.yml](lefthook.yml) runs the same command before commit.
 - For backend changes, prefer targeted pytest or ruff checks over full-suite runs.
 - For frontend changes, prefer the touched-package lint, type-check, or test command.
 - For Go changes, prefer package-scoped `bash build.sh --test ...` first.
@@ -210,6 +211,8 @@ Corpus 多库检索的性能实验数据与逐版本记录在 `engineering/exper
 | 18 | 外部副作用不受事务保护且仓库无 outbox：改 Corpus 写路径时必须自己兜底孤儿对象与重试幂等 | [engineering/corpus-fs.md](engineering/corpus-fs.md) §6.4 |
 | 19 | 新增或改动 HTTP 路由后必须 `--force-recreate` 容器（Quart 路由表不随 bind mount 刷新，重启不够，否则业务级 405） | [engineering/runtime-env.md](engineering/runtime-env.md) §1 |
 | 20 | 任务丢失兜底只覆盖 `task_type=""` 的 `common`/`resume` 队列；raptor/graphrag/memory/dataflow 这类带额外字段的任务消息若丢失仍无兜底 | [engineering/task-queue.md](engineering/task-queue.md) §2 |
+| 21 | 文档改动必须过 `python3 tools/hooks/check_files.py docs`：悬空链接/锚点、`§` 引用、索引覆盖、小节编号连续性 | [tools/hooks/check_files.py](tools/hooks/check_files.py)、[lefthook.yml](lefthook.yml) |
+| 22 | 正文只写在 `engineering/`，入口文件只做索引与约束；新主题文档必须同时进「架构索引」与 [engineering/README.md](engineering/README.md)，否则视为不存在 | `check_files.py docs` 的索引覆盖检查 |
 
 ## 文档维护
 
@@ -230,6 +233,18 @@ Corpus 多库检索的性能实验数据与逐版本记录在 `engineering/exper
 - **同一事实只写一处**，别处只放链接。
 - **禁止把大段实现细节重新堆回本文件**——本文件是索引与约束清单，正文属于 `engineering/`。
 - 语言约定：fork 新增内容用中文；与上游同步的文件（本文既有小节、`README_zh.md`）保留上游原文。
+
+## 文档即代码（Docs-as-Code）
+
+外层文档按 Docs-as-Code 管理，五条契约如下：
+
+1. **与代码同仓同分支**：正文在 `engineering/`，与代码一起评审、一起回滚。**文档正本必须在仓库内**；仓库外只允许放可再生成的原始数据与采集脚本（例：Corpus 检索实验的 raw log 与 scripts）。
+2. **单一定位**：一条事实只写一处；入口文件只保留索引、硬约束与维护规则，正文一律进 `engineering/`。
+3. **可机械校验**：`python3 tools/hooks/check_files.py docs` 强制悬空链接与锚点、`§` 小节引用、索引覆盖、小节编号连续性；改动 `*.md` 时经 [lefthook.yml](lefthook.yml) 的 `check-docs` 在提交前执行。
+4. **带状态与日期**：事故与验证记录必须标状态（已修 / 未修 / 已接受）与日期；标「已修」必须给可复现的验证证据或测试名，标「已接受」必须写重启条件。口径变化要显式声明新旧不可比。
+5. **过期即删**：描述已被取代设计的文档直接删除，不留「以后清理」的占位、不留新旧两份并存。
+
+**尚未自动化（改动前自行确认）**：正文内联引用的代码符号（文件 / 函数 / 常量）是否仍存在——目前没有文档符号漂移检查，[check_source_drift.sh](check_source_drift.sh) 只比对容器与工作区、不校验文档；`engineering/` 也不构建站点，因此没有渲染期断链检查。另：本仓库没有 `.github/`，CI 尚未接入，第 3 条门禁目前只在本地（装了 lefthook）或显式调用上面命令时生效。
 
 ## Default review checklist
 - Remove instead of retaining `deprecated`, `legacy`, or compatibility-only code.
