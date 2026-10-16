@@ -1,0 +1,466 @@
+{
+  "started_at": "2026-10-04T10:49:22+0000",
+  "user_id": "324",
+  "query": "什么是人工智能",
+  "limit": 10,
+  "per_document_limit": 3,
+  "search_mode": "hybrid",
+  "path": "/knowledge",
+  "protocol": "deerflow-agent-v1",
+  "visible_mounts": [
+    {
+      "key": "开发日志",
+      "dataset_id": "a3a47d2ebc7f11f1b50e770aef6b77d1",
+      "name": "开发日志"
+    },
+    {
+      "key": "2026简历库-应届生",
+      "dataset_id": "d2b87b76b7f511f1898c6df5e1672839",
+      "name": "2026简历库-应届生"
+    },
+    {
+      "key": "招投标资料",
+      "dataset_id": "3895f3fab64911f1aba58505df15c8fa",
+      "name": "招投标资料"
+    },
+    {
+      "key": "视比特-公司资料",
+      "dataset_id": "a8666790b56411f1b782eb4fb7fc8651",
+      "name": "视比特-公司资料"
+    },
+    {
+      "key": "投标资料",
+      "dataset_id": "748b1122ad8611f19b608d6cd42fa5c5",
+      "name": "投标资料"
+    },
+    {
+      "key": "df-agent-kb-1038e0b72d98745f-1",
+      "dataset_id": "0f711712ad0111f19b608d6cd42fa5c5",
+      "name": "Agent 知识库"
+    },
+    {
+      "key": "df-my-docs-1038e0b72d98745f",
+      "dataset_id": "cb883bbea74e11f191f7bb12e8b3da65",
+      "name": "我的云文档"
+    },
+    {
+      "key": "可见性测试123",
+      "dataset_id": "a72da4a6962911f18898b9c1b5b75b08",
+      "name": "可见性测试123"
+    },
+    {
+      "key": "测试知识库",
+      "dataset_id": "81ada0f4857c11f1b791a702b435f31c",
+      "name": "测试知识库"
+    }
+  ],
+  "mount_discovery": {
+    "cold_seconds": 0.1009,
+    "warm_seconds": 0.0317
+  },
+  "cases": [
+    {
+      "mode": "tool",
+      "entry": "deerflow.tools.knowledge.tools:knowledge_search_tool",
+      "path": "/knowledge",
+      "mount_count": 9,
+      "total": {
+        "n": 20,
+        "min": 0.4798,
+        "p50": 0.612,
+        "p90": 0.7303,
+        "max": 0.9069,
+        "mean": 0.6155,
+        "stdev": 0.1106,
+        "runs": [
+          0.525,
+          0.5193,
+          0.5018,
+          0.6698,
+          0.6861,
+          0.4798,
+          0.6493,
+          0.7349,
+          0.6676,
+          0.7165,
+          0.7298,
+          0.6095,
+          0.6867,
+          0.9069,
+          0.5207,
+          0.538,
+          0.6145,
+          0.5294,
+          0.497,
+          0.5272
+        ]
+      },
+      "gateway_hop": {
+        "n": 20,
+        "min": 0.469,
+        "p50": 0.6051,
+        "p90": 0.7235,
+        "max": 0.8958,
+        "mean": 0.6079,
+        "stdev": 0.1105,
+        "runs": [
+          0.5183,
+          0.5126,
+          0.4948,
+          0.6626,
+          0.679,
+          0.469,
+          0.6425,
+          0.728,
+          0.6607,
+          0.7098,
+          0.723,
+          0.6023,
+          0.6792,
+          0.8958,
+          0.5076,
+          0.5312,
+          0.6078,
+          0.5226,
+          0.4903,
+          0.5203
+        ]
+      },
+      "deerflow_local_overhead": {
+        "n": 20,
+        "min": 0.0067,
+        "p50": 0.0068,
+        "p90": 0.0108,
+        "max": 0.0131,
+        "mean": 0.0076,
+        "stdev": 0.0018,
+        "runs": [
+          0.0067,
+          0.0067,
+          0.007,
+          0.0072,
+          0.0071,
+          0.0107,
+          0.0068,
+          0.0069,
+          0.0068,
+          0.0067,
+          0.0067,
+          0.0072,
+          0.0075,
+          0.0111,
+          0.0131,
+          0.0068,
+          0.0067,
+          0.0068,
+          0.0068,
+          0.0068
+        ]
+      },
+      "per_run": [
+        {
+          "seconds": 0.525,
+          "code": 200,
+          "mount_count": 9,
+          "raw_candidate_count": 48,
+          "returned_count": 10,
+          "entries": 10,
+          "outbound": [
+            {
+              "method": "POST",
+              "url": "http://gateway:8001/api/knowledge/fs/search",
+              "seconds": 0.5183
+            }
+          ]
+        },
+        {
+          "seconds": 0.5193,
+          "code": 200,
+          "mount_count": 9,
+          "raw_candidate_count": 48,
+          "returned_count": 10,
+          "entries": 10,
+          "outbound": [
+            {
+              "method": "POST",
+              "url": "http://gateway:8001/api/knowledge/fs/search",
+              "seconds": 0.5126
+            }
+          ]
+        },
+        {
+          "seconds": 0.5018,
+          "code": 200,
+          "mount_count": 9,
+          "raw_candidate_count": 48,
+          "returned_count": 10,
+          "entries": 10,
+          "outbound": [
+            {
+              "method": "POST",
+              "url": "http://gateway:8001/api/knowledge/fs/search",
+              "seconds": 0.4948
+            }
+          ]
+        },
+        {
+          "seconds": 0.6698,
+          "code": 200,
+          "mount_count": 9,
+          "raw_candidate_count": 48,
+          "returned_count": 10,
+          "entries": 10,
+          "outbound": [
+            {
+              "method": "POST",
+              "url": "http://gateway:8001/api/knowledge/fs/search",
+              "seconds": 0.6626
+            }
+          ]
+        },
+        {
+          "seconds": 0.6861,
+          "code": 200,
+          "mount_count": 9,
+          "raw_candidate_count": 48,
+          "returned_count": 10,
+          "entries": 10,
+          "outbound": [
+            {
+              "method": "POST",
+              "url": "http://gateway:8001/api/knowledge/fs/search",
+              "seconds": 0.679
+            }
+          ]
+        },
+        {
+          "seconds": 0.4798,
+          "code": 200,
+          "mount_count": 9,
+          "raw_candidate_count": 48,
+          "returned_count": 10,
+          "entries": 10,
+          "outbound": [
+            {
+              "method": "POST",
+              "url": "http://gateway:8001/api/knowledge/fs/search",
+              "seconds": 0.469
+            }
+          ]
+        },
+        {
+          "seconds": 0.6493,
+          "code": 200,
+          "mount_count": 9,
+          "raw_candidate_count": 48,
+          "returned_count": 10,
+          "entries": 10,
+          "outbound": [
+            {
+              "method": "POST",
+              "url": "http://gateway:8001/api/knowledge/fs/search",
+              "seconds": 0.6425
+            }
+          ]
+        },
+        {
+          "seconds": 0.7349,
+          "code": 200,
+          "mount_count": 9,
+          "raw_candidate_count": 48,
+          "returned_count": 10,
+          "entries": 10,
+          "outbound": [
+            {
+              "method": "POST",
+              "url": "http://gateway:8001/api/knowledge/fs/search",
+              "seconds": 0.728
+            }
+          ]
+        },
+        {
+          "seconds": 0.6676,
+          "code": 200,
+          "mount_count": 9,
+          "raw_candidate_count": 48,
+          "returned_count": 10,
+          "entries": 10,
+          "outbound": [
+            {
+              "method": "POST",
+              "url": "http://gateway:8001/api/knowledge/fs/search",
+              "seconds": 0.6607
+            }
+          ]
+        },
+        {
+          "seconds": 0.7165,
+          "code": 200,
+          "mount_count": 9,
+          "raw_candidate_count": 48,
+          "returned_count": 10,
+          "entries": 10,
+          "outbound": [
+            {
+              "method": "POST",
+              "url": "http://gateway:8001/api/knowledge/fs/search",
+              "seconds": 0.7098
+            }
+          ]
+        },
+        {
+          "seconds": 0.7298,
+          "code": 200,
+          "mount_count": 9,
+          "raw_candidate_count": 48,
+          "returned_count": 10,
+          "entries": 10,
+          "outbound": [
+            {
+              "method": "POST",
+              "url": "http://gateway:8001/api/knowledge/fs/search",
+              "seconds": 0.723
+            }
+          ]
+        },
+        {
+          "seconds": 0.6095,
+          "code": 200,
+          "mount_count": 9,
+          "raw_candidate_count": 48,
+          "returned_count": 10,
+          "entries": 10,
+          "outbound": [
+            {
+              "method": "POST",
+              "url": "http://gateway:8001/api/knowledge/fs/search",
+              "seconds": 0.6023
+            }
+          ]
+        },
+        {
+          "seconds": 0.6867,
+          "code": 200,
+          "mount_count": 9,
+          "raw_candidate_count": 48,
+          "returned_count": 10,
+          "entries": 10,
+          "outbound": [
+            {
+              "method": "POST",
+              "url": "http://gateway:8001/api/knowledge/fs/search",
+              "seconds": 0.6792
+            }
+          ]
+        },
+        {
+          "seconds": 0.9069,
+          "code": 200,
+          "mount_count": 9,
+          "raw_candidate_count": 48,
+          "returned_count": 10,
+          "entries": 10,
+          "outbound": [
+            {
+              "method": "POST",
+              "url": "http://gateway:8001/api/knowledge/fs/search",
+              "seconds": 0.8958
+            }
+          ]
+        },
+        {
+          "seconds": 0.5207,
+          "code": 200,
+          "mount_count": 9,
+          "raw_candidate_count": 48,
+          "returned_count": 10,
+          "entries": 10,
+          "outbound": [
+            {
+              "method": "POST",
+              "url": "http://gateway:8001/api/knowledge/fs/search",
+              "seconds": 0.5076
+            }
+          ]
+        },
+        {
+          "seconds": 0.538,
+          "code": 200,
+          "mount_count": 9,
+          "raw_candidate_count": 48,
+          "returned_count": 10,
+          "entries": 10,
+          "outbound": [
+            {
+              "method": "POST",
+              "url": "http://gateway:8001/api/knowledge/fs/search",
+              "seconds": 0.5312
+            }
+          ]
+        },
+        {
+          "seconds": 0.6145,
+          "code": 200,
+          "mount_count": 9,
+          "raw_candidate_count": 48,
+          "returned_count": 10,
+          "entries": 10,
+          "outbound": [
+            {
+              "method": "POST",
+              "url": "http://gateway:8001/api/knowledge/fs/search",
+              "seconds": 0.6078
+            }
+          ]
+        },
+        {
+          "seconds": 0.5294,
+          "code": 200,
+          "mount_count": 9,
+          "raw_candidate_count": 48,
+          "returned_count": 10,
+          "entries": 10,
+          "outbound": [
+            {
+              "method": "POST",
+              "url": "http://gateway:8001/api/knowledge/fs/search",
+              "seconds": 0.5226
+            }
+          ]
+        },
+        {
+          "seconds": 0.497,
+          "code": 200,
+          "mount_count": 9,
+          "raw_candidate_count": 48,
+          "returned_count": 10,
+          "entries": 10,
+          "outbound": [
+            {
+              "method": "POST",
+              "url": "http://gateway:8001/api/knowledge/fs/search",
+              "seconds": 0.4903
+            }
+          ]
+        },
+        {
+          "seconds": 0.5272,
+          "code": 200,
+          "mount_count": 9,
+          "raw_candidate_count": 48,
+          "returned_count": 10,
+          "entries": 10,
+          "outbound": [
+            {
+              "method": "POST",
+              "url": "http://gateway:8001/api/knowledge/fs/search",
+              "seconds": 0.5203
+            }
+          ]
+        }
+      ],
+      "case": "9",
+      "wall_seconds": 13.394
+    }
+  ]
+}

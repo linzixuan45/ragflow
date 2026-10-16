@@ -221,7 +221,7 @@ git fetch upstream --unshallow     # 首次必须，浅克隆会让 merge-base �
 
 > **不要用上游 Go 版 MinerU 覆盖这里。** 上游实现只取 `segment.Content`，
 > 丢弃版面/图片/层级，且只支持 legacy 协议（见
-> `开发日志/RAGFlow更新-加入原仓库改动/官方更新合并评估报告-*.md` §5.3）。
+> `~/Project/LocalAgentOps/开发日志/RAGFlow更新-加入原仓库改动/官方更新合并评估报告-*.md` §5.3）。
 
 ---
 
@@ -310,4 +310,4 @@ RE2 全局构造顺序崩溃（`_GLOBAL__sub_I_RAGAnalyzer_Create`），这是
    ```
 
    逐提交的第一批清单见
-   `开发日志/RAGFlow更新-加入原仓库改动/移植清单-第一批-提交级-2026-09-30.md`。
+   `~/Project/LocalAgentOps/开发日志/RAGFlow更新-加入原仓库改动/移植清单-第一批-提交级-2026-09-30.md`。

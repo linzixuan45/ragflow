@@ -1,0 +1,207 @@
+{
+  "label": "V0",
+  "tenant": "c3c2d8a881b511f1baa7e9fdadea8503",
+  "query": "什么是人工智能",
+  "datasets": [
+    "fa5c87b8ab5611f191f7bb12e8b3da65",
+    "c4bae8f6ab4811f191f7bb12e8b3da65",
+    "7793d152acb811f1bbd2b1c12c78fb00",
+    "a2008100ab3d11f191f7bb12e8b3da65",
+    "04349d16ab5711f191f7bb12e8b3da65",
+    "a3a47d2ebc7f11f1b50e770aef6b77d1",
+    "5342ae269acb11f1a05fff335d9ac7d2",
+    "61a242ba840011f1b40c09615ee7dfcc"
+  ],
+  "context": [
+    {
+      "dataset": "fa5c87b8ab5611f191f7bb12e8b3da65",
+      "visible_documents": 1912,
+      "documents": 1912,
+      "sql": 15,
+      "search_context_s": 0.67,
+      "projection_s": 0.602,
+      "documents_calls": 3
+    },
+    {
+      "dataset": "c4bae8f6ab4811f191f7bb12e8b3da65",
+      "visible_documents": 848,
+      "documents": 848,
+      "sql": 15,
+      "search_context_s": 0.161,
+      "projection_s": 0.13,
+      "documents_calls": 3
+    },
+    {
+      "dataset": "7793d152acb811f1bbd2b1c12c78fb00",
+      "visible_documents": 848,
+      "documents": 848,
+      "sql": 15,
+      "search_context_s": 0.159,
+      "projection_s": 0.13,
+      "documents_calls": 3
+    },
+    {
+      "dataset": "a2008100ab3d11f191f7bb12e8b3da65",
+      "visible_documents": 848,
+      "documents": 848,
+      "sql": 15,
+      "search_context_s": 0.159,
+      "projection_s": 0.129,
+      "documents_calls": 3
+    },
+    {
+      "dataset": "04349d16ab5711f191f7bb12e8b3da65",
+      "visible_documents": 587,
+      "documents": 587,
+      "sql": 15,
+      "search_context_s": 0.117,
+      "projection_s": 0.095,
+      "documents_calls": 3
+    },
+    {
+      "dataset": "a3a47d2ebc7f11f1b50e770aef6b77d1",
+      "visible_documents": 220,
+      "documents": 221,
+      "sql": 53,
+      "search_context_s": 0.078,
+      "projection_s": 0.068,
+      "documents_calls": 3
+    },
+    {
+      "dataset": "5342ae269acb11f1a05fff335d9ac7d2",
+      "visible_documents": 113,
+      "documents": 113,
+      "sql": 22,
+      "search_context_s": 0.047,
+      "projection_s": 0.04,
+      "documents_calls": 3
+    },
+    {
+      "dataset": "61a242ba840011f1b40c09615ee7dfcc",
+      "visible_documents": 59,
+      "documents": 61,
+      "sql": 15,
+      "search_context_s": 0.031,
+      "projection_s": 0.027,
+      "documents_calls": 3
+    }
+  ],
+  "scaling": {
+    "1": {
+      "wall_s": 1.05,
+      "sql": 28,
+      "es_search_calls": 1,
+      "rerank_calls": 1,
+      "rerank_s": 0.1,
+      "search_context_s": 0.33,
+      "citation_context_calls": 2,
+      "citation_context_s": 0.008,
+      "returned": 2,
+      "raw_candidates": 2
+    },
+    "2": {
+      "wall_s": 2.44,
+      "sql": 170,
+      "es_search_calls": 3,
+      "rerank_calls": 2,
+      "rerank_s": 1.74,
+      "search_context_s": 0.49,
+      "citation_context_calls": 42,
+      "citation_context_s": 0.124,
+      "returned": 10,
+      "raw_candidates": 42
+    },
+    "4": {
+      "wall_s": 4.92,
+      "sql": 454,
+      "es_search_calls": 7,
+      "rerank_calls": 4,
+      "rerank_s": 3.66,
+      "search_context_s": 0.81,
+      "citation_context_calls": 122,
+      "citation_context_s": 0.288,
+      "returned": 10,
+      "raw_candidates": 122
+    },
+    "8": {
+      "wall_s": 12.35,
+      "sql": 811,
+      "es_search_calls": 13,
+      "rerank_calls": 8,
+      "rerank_s": 10.5,
+      "search_context_s": 1.09,
+      "citation_context_calls": 200,
+      "citation_context_s": 0.471,
+      "returned": 10,
+      "raw_candidates": 235
+    }
+  },
+  "loop_lag": {
+    "scopes": 8,
+    "wall_s": 12.68,
+    "samples": 274,
+    "max_stall_s": 7.77,
+    "stalls_over_50ms": 4,
+    "stall_sum_s": 10.95,
+    "stall_share": 0.864,
+    "worst_window_ops": [
+      {
+        "op": "rerank_by_model",
+        "start_offset": 1.54,
+        "duration": 0.89
+      },
+      {
+        "op": "retrieval_by_children",
+        "start_offset": 2.43,
+        "duration": 0.0
+      },
+      {
+        "op": "rerank_by_model",
+        "start_offset": 2.43,
+        "duration": 1.62
+      },
+      {
+        "op": "retrieval_by_children",
+        "start_offset": 4.05,
+        "duration": 0.0
+      },
+      {
+        "op": "rerank_by_model",
+        "start_offset": 4.06,
+        "duration": 3.61
+      },
+      {
+        "op": "retrieval_by_children",
+        "start_offset": 7.67,
+        "duration": 0.0
+      },
+      {
+        "op": "rerank_by_model",
+        "start_offset": 7.67,
+        "duration": 1.65
+      }
+    ]
+  },
+  "sql_by_table": {
+    "search_context": {
+      "total": 15,
+      "by_table": {
+        "knowledgebase": 5,
+        "document": 3,
+        "file": 5,
+        "file2document": 2
+      }
+    },
+    "full_search_1_scope": {
+      "total": 28,
+      "by_table": {
+        "knowledgebase": 8,
+        "document": 6,
+        "file": 7,
+        "file2document": 4,
+        "user_tenant": 1,
+        "tenant_langfuse": 2
+      }
+    }
+  }
+}

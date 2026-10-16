@@ -1,0 +1,210 @@
+{
+  "label": "V1",
+  "started_at": "2026-10-01T19:11:17.218253+08:00",
+  "query": "什么是人工智能",
+  "runs": 3,
+  "base": "http://127.0.0.1:9380/api/v1",
+  "control": {
+    "rerank_p50": 0.159,
+    "rerank_p90": 0.16,
+    "rerank_max": 1.269,
+    "rerank_total": 4.285,
+    "embed_p50": 0.014
+  },
+  "scope_scaling": {
+    "1": {
+      "runs": [
+        1.101,
+        0.988,
+        0.571
+      ],
+      "median": 0.99,
+      "min": 0.57,
+      "max": 1.1,
+      "items": 2,
+      "raw_candidates": 2,
+      "http": 200
+    },
+    "2": {
+      "runs": [
+        2.605,
+        1.334,
+        1.212
+      ],
+      "median": 1.33,
+      "min": 1.21,
+      "max": 2.6,
+      "items": 10,
+      "raw_candidates": 42,
+      "http": 200
+    },
+    "4": {
+      "runs": [
+        5.969,
+        6.753,
+        6.259
+      ],
+      "median": 6.26,
+      "min": 5.97,
+      "max": 6.75,
+      "items": 10,
+      "raw_candidates": 122,
+      "http": 200
+    },
+    "8": {
+      "runs": [
+        10.881,
+        9.695,
+        8.088
+      ],
+      "median": 9.7,
+      "min": 8.09,
+      "max": 10.88,
+      "items": 10,
+      "raw_candidates": 180,
+      "http": 200
+    },
+    "12": {
+      "runs": [
+        15.628,
+        13.13,
+        12.603
+      ],
+      "median": 13.13,
+      "min": 12.6,
+      "max": 15.63,
+      "items": 10,
+      "raw_candidates": 259,
+      "http": 200
+    },
+    "16": {
+      "runs": [
+        20.412,
+        18.053,
+        19.515
+      ],
+      "median": 19.52,
+      "min": 18.05,
+      "max": 20.41,
+      "items": 10,
+      "raw_candidates": 320,
+      "http": 200
+    }
+  },
+  "endpoints": {
+    "tree_big_20": {
+      "runs": [
+        0.281,
+        0.277,
+        0.278
+      ],
+      "median": 0.278,
+      "http": 200
+    },
+    "tree_big_200": {
+      "runs": [
+        0.284,
+        0.29,
+        0.292
+      ],
+      "median": 0.29,
+      "http": 200
+    },
+    "find_big": {
+      "runs": [
+        0.967,
+        0.283,
+        0.383
+      ],
+      "median": 0.383,
+      "http": 200
+    },
+    "stat_big": {
+      "runs": [
+        0.388,
+        0.428,
+        0.274
+      ],
+      "median": 0.388,
+      "http": 200
+    },
+    "usage_big": {
+      "runs": [
+        0.368,
+        0.274,
+        0.347
+      ],
+      "median": 0.347,
+      "http": 200
+    },
+    "content_big": {
+      "runs": [
+        0.346,
+        0.347,
+        0.342
+      ],
+      "median": 0.346,
+      "http": 200
+    },
+    "grep_big_1912docs": {
+      "runs": [
+        0.272,
+        0.277,
+        0.279
+      ],
+      "median": 0.277,
+      "http": 400
+    },
+    "grep_pdfs_221docs": {
+      "runs": [
+        0.118,
+        0.117,
+        0.115
+      ],
+      "median": 0.117,
+      "http": 200
+    },
+    "search_big": {
+      "runs": [
+        1.507,
+        1.494,
+        0.48
+      ],
+      "median": 1.494,
+      "http": 200
+    },
+    "search_pdfs": {
+      "runs": [
+        1.024,
+        0.4,
+        0.401
+      ],
+      "median": 0.401,
+      "http": 200
+    },
+    "tree_pdfs_ppt": {
+      "runs": [
+        0.083,
+        0.075,
+        0.075
+      ],
+      "median": 0.075,
+      "http": 200
+    }
+  },
+  "neighbor_impact": {
+    "idle": {
+      "n": 6,
+      "p50": 0.072,
+      "max": 0.076
+    },
+    "during_12_scopes": {
+      "n": 273,
+      "p50": 0.081,
+      "p95": 0.178,
+      "max": 4.1
+    },
+    "search_seconds": 33.067
+  },
+  "finished_at": "2026-10-01T19:14:43.719455+08:00"
+}

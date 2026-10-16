@@ -1,0 +1,1171 @@
+{
+  "label": "V3.8-clean12-m12quiet",
+  "started_at": "2026-10-02T01:36:37.494287+08:00",
+  "container": "ragflow-knowledge-dev-ragflow-gpu-1",
+  "runs": 20,
+  "scales": [
+    4,
+    8,
+    12
+  ],
+  "probe": {
+    "4": {
+      "scopes": 4,
+      "runs": [
+        {
+          "seconds": 0.238,
+          "http": 200,
+          "cpu_process": 0.13,
+          "cpu_cgroup": 0.115,
+          "voluntary_switches": 64,
+          "involuntary_switches": 0,
+          "load1_before": 0.94,
+          "stages": {
+            "citation": 0.003,
+            "context": 0.034,
+            "recall": 0.196,
+            "rerank": 0.102
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.245,
+          "http": 200,
+          "cpu_process": 0.12,
+          "cpu_cgroup": 0.124,
+          "voluntary_switches": 64,
+          "involuntary_switches": 0,
+          "load1_before": 0.94,
+          "stages": {
+            "citation": 0.003,
+            "context": 0.039,
+            "recall": 0.198,
+            "rerank": 0.099
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.237,
+          "http": 200,
+          "cpu_process": 0.11,
+          "cpu_cgroup": 0.116,
+          "voluntary_switches": 65,
+          "involuntary_switches": 0,
+          "load1_before": 0.94,
+          "stages": {
+            "citation": 0.003,
+            "context": 0.034,
+            "recall": 0.195,
+            "rerank": 0.101
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.245,
+          "http": 200,
+          "cpu_process": 0.13,
+          "cpu_cgroup": 0.125,
+          "voluntary_switches": 65,
+          "involuntary_switches": 0,
+          "load1_before": 0.94,
+          "stages": {
+            "citation": 0.003,
+            "context": 0.04,
+            "recall": 0.197,
+            "rerank": 0.102
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.234,
+          "http": 200,
+          "cpu_process": 0.11,
+          "cpu_cgroup": 0.116,
+          "voluntary_switches": 62,
+          "involuntary_switches": 0,
+          "load1_before": 0.94,
+          "stages": {
+            "citation": 0.003,
+            "context": 0.035,
+            "recall": 0.192,
+            "rerank": 0.096
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.241,
+          "http": 200,
+          "cpu_process": 0.16,
+          "cpu_cgroup": 0.16,
+          "voluntary_switches": 93,
+          "involuntary_switches": 0,
+          "load1_before": 0.94,
+          "stages": {
+            "citation": 0.002,
+            "context": 0.038,
+            "recall": 0.196,
+            "rerank": 0.099
+          },
+          "citation_misses": 1,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.241,
+          "http": 200,
+          "cpu_process": 0.12,
+          "cpu_cgroup": 0.115,
+          "voluntary_switches": 62,
+          "involuntary_switches": 0,
+          "load1_before": 0.95,
+          "stages": {
+            "citation": 0.003,
+            "context": 0.033,
+            "recall": 0.2,
+            "rerank": 0.103
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.246,
+          "http": 200,
+          "cpu_process": 0.13,
+          "cpu_cgroup": 0.141,
+          "voluntary_switches": 163,
+          "involuntary_switches": 0,
+          "load1_before": 0.95,
+          "stages": {
+            "citation": 0.006,
+            "context": 0.038,
+            "recall": 0.197,
+            "rerank": 0.099
+          },
+          "citation_misses": 1,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.243,
+          "http": 200,
+          "cpu_process": 0.13,
+          "cpu_cgroup": 0.129,
+          "voluntary_switches": 75,
+          "involuntary_switches": 0,
+          "load1_before": 0.95,
+          "stages": {
+            "citation": 0.003,
+            "context": 0.036,
+            "recall": 0.199,
+            "rerank": 0.094
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.233,
+          "http": 200,
+          "cpu_process": 0.12,
+          "cpu_cgroup": 0.118,
+          "voluntary_switches": 63,
+          "involuntary_switches": 0,
+          "load1_before": 0.95,
+          "stages": {
+            "citation": 0.002,
+            "context": 0.039,
+            "recall": 0.187,
+            "rerank": 0.096
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 2.3,
+          "http": 200,
+          "cpu_process": 0.26,
+          "cpu_cgroup": 0.273,
+          "voluntary_switches": 227,
+          "involuntary_switches": 11,
+          "load1_before": 0.95,
+          "stages": {
+            "citation": 0.003,
+            "context": 1.079,
+            "recall": 0.211,
+            "rerank": 0.108
+          },
+          "citation_misses": 3,
+          "citation_evictions": 0,
+          "tail": true
+        },
+        {
+          "seconds": 0.243,
+          "http": 200,
+          "cpu_process": 0.13,
+          "cpu_cgroup": 0.123,
+          "voluntary_switches": 70,
+          "involuntary_switches": 0,
+          "load1_before": 0.95,
+          "stages": {
+            "citation": 0.002,
+            "context": 0.034,
+            "recall": 0.203,
+            "rerank": 0.098
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.242,
+          "http": 200,
+          "cpu_process": 0.12,
+          "cpu_cgroup": 0.121,
+          "voluntary_switches": 68,
+          "involuntary_switches": 0,
+          "load1_before": 0.95,
+          "stages": {
+            "citation": 0.003,
+            "context": 0.034,
+            "recall": 0.2,
+            "rerank": 0.101
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.247,
+          "http": 200,
+          "cpu_process": 0.12,
+          "cpu_cgroup": 0.123,
+          "voluntary_switches": 70,
+          "involuntary_switches": 0,
+          "load1_before": 0.95,
+          "stages": {
+            "citation": 0.003,
+            "context": 0.034,
+            "recall": 0.205,
+            "rerank": 0.102
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.256,
+          "http": 200,
+          "cpu_process": 0.13,
+          "cpu_cgroup": 0.13,
+          "voluntary_switches": 65,
+          "involuntary_switches": 0,
+          "load1_before": 0.95,
+          "stages": {
+            "citation": 0.003,
+            "context": 0.036,
+            "recall": 0.21,
+            "rerank": 0.101
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.278,
+          "http": 200,
+          "cpu_process": 0.17,
+          "cpu_cgroup": 0.176,
+          "voluntary_switches": 166,
+          "involuntary_switches": 0,
+          "load1_before": 0.95,
+          "stages": {
+            "citation": 0.003,
+            "context": 0.043,
+            "recall": 0.226,
+            "rerank": 0.125
+          },
+          "citation_misses": 1,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.24,
+          "http": 200,
+          "cpu_process": 0.12,
+          "cpu_cgroup": 0.121,
+          "voluntary_switches": 68,
+          "involuntary_switches": 0,
+          "load1_before": 0.95,
+          "stages": {
+            "citation": 0.003,
+            "context": 0.039,
+            "recall": 0.191,
+            "rerank": 0.096
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.237,
+          "http": 200,
+          "cpu_process": 0.12,
+          "cpu_cgroup": 0.122,
+          "voluntary_switches": 67,
+          "involuntary_switches": 0,
+          "load1_before": 0.95,
+          "stages": {
+            "citation": 0.003,
+            "context": 0.034,
+            "recall": 0.196,
+            "rerank": 0.096
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.258,
+          "http": 200,
+          "cpu_process": 0.14,
+          "cpu_cgroup": 0.132,
+          "voluntary_switches": 69,
+          "involuntary_switches": 0,
+          "load1_before": 0.95,
+          "stages": {
+            "citation": 0.003,
+            "context": 0.046,
+            "recall": 0.202,
+            "rerank": 0.1
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.243,
+          "http": 200,
+          "cpu_process": 0.11,
+          "cpu_cgroup": 0.119,
+          "voluntary_switches": 76,
+          "involuntary_switches": 0,
+          "load1_before": 0.95,
+          "stages": {
+            "citation": 0.003,
+            "context": 0.036,
+            "recall": 0.198,
+            "rerank": 0.099
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        }
+      ],
+      "warm_p50": 0.243,
+      "tail_events": 1,
+      "tail_seconds": [
+        2.3
+      ],
+      "tail_cpu_process": [
+        0.26
+      ],
+      "tail_extra_seconds": [
+        2.057
+      ],
+      "tail_extra_cpu_process": [
+        0.135
+      ],
+      "tail_involuntary_switches": [
+        11
+      ],
+      "cpu_process_p50": 0.125,
+      "involuntary_switches_p50": 0
+    },
+    "8": {
+      "scopes": 8,
+      "runs": [
+        {
+          "seconds": 0.638,
+          "http": 200,
+          "cpu_process": 0.4,
+          "cpu_cgroup": 0.405,
+          "voluntary_switches": 118,
+          "involuntary_switches": 0,
+          "load1_before": 0.95,
+          "stages": {
+            "citation": 0.022,
+            "context": 0.045,
+            "recall": 0.546,
+            "rerank": 0.404
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.665,
+          "http": 200,
+          "cpu_process": 0.43,
+          "cpu_cgroup": 0.425,
+          "voluntary_switches": 225,
+          "involuntary_switches": 1,
+          "load1_before": 0.95,
+          "stages": {
+            "citation": 0.055,
+            "context": 0.042,
+            "recall": 0.544,
+            "rerank": 0.404
+          },
+          "citation_misses": 1,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.646,
+          "http": 200,
+          "cpu_process": 0.41,
+          "cpu_cgroup": 0.416,
+          "voluntary_switches": 180,
+          "involuntary_switches": 17,
+          "load1_before": 0.95,
+          "stages": {
+            "citation": 0.023,
+            "context": 0.051,
+            "recall": 0.546,
+            "rerank": 0.405
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.656,
+          "http": 200,
+          "cpu_process": 0.42,
+          "cpu_cgroup": 0.424,
+          "voluntary_switches": 115,
+          "involuntary_switches": 0,
+          "load1_before": 0.95,
+          "stages": {
+            "citation": 0.028,
+            "context": 0.045,
+            "recall": 0.554,
+            "rerank": 0.408
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.632,
+          "http": 200,
+          "cpu_process": 0.39,
+          "cpu_cgroup": 0.397,
+          "voluntary_switches": 113,
+          "involuntary_switches": 2,
+          "load1_before": 0.95,
+          "stages": {
+            "citation": 0.022,
+            "context": 0.041,
+            "recall": 0.545,
+            "rerank": 0.404
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.637,
+          "http": 200,
+          "cpu_process": 0.42,
+          "cpu_cgroup": 0.407,
+          "voluntary_switches": 117,
+          "involuntary_switches": 0,
+          "load1_before": 1.28,
+          "stages": {
+            "citation": 0.023,
+            "context": 0.046,
+            "recall": 0.543,
+            "rerank": 0.402
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.657,
+          "http": 200,
+          "cpu_process": 0.42,
+          "cpu_cgroup": 0.433,
+          "voluntary_switches": 261,
+          "involuntary_switches": 0,
+          "load1_before": 1.28,
+          "stages": {
+            "citation": 0.025,
+            "context": 0.044,
+            "recall": 0.563,
+            "rerank": 0.409
+          },
+          "citation_misses": 2,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.642,
+          "http": 200,
+          "cpu_process": 0.41,
+          "cpu_cgroup": 0.405,
+          "voluntary_switches": 115,
+          "involuntary_switches": 1,
+          "load1_before": 1.28,
+          "stages": {
+            "citation": 0.023,
+            "context": 0.042,
+            "recall": 0.551,
+            "rerank": 0.406
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.646,
+          "http": 200,
+          "cpu_process": 0.43,
+          "cpu_cgroup": 0.429,
+          "voluntary_switches": 167,
+          "involuntary_switches": 1,
+          "load1_before": 1.28,
+          "stages": {
+            "citation": 0.025,
+            "context": 0.045,
+            "recall": 0.55,
+            "rerank": 0.408
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.644,
+          "http": 200,
+          "cpu_process": 0.41,
+          "cpu_cgroup": 0.419,
+          "voluntary_switches": 184,
+          "involuntary_switches": 0,
+          "load1_before": 1.28,
+          "stages": {
+            "citation": 0.024,
+            "context": 0.045,
+            "recall": 0.55,
+            "rerank": 0.412
+          },
+          "citation_misses": 1,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.652,
+          "http": 200,
+          "cpu_process": 0.41,
+          "cpu_cgroup": 0.415,
+          "voluntary_switches": 113,
+          "involuntary_switches": 0,
+          "load1_before": 1.28,
+          "stages": {
+            "citation": 0.031,
+            "context": 0.041,
+            "recall": 0.55,
+            "rerank": 0.406
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.638,
+          "http": 200,
+          "cpu_process": 0.43,
+          "cpu_cgroup": 0.427,
+          "voluntary_switches": 159,
+          "involuntary_switches": 0,
+          "load1_before": 1.28,
+          "stages": {
+            "citation": 0.023,
+            "context": 0.046,
+            "recall": 0.543,
+            "rerank": 0.404
+          },
+          "citation_misses": 1,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.639,
+          "http": 200,
+          "cpu_process": 0.4,
+          "cpu_cgroup": 0.405,
+          "voluntary_switches": 112,
+          "involuntary_switches": 1,
+          "load1_before": 1.28,
+          "stages": {
+            "citation": 0.023,
+            "context": 0.044,
+            "recall": 0.546,
+            "rerank": 0.405
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.674,
+          "http": 200,
+          "cpu_process": 0.53,
+          "cpu_cgroup": 0.524,
+          "voluntary_switches": 435,
+          "involuntary_switches": 4,
+          "load1_before": 1.25,
+          "stages": {
+            "citation": 0.036,
+            "context": 0.042,
+            "recall": 0.572,
+            "rerank": 0.425
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.677,
+          "http": 200,
+          "cpu_process": 0.53,
+          "cpu_cgroup": 0.54,
+          "voluntary_switches": 668,
+          "involuntary_switches": 2,
+          "load1_before": 1.25,
+          "stages": {
+            "citation": 0.028,
+            "context": 0.051,
+            "recall": 0.574,
+            "rerank": 0.422
+          },
+          "citation_misses": 1,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.654,
+          "http": 200,
+          "cpu_process": 0.48,
+          "cpu_cgroup": 0.471,
+          "voluntary_switches": 381,
+          "involuntary_switches": 0,
+          "load1_before": 1.25,
+          "stages": {
+            "citation": 0.029,
+            "context": 0.051,
+            "recall": 0.551,
+            "rerank": 0.4
+          },
+          "citation_misses": 1,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.68,
+          "http": 200,
+          "cpu_process": 0.53,
+          "cpu_cgroup": 0.54,
+          "voluntary_switches": 644,
+          "involuntary_switches": 3,
+          "load1_before": 1.25,
+          "stages": {
+            "citation": 0.03,
+            "context": 0.05,
+            "recall": 0.576,
+            "rerank": 0.423
+          },
+          "citation_misses": 2,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.687,
+          "http": 200,
+          "cpu_process": 0.51,
+          "cpu_cgroup": 0.504,
+          "voluntary_switches": 573,
+          "involuntary_switches": 5,
+          "load1_before": 1.25,
+          "stages": {
+            "citation": 0.042,
+            "context": 0.051,
+            "recall": 0.568,
+            "rerank": 0.418
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.681,
+          "http": 200,
+          "cpu_process": 0.52,
+          "cpu_cgroup": 0.532,
+          "voluntary_switches": 700,
+          "involuntary_switches": 8,
+          "load1_before": 1.25,
+          "stages": {
+            "citation": 0.033,
+            "context": 0.053,
+            "recall": 0.569,
+            "rerank": 0.422
+          },
+          "citation_misses": 1,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.637,
+          "http": 200,
+          "cpu_process": 0.45,
+          "cpu_cgroup": 0.45,
+          "voluntary_switches": 152,
+          "involuntary_switches": 0,
+          "load1_before": 1.25,
+          "stages": {
+            "citation": 0.024,
+            "context": 0.045,
+            "recall": 0.542,
+            "rerank": 0.403
+          },
+          "citation_misses": 1,
+          "citation_evictions": 0,
+          "tail": false
+        }
+      ],
+      "warm_p50": 0.649,
+      "tail_events": 0,
+      "tail_seconds": [],
+      "tail_cpu_process": [],
+      "tail_extra_seconds": [],
+      "tail_extra_cpu_process": [],
+      "tail_involuntary_switches": [],
+      "cpu_process_p50": 0.425,
+      "involuntary_switches_p50": 1
+    },
+    "12": {
+      "scopes": 12,
+      "runs": [
+        {
+          "seconds": 1.018,
+          "http": 200,
+          "cpu_process": 0.62,
+          "cpu_cgroup": 0.632,
+          "voluntary_switches": 301,
+          "involuntary_switches": 2,
+          "load1_before": 1.23,
+          "stages": {
+            "citation": 0.11,
+            "context": 0.052,
+            "recall": 0.674,
+            "rerank": 0.333
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.847,
+          "http": 200,
+          "cpu_process": 0.61,
+          "cpu_cgroup": 0.611,
+          "voluntary_switches": 199,
+          "involuntary_switches": 1,
+          "load1_before": 1.23,
+          "stages": {
+            "citation": 0.111,
+            "context": 0.046,
+            "recall": 0.514,
+            "rerank": 0.33
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.865,
+          "http": 200,
+          "cpu_process": 0.65,
+          "cpu_cgroup": 0.657,
+          "voluntary_switches": 243,
+          "involuntary_switches": 1,
+          "load1_before": 1.23,
+          "stages": {
+            "citation": 0.114,
+            "context": 0.048,
+            "recall": 0.531,
+            "rerank": 0.342
+          },
+          "citation_misses": 1,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.997,
+          "http": 200,
+          "cpu_process": 0.62,
+          "cpu_cgroup": 0.614,
+          "voluntary_switches": 175,
+          "involuntary_switches": 0,
+          "load1_before": 1.13,
+          "stages": {
+            "citation": 0.111,
+            "context": 0.048,
+            "recall": 0.663,
+            "rerank": 0.33
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 1.441,
+          "http": 200,
+          "cpu_process": 1.18,
+          "cpu_cgroup": 1.191,
+          "voluntary_switches": 345,
+          "involuntary_switches": 6,
+          "load1_before": 1.13,
+          "stages": {
+            "citation": 0.7,
+            "context": 0.047,
+            "recall": 0.514,
+            "rerank": 0.33
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": true
+        },
+        {
+          "seconds": 0.897,
+          "http": 200,
+          "cpu_process": 0.71,
+          "cpu_cgroup": 0.713,
+          "voluntary_switches": 662,
+          "involuntary_switches": 2,
+          "load1_before": 1.13,
+          "stages": {
+            "citation": 0.115,
+            "context": 0.072,
+            "recall": 0.534,
+            "rerank": 0.337
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.891,
+          "http": 200,
+          "cpu_process": 0.66,
+          "cpu_cgroup": 0.654,
+          "voluntary_switches": 211,
+          "involuntary_switches": 6,
+          "load1_before": 1.13,
+          "stages": {
+            "citation": 0.109,
+            "context": 0.049,
+            "recall": 0.557,
+            "rerank": 0.371
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.877,
+          "http": 200,
+          "cpu_process": 0.65,
+          "cpu_cgroup": 0.664,
+          "voluntary_switches": 393,
+          "involuntary_switches": 3,
+          "load1_before": 1.13,
+          "stages": {
+            "citation": 0.132,
+            "context": 0.047,
+            "recall": 0.52,
+            "rerank": 0.343
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 1.029,
+          "http": 200,
+          "cpu_process": 0.72,
+          "cpu_cgroup": 0.713,
+          "voluntary_switches": 549,
+          "involuntary_switches": 13,
+          "load1_before": 1.04,
+          "stages": {
+            "citation": 0.113,
+            "context": 0.062,
+            "recall": 0.672,
+            "rerank": 0.334
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 2.006,
+          "http": 200,
+          "cpu_process": 0.62,
+          "cpu_cgroup": 0.626,
+          "voluntary_switches": 198,
+          "involuntary_switches": 1,
+          "load1_before": 1.04,
+          "stages": {
+            "citation": 0.113,
+            "context": 0.048,
+            "recall": 0.667,
+            "rerank": 0.333
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": true
+        },
+        {
+          "seconds": 1.866,
+          "http": 200,
+          "cpu_process": 0.66,
+          "cpu_cgroup": 0.683,
+          "voluntary_switches": 285,
+          "involuntary_switches": 4,
+          "load1_before": 1.04,
+          "stages": {
+            "citation": 0.113,
+            "context": 1.051,
+            "recall": 0.525,
+            "rerank": 0.338
+          },
+          "citation_misses": 2,
+          "citation_evictions": 0,
+          "tail": true
+        },
+        {
+          "seconds": 0.856,
+          "http": 200,
+          "cpu_process": 0.63,
+          "cpu_cgroup": 0.624,
+          "voluntary_switches": 213,
+          "involuntary_switches": 4,
+          "load1_before": 0.96,
+          "stages": {
+            "citation": 0.114,
+            "context": 0.046,
+            "recall": 0.518,
+            "rerank": 0.332
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.86,
+          "http": 200,
+          "cpu_process": 0.62,
+          "cpu_cgroup": 0.623,
+          "voluntary_switches": 250,
+          "involuntary_switches": 1,
+          "load1_before": 0.96,
+          "stages": {
+            "citation": 0.114,
+            "context": 0.047,
+            "recall": 0.52,
+            "rerank": 0.332
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 1.408,
+          "http": 200,
+          "cpu_process": 1.15,
+          "cpu_cgroup": 1.163,
+          "voluntary_switches": 321,
+          "involuntary_switches": 6,
+          "load1_before": 0.96,
+          "stages": {
+            "citation": 0.655,
+            "context": 0.047,
+            "recall": 0.527,
+            "rerank": 0.332
+          },
+          "citation_misses": 1,
+          "citation_evictions": 0,
+          "tail": true
+        },
+        {
+          "seconds": 1.044,
+          "http": 200,
+          "cpu_process": 0.65,
+          "cpu_cgroup": 0.649,
+          "voluntary_switches": 249,
+          "involuntary_switches": 2,
+          "load1_before": 0.96,
+          "stages": {
+            "citation": 0.152,
+            "context": 0.047,
+            "recall": 0.664,
+            "rerank": 0.337
+          },
+          "citation_misses": 1,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.863,
+          "http": 200,
+          "cpu_process": 0.62,
+          "cpu_cgroup": 0.627,
+          "voluntary_switches": 266,
+          "involuntary_switches": 2,
+          "load1_before": 0.96,
+          "stages": {
+            "citation": 0.112,
+            "context": 0.053,
+            "recall": 0.519,
+            "rerank": 0.334
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.861,
+          "http": 200,
+          "cpu_process": 0.63,
+          "cpu_cgroup": 0.627,
+          "voluntary_switches": 182,
+          "involuntary_switches": 3,
+          "load1_before": 0.88,
+          "stages": {
+            "citation": 0.118,
+            "context": 0.049,
+            "recall": 0.515,
+            "rerank": 0.334
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.897,
+          "http": 200,
+          "cpu_process": 0.68,
+          "cpu_cgroup": 0.68,
+          "voluntary_switches": 374,
+          "involuntary_switches": 4,
+          "load1_before": 0.88,
+          "stages": {
+            "citation": 0.114,
+            "context": 0.048,
+            "recall": 0.557,
+            "rerank": 0.338
+          },
+          "citation_misses": 2,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.854,
+          "http": 200,
+          "cpu_process": 0.61,
+          "cpu_cgroup": 0.613,
+          "voluntary_switches": 155,
+          "involuntary_switches": 5,
+          "load1_before": 0.88,
+          "stages": {
+            "citation": 0.11,
+            "context": 0.047,
+            "recall": 0.52,
+            "rerank": 0.332
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.89,
+          "http": 200,
+          "cpu_process": 0.65,
+          "cpu_cgroup": 0.648,
+          "voluntary_switches": 259,
+          "involuntary_switches": 2,
+          "load1_before": 0.88,
+          "stages": {
+            "citation": 0.141,
+            "context": 0.047,
+            "recall": 0.523,
+            "rerank": 0.334
+          },
+          "citation_misses": 1,
+          "citation_evictions": 0,
+          "tail": false
+        }
+      ],
+      "warm_p50": 0.894,
+      "tail_events": 4,
+      "tail_seconds": [
+        1.441,
+        2.006,
+        1.866,
+        1.408
+      ],
+      "tail_cpu_process": [
+        1.18,
+        0.62,
+        0.66,
+        1.15
+      ],
+      "tail_extra_seconds": [
+        0.547,
+        1.112,
+        0.972,
+        0.514
+      ],
+      "tail_extra_cpu_process": [
+        0.53,
+        -0.03,
+        0.01,
+        0.5
+      ],
+      "tail_involuntary_switches": [
+        6,
+        1,
+        4,
+        6
+      ],
+      "cpu_process_p50": 0.65,
+      "involuntary_switches_p50": 2
+    }
+  },
+  "finished_at": "2026-10-02T01:37:22.937679+08:00"
+}

@@ -1,0 +1,306 @@
+{
+  "label": "V3.8-clean12-m12cpu",
+  "started_at": "2026-10-02T01:32:45.089020+08:00",
+  "container": "ragflow-knowledge-dev-ragflow-gpu-1",
+  "runs": 15,
+  "scales": [
+    12
+  ],
+  "probe": {
+    "12": {
+      "scopes": 12,
+      "runs": [
+        {
+          "seconds": 0.84,
+          "http": 200,
+          "cpu_process": 0.59,
+          "cpu_cgroup": 1.44,
+          "voluntary_switches": 180,
+          "involuntary_switches": 4,
+          "load1_before": 1.54,
+          "stages": {
+            "citation": 0.107,
+            "context": 0.047,
+            "recall": 0.516,
+            "rerank": 0.329
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.999,
+          "http": 200,
+          "cpu_process": 0.62,
+          "cpu_cgroup": 1.616,
+          "voluntary_switches": 170,
+          "involuntary_switches": 1,
+          "load1_before": 1.54,
+          "stages": {
+            "citation": 0.113,
+            "context": 0.048,
+            "recall": 0.66,
+            "rerank": 0.335
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.87,
+          "http": 200,
+          "cpu_process": 0.64,
+          "cpu_cgroup": 1.503,
+          "voluntary_switches": 178,
+          "involuntary_switches": 1,
+          "load1_before": 1.54,
+          "stages": {
+            "citation": 0.111,
+            "context": 0.058,
+            "recall": 0.524,
+            "rerank": 0.335
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 1.07,
+          "http": 200,
+          "cpu_process": 0.66,
+          "cpu_cgroup": 1.742,
+          "voluntary_switches": 315,
+          "involuntary_switches": 2,
+          "load1_before": 1.66,
+          "stages": {
+            "citation": 0.178,
+            "context": 0.048,
+            "recall": 0.669,
+            "rerank": 0.333
+          },
+          "citation_misses": 2,
+          "citation_evictions": 2,
+          "tail": false
+        },
+        {
+          "seconds": 0.888,
+          "http": 200,
+          "cpu_process": 0.65,
+          "cpu_cgroup": 1.537,
+          "voluntary_switches": 368,
+          "involuntary_switches": 2,
+          "load1_before": 1.66,
+          "stages": {
+            "citation": 0.112,
+            "context": 0.072,
+            "recall": 0.527,
+            "rerank": 0.336
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.863,
+          "http": 200,
+          "cpu_process": 0.65,
+          "cpu_cgroup": 1.512,
+          "voluntary_switches": 260,
+          "involuntary_switches": 6,
+          "load1_before": 1.66,
+          "stages": {
+            "citation": 0.109,
+            "context": 0.049,
+            "recall": 0.53,
+            "rerank": 0.339
+          },
+          "citation_misses": 1,
+          "citation_evictions": 1,
+          "tail": false
+        },
+        {
+          "seconds": 0.857,
+          "http": 200,
+          "cpu_process": 0.62,
+          "cpu_cgroup": 1.472,
+          "voluntary_switches": 175,
+          "involuntary_switches": 2,
+          "load1_before": 1.66,
+          "stages": {
+            "citation": 0.112,
+            "context": 0.048,
+            "recall": 0.524,
+            "rerank": 0.337
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.912,
+          "http": 200,
+          "cpu_process": 0.77,
+          "cpu_cgroup": 1.684,
+          "voluntary_switches": 633,
+          "involuntary_switches": 13,
+          "load1_before": 1.66,
+          "stages": {
+            "citation": 0.126,
+            "context": 0.049,
+            "recall": 0.561,
+            "rerank": 0.365
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 1.457,
+          "http": 200,
+          "cpu_process": 1.29,
+          "cpu_cgroup": 2.3,
+          "voluntary_switches": 728,
+          "involuntary_switches": 13,
+          "load1_before": 1.69,
+          "stages": {
+            "citation": 0.132,
+            "context": 0.057,
+            "recall": 1.096,
+            "rerank": 0.362
+          },
+          "citation_misses": 1,
+          "citation_evictions": 1,
+          "tail": true
+        },
+        {
+          "seconds": 0.892,
+          "http": 200,
+          "cpu_process": 0.65,
+          "cpu_cgroup": 0.653,
+          "voluntary_switches": 581,
+          "involuntary_switches": 6,
+          "load1_before": 1.69,
+          "stages": {
+            "citation": 0.112,
+            "context": 0.069,
+            "recall": 0.538,
+            "rerank": 0.337
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.852,
+          "http": 200,
+          "cpu_process": 0.61,
+          "cpu_cgroup": 0.617,
+          "voluntary_switches": 284,
+          "involuntary_switches": 2,
+          "load1_before": 1.69,
+          "stages": {
+            "citation": 0.116,
+            "context": 0.047,
+            "recall": 0.515,
+            "rerank": 0.333
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 0.891,
+          "http": 200,
+          "cpu_process": 0.64,
+          "cpu_cgroup": 0.642,
+          "voluntary_switches": 380,
+          "involuntary_switches": 2,
+          "load1_before": 1.69,
+          "stages": {
+            "citation": 0.158,
+            "context": 0.047,
+            "recall": 0.515,
+            "rerank": 0.333
+          },
+          "citation_misses": 1,
+          "citation_evictions": 1,
+          "tail": false
+        },
+        {
+          "seconds": 0.885,
+          "http": 200,
+          "cpu_process": 0.7,
+          "cpu_cgroup": 0.698,
+          "voluntary_switches": 659,
+          "involuntary_switches": 4,
+          "load1_before": 1.69,
+          "stages": {
+            "citation": 0.117,
+            "context": 0.052,
+            "recall": 0.542,
+            "rerank": 0.346
+          },
+          "citation_misses": 1,
+          "citation_evictions": 1,
+          "tail": false
+        },
+        {
+          "seconds": 1.044,
+          "http": 200,
+          "cpu_process": 0.73,
+          "cpu_cgroup": 0.74,
+          "voluntary_switches": 660,
+          "involuntary_switches": 7,
+          "load1_before": 1.55,
+          "stages": {
+            "citation": 0.127,
+            "context": 0.047,
+            "recall": 0.695,
+            "rerank": 0.345
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        },
+        {
+          "seconds": 1.027,
+          "http": 200,
+          "cpu_process": 0.65,
+          "cpu_cgroup": 1.589,
+          "voluntary_switches": 461,
+          "involuntary_switches": 3,
+          "load1_before": 1.55,
+          "stages": {
+            "citation": 0.11,
+            "context": 0.066,
+            "recall": 0.678,
+            "rerank": 0.337
+          },
+          "citation_misses": 0,
+          "citation_evictions": 0,
+          "tail": false
+        }
+      ],
+      "warm_p50": 0.891,
+      "tail_events": 1,
+      "tail_seconds": [
+        1.457
+      ],
+      "tail_cpu_process": [
+        1.29
+      ],
+      "tail_extra_seconds": [
+        0.566
+      ],
+      "tail_extra_cpu_process": [
+        0.64
+      ],
+      "tail_involuntary_switches": [
+        13
+      ],
+      "cpu_process_p50": 0.65,
+      "involuntary_switches_p50": 3
+    }
+  },
+  "finished_at": "2026-10-02T01:33:01.395053+08:00"
+}

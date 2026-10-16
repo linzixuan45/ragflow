@@ -1,0 +1,171 @@
+{
+  "label": "V2",
+  "tenant": "c3c2d8a881b511f1baa7e9fdadea8503",
+  "query": "什么是人工智能",
+  "datasets": [
+    "fa5c87b8ab5611f191f7bb12e8b3da65",
+    "c4bae8f6ab4811f191f7bb12e8b3da65",
+    "7793d152acb811f1bbd2b1c12c78fb00",
+    "a2008100ab3d11f191f7bb12e8b3da65",
+    "04349d16ab5711f191f7bb12e8b3da65",
+    "a3a47d2ebc7f11f1b50e770aef6b77d1",
+    "5342ae269acb11f1a05fff335d9ac7d2",
+    "61a242ba840011f1b40c09615ee7dfcc"
+  ],
+  "context": [
+    {
+      "dataset": "fa5c87b8ab5611f191f7bb12e8b3da65",
+      "visible_documents": 1912,
+      "documents": 1912,
+      "sql": 12,
+      "search_context_s": 0.223,
+      "projection_s": 0.155,
+      "documents_calls": 2
+    },
+    {
+      "dataset": "c4bae8f6ab4811f191f7bb12e8b3da65",
+      "visible_documents": 848,
+      "documents": 848,
+      "sql": 12,
+      "search_context_s": 0.107,
+      "projection_s": 0.075,
+      "documents_calls": 2
+    },
+    {
+      "dataset": "7793d152acb811f1bbd2b1c12c78fb00",
+      "visible_documents": 848,
+      "documents": 848,
+      "sql": 12,
+      "search_context_s": 0.449,
+      "projection_s": 0.073,
+      "documents_calls": 2
+    },
+    {
+      "dataset": "a2008100ab3d11f191f7bb12e8b3da65",
+      "visible_documents": 848,
+      "documents": 848,
+      "sql": 12,
+      "search_context_s": 0.11,
+      "projection_s": 0.08,
+      "documents_calls": 2
+    },
+    {
+      "dataset": "04349d16ab5711f191f7bb12e8b3da65",
+      "visible_documents": 587,
+      "documents": 587,
+      "sql": 12,
+      "search_context_s": 0.078,
+      "projection_s": 0.056,
+      "documents_calls": 2
+    },
+    {
+      "dataset": "a3a47d2ebc7f11f1b50e770aef6b77d1",
+      "visible_documents": 220,
+      "documents": 221,
+      "sql": 16,
+      "search_context_s": 0.052,
+      "projection_s": 0.041,
+      "documents_calls": 2
+    },
+    {
+      "dataset": "5342ae269acb11f1a05fff335d9ac7d2",
+      "visible_documents": 113,
+      "documents": 113,
+      "sql": 15,
+      "search_context_s": 0.036,
+      "projection_s": 0.029,
+      "documents_calls": 2
+    },
+    {
+      "dataset": "61a242ba840011f1b40c09615ee7dfcc",
+      "visible_documents": 59,
+      "documents": 61,
+      "sql": 12,
+      "search_context_s": 0.027,
+      "projection_s": 0.022,
+      "documents_calls": 2
+    }
+  ],
+  "scaling": {
+    "1": {
+      "wall_s": 1.05,
+      "sql": 25,
+      "es_search_calls": 1,
+      "rerank_calls": 1,
+      "rerank_s": 0.1,
+      "search_context_s": 0.22,
+      "citation_context_calls": 2,
+      "citation_context_s": 0.006,
+      "returned": 2,
+      "raw_candidates": 2
+    },
+    "2": {
+      "wall_s": 2.28,
+      "sql": 164,
+      "es_search_calls": 3,
+      "rerank_calls": 2,
+      "rerank_s": 1.77,
+      "search_context_s": 0.34,
+      "citation_context_calls": 42,
+      "citation_context_s": 0.093,
+      "returned": 10,
+      "raw_candidates": 42
+    },
+    "4": {
+      "wall_s": 4.46,
+      "sql": 442,
+      "es_search_calls": 7,
+      "rerank_calls": 4,
+      "rerank_s": 6.12,
+      "search_context_s": 0.56,
+      "citation_context_calls": 122,
+      "citation_context_s": 0.265,
+      "returned": 10,
+      "raw_candidates": 122
+    },
+    "8": {
+      "wall_s": 10.91,
+      "sql": 749,
+      "es_search_calls": 13,
+      "rerank_calls": 8,
+      "rerank_s": 39.14,
+      "search_context_s": 0.73,
+      "citation_context_calls": 200,
+      "citation_context_s": 0.447,
+      "returned": 10,
+      "raw_candidates": 235
+    }
+  },
+  "loop_lag": {
+    "scopes": 8,
+    "wall_s": 11.18,
+    "samples": 1697,
+    "max_stall_s": 0.16,
+    "stalls_over_50ms": 5,
+    "stall_sum_s": 0.37,
+    "stall_share": 0.033,
+    "worst_window_ops": []
+  },
+  "sql_by_table": {
+    "search_context": {
+      "total": 12,
+      "by_table": {
+        "knowledgebase": 4,
+        "document": 2,
+        "file": 5,
+        "file2document": 1
+      }
+    },
+    "full_search_1_scope": {
+      "total": 25,
+      "by_table": {
+        "knowledgebase": 7,
+        "document": 5,
+        "file": 7,
+        "file2document": 3,
+        "user_tenant": 1,
+        "tenant_langfuse": 2
+      }
+    }
+  }
+}
