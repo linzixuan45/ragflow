@@ -1,66 +1,66 @@
-# RAGFlow Instructions
+# RAGFlow 仓库操作指南
 
-Use this file as the local operating guide for the current codebase. Prefer the code and the current ARCHITECTURE.md over any older convention or remembered project shape.
+本文件是当前代码库的本地操作指南。**以代码与 [ARCHITECTURE.md](ARCHITECTURE.md) 为准**，不要依据旧约定或记忆中的项目形态。
 
-## Core stance
-- Treat legacy code as liability, not as a compatibility target.
-- Prefer deletion over shims, deprecated branches, wrapper APIs, and dual-track migration notes.
-- If old and new implementations coexist, converge to one path unless an external contract forces compatibility.
-- Remove dead tests, commented-out code, stale docs, and "move later" notes instead of preserving them.
-- Reduce public surface area when a helper can be made private or internal.
-- Keep refactors centered on the owning abstraction, not on adjacent compatibility layers.
+## 核心立场
+- 遗留代码是负债，不是兼容目标。
+- 优先删除，而不是保留 shim、deprecated 分支、包装 API 或双轨迁移说明。
+- 新旧实现并存时收敛到一条路径，除非外部契约强制要求兼容。
+- 删除死测试、注释掉的代码、过期文档与「以后再清理」的说明，而不是留着它们。
+- 能私有化的 helper 就私有化，缩小公开面。
+- 重构围绕拥有该行为的抽象，不要围绕相邻的兼容层。
 
-## Current stack
-- Backend: Python 3.13+, Quart-based API server, Peewee ORM, async workers.
-- Frontend: React + TypeScript + Vite in `web/`.
-- Go: the repository also has a substantial Go module for servers, ingestion, parser/runtime, CLI, and supporting services.
-- Runtime services commonly include MySQL/PostgreSQL, Redis, MinIO, and Elasticsearch/Infinity/OpenSearch depending on configuration.
+## 当前技术栈
+- 后端：Python 3.13+、Quart API 服务、Peewee ORM、异步 worker。
+- 前端：`web/` 下的 React + TypeScript + Vite。
+- Go：仓库另有一个体量可观的 Go module，覆盖 server、ingestion、parser/runtime、CLI 与配套服务。
+- 运行时依赖按配置可能包括 MySQL/PostgreSQL、Redis、MinIO，以及 Elasticsearch/Infinity/OpenSearch。
 
-## Code layout to expect
-- `api/`: Python API server entrypoints, blueprints, services, and database code.
-- `rag/`: ingestion, retrieval, LLM integration, and graph RAG logic.
-- `deepdoc/`: parsing and OCR.
-- `agent/`: workflow canvas, components, tools, and templates.
-- `cmd/`: Go entrypoints. `ragflow_main` is the main server/admin/ingestor binary surface; `ragflow-cli` is the CLI entrypoint.
-- `internal/`: main Go application code. Important subtrees:
-- `internal/agent/`: Go agent runtime, canvas execution, components, tool bindings, workflow helpers.
-- `internal/cli/`: CLI parsing, HTTP transport, command execution, response formatting.
-- `internal/dao/`: Go data-access layer and persistence-facing helpers.
-- `internal/deepdoc/`: Go DeepDOC integrations, especially native-backed PDF/DOCX parsing.
-- `internal/engine/`: search/index backends such as Elasticsearch and Infinity.
-- `internal/entity/`: shared Go entities and model definitions.
-- `internal/handler/`: HTTP handlers and route-facing request logic.
-- `internal/ingestion/`: Go ingestion pipeline, canvas adapter, components, wiring, service orchestration.
-- `internal/ingestion/component/`: stage implementations such as file/parser/chunker/tokenizer/extractor.
-- `internal/ingestion/pipeline/`: DSL translation, canvas-driven execution, checkpoints, resume/run logic.
-- `internal/parser/`: parser and chunk libraries used by ingestion and other Go paths.
-- `internal/parser/parser/`: typed parse-result parsers for markdown/html/pdf/docx/xlsx/text and related families.
-- `internal/parser/chunk/`: chunk operator library and DSL/typed execution helpers.
-- `internal/service/`: higher-level business services used by handlers and server flows.
-- `internal/storage/`: storage backends and in-memory test doubles.
-- `internal/router/`: HTTP route registration.
-- `internal/server/`: server bootstrap/config wiring.
-- `internal/binding/cpp/`: C++ sources used by native-backed Go features.
-- `web/`: frontend application.
-- `docker/`: local and production compose files.
-- `sdk/` and `test/`: SDK and automated tests.
+## 代码布局
+- `api/`：Python API 服务入口、blueprint、service 与数据库代码。
+- `rag/`：摄取、检索、LLM 集成与 GraphRAG 逻辑。
+- `deepdoc/`：解析与 OCR。
+- `agent/`：工作流画布、组件、工具与模板。
+- `cmd/`：Go 入口。`ragflow_main` 是主服务/管理/摄取二进制入口；`ragflow-cli` 是 CLI 入口。
+- `internal/`：Go 主应用代码。重要子树：
+- `internal/agent/`：Go agent 运行时、画布执行、组件、工具绑定与工作流辅助。
+- `internal/cli/`：CLI 解析、HTTP 传输、命令执行与响应格式化。
+- `internal/dao/`：Go 数据访问层与持久化辅助。
+- `internal/deepdoc/`：Go 侧 DeepDOC 集成，尤其是原生 PDF/DOCX 解析。
+- `internal/engine/`：检索/索引后端，如 Elasticsearch 与 Infinity。
+- `internal/entity/`：共享 Go 实体与模型定义。
+- `internal/handler/`：HTTP handler 与面向路由的请求逻辑。
+- `internal/ingestion/`：Go 摄取流水线、画布适配器、组件、装配与服务编排。
+- `internal/ingestion/component/`：file/parser/chunker/tokenizer/extractor 等阶段实现。
+- `internal/ingestion/pipeline/`：DSL 转换、画布驱动执行、检查点与恢复/运行逻辑。
+- `internal/parser/`：摄取等 Go 路径使用的解析器与分块库。
+- `internal/parser/parser/`：markdown/html/pdf/docx/xlsx/text 等类型的解析结果解析器。
+- `internal/parser/chunk/`：分块算子库与 DSL/类型化执行辅助。
+- `internal/service/`：handler 与 server 流程使用的高层业务服务。
+- `internal/storage/`：存储后端与内存测试替身。
+- `internal/router/`：HTTP 路由注册。
+- `internal/server/`：服务启动与配置装配。
+- `internal/binding/cpp/`：原生 Go 能力使用的 C++ 源码。
+- `web/`：前端应用。
+- `docker/`：本地与生产 compose 文件。
+- `sdk/` 与 `test/`：SDK 与自动化测试。
 
-## Go-specific rules
-- Treat `internal/ingestion`, `internal/parser`, and `internal/deepdoc` as actively refactored code. Prefer collapsing duplicate paths over preserving transitional wrappers.
-- Do not add or preserve deprecated Go APIs just to ease migration inside the repo.
-- Remove commented-out Go code instead of leaving recovery notes in place.
-- Keep package comments and doc comments aligned with the current runtime path, not with migration history.
+## Go 侧规则
+- `internal/ingestion`、`internal/parser`、`internal/deepdoc` 是仍在重构中的代码：优先合并重复路径，不要保留过渡性包装。
+- 不要为了仓库内部迁移而新增或保留 deprecated 的 Go API。
+- 删除注释掉的 Go 代码，不要留下「恢复用」的说明。
+- package / doc 注释要与**当前**运行路径一致，不要写迁移历史。
 
-## Working rules
-- Before editing, inspect the nearest code path that actually owns the behavior.
-- Keep changes small and local unless the task is explicitly a broader refactor.
-- Prefer one implementation path instead of preserving old and new versions side by side.
-- Preserve behavior with focused tests when the behavior is still valid; do not keep tests that protect obsolete behavior.
-- If a surface is only there for compatibility, remove it unless the user asks to keep it.
-- Do not add new compatibility wording in comments or docs.
+## 工作准则
+- 改之前先看真正拥有该行为的那条代码路径。
+- 除非任务明确要求更大范围重构，否则保持改动小且局部。
+- 只保留一条实现路径，不要新旧两版并存。
+- 行为仍然有效时用聚焦测试锁住；不要保留维护过时行为的测试。
+- 只为兼容而存在的表面，除非用户要求保留，否则删掉。
+- 注释与文档里不要新增兼容性措辞。
 
-## Commands
-### Backend
+## 命令
+### 后端
 ```bash
 uv sync --python 3.13 --all-extras
 uv run python3 ragflow_deps/download_deps.py
@@ -69,20 +69,20 @@ source .venv/bin/activate
 export PYTHONPATH=$(pwd)
 bash docker/launch_backend_service.sh
 uv run pytest
-# ruff is pinned in the `lint` dependency group (uv.lock); a bare `ruff` picks up
-# whatever is on PATH, which can differ from CI.
+# ruff 由 `lint` 依赖组（uv.lock）定版；裸 `ruff` 取的是 PATH 上的任意版本，
+# 可能与 CI 不一致。
 uv run --group lint ruff check
 uv run --group lint ruff format
 ```
 
-### Docs and hooks
+### 文档与钩子
 ```bash
-npm install                                  # root: provides lefthook for the git hooks
-python3 tools/hooks/check_files.py docs      # Docs-as-Code gate (the pre-commit hook runs this)
-python3 tools/hooks/check_files.py symbols   # code-citation drift only
+npm install                                  # 仓库根：为 git 钩子提供 lefthook
+python3 tools/hooks/check_files.py docs      # Docs-as-Code 闸门（pre-commit 钩子跑的就是这条）
+python3 tools/hooks/check_files.py symbols   # 只查代码引用漂移
 ```
 
-### Frontend
+### 前端
 ```bash
 cd web
 npm install
@@ -98,18 +98,18 @@ npm run type-check
 uv run ragflow_deps/download_deps.py
 bash build.sh --test ./path/to/package/...
 bash build.sh --go
-# or build specific binaries:
+# 或构建指定二进制：
 bash build.sh --all
 ```
 
-## Validation preference
-- Run the narrowest relevant test, lint, or build command after a change.
-- For docs changes, run `python3 tools/hooks/check_files.py docs` (links, `§` references, index coverage, section numbering, code-citation drift). The `check-docs` job in [lefthook.yml](lefthook.yml) runs the same command before commit, and [.github/workflows/docs.yml](.github/workflows/docs.yml) runs it on every markdown change.
-- For backend changes, prefer targeted pytest or ruff checks over full-suite runs.
-- For frontend changes, prefer the touched-package lint, type-check, or test command.
-- For Go changes, prefer package-scoped `bash build.sh --test ...` first.
-- Do not default to raw `go test`, `go build`, or IDE Run/Debug for Go in this repo. They often miss the required CGO flags and native static libraries (`office_oxide`, `pdfium-static`, `pdf_oxide`) that `build.sh` wires correctly.
-- If Go native builds fail, inspect `build.sh` and `internal/development.md` before changing code. Common environment issues are missing downloaded native deps and missing `lld` on Linux.
+## 验证偏好
+- 改完跑**最窄**的相关测试、lint 或构建命令。
+- 文档改动：跑 `python3 tools/hooks/check_files.py docs`（链接、`§` 引用、索引覆盖、小节编号、代码引用漂移）。[lefthook.yml](lefthook.yml) 的 `check-docs` 在提交前跑同一条命令，[.github/workflows/docs.yml](.github/workflows/docs.yml) 在任何 markdown 改动上跑它。
+- 后端改动：优先跑聚焦的 pytest 或 ruff，而不是全量。
+- 前端改动：优先跑受影响包的 lint、type-check 或测试命令。
+- Go 改动：优先跑包级 `bash build.sh --test ...`。
+- **不要**默认用裸 `go test`、`go build` 或 IDE Run/Debug 跑 Go。它们通常缺少 `build.sh` 配好的 CGO 标志与原生静态库（`office_oxide`、`pdfium-static`、`pdf_oxide`）。
+- Go 原生构建失败时，先看 [build.sh](build.sh) 与 [internal/development.md](internal/development.md) 再改代码。常见环境问题是原生依赖未下载、Linux 缺 `lld`。
 
 ## 架构索引
 
@@ -231,7 +231,7 @@ Corpus 多库检索的性能实验数据与逐版本记录在 `engineering/exper
 |----------|----------------|
 | 解析链路行为、MinerU/DeepDOC 契约 | [engineering/parse-pipeline.md](engineering/parse-pipeline.md)（并列出相关回归测试名） |
 | Corpus / 检索 / 引用行为 | [engineering/corpus-fs.md](engineering/corpus-fs.md) |
-| 运行、挂载、环境变量、测试命令 | [engineering/runtime-env.md](engineering/runtime-env.md) 与本文 `Commands` 节 |
+| 运行、挂载、环境变量、测试命令 | [engineering/runtime-env.md](engineering/runtime-env.md) 与本文「命令」节 |
 | 路由归属、共享表字段、上游移植 | [ARCHITECTURE.md](ARCHITECTURE.md) |
 | 新出现的失败模式与事故 | 归属主题文档（`engineering/` 下对应那篇）；需要新开主题时同时补本文「架构索引」 |
 | 外部服务版本、端点或长度预算变化 | [engineering/contracts.md](engineering/contracts.md) |
@@ -243,7 +243,7 @@ Corpus 多库检索的性能实验数据与逐版本记录在 `engineering/exper
 - 记录固定五段（现象 / 根因 / 处理 / 验证证据 / 残余风险），必须带状态与日期；格式见 [engineering/README.md](engineering/README.md)。
 - **同一事实只写一处**，别处只放链接。
 - **禁止把大段实现细节重新堆回本文件**——本文件是索引与约束清单，正文属于 `engineering/`。
-- 语言约定：fork 新增内容用中文；与上游同步的文件（本文既有小节、`README_zh.md`）保留上游原文。
+- 语言约定：本文件、[ARCHITECTURE.md](ARCHITECTURE.md) 与 `engineering/` 一律中文；上游同步来的文件（[README_zh.md](README_zh.md)、`docs/` 下的用户文档）保留上游原文。
 
 ## 文档即代码（Docs-as-Code）
 
@@ -261,8 +261,8 @@ Corpus 多库检索的性能实验数据与逐版本记录在 `engineering/exper
 - `engineering/` 不构建站点，所以没有渲染期断链、锚点或样式检查；`docs/`（上游 Docusaurus 树）在本 fork 也不构建。
 - 「改了源码却没动文档」这种语义缺口没有门禁：CI 只对**变更文件本身**做 lint，`file-checks` / `python-lint` / `go-format` 都不会因为 `engineering/` 未变而失败。发现漏写文档只能靠 review 对照本文的「文档维护」表。
 
-## Default review checklist
-- Remove instead of retaining `deprecated`, `legacy`, or compatibility-only code.
-- Collapse duplicate implementations to one path.
-- Drop stale comments and documentation that describe a superseded design.
-- Keep exported APIs only when the current code actually needs them.
+## 默认审查清单
+- 删掉，而不是保留 `deprecated`、`legacy` 或仅为兼容而存在的代码。
+- 把重复实现收敛成一条路径。
+- 丢掉描述已被取代设计的过期注释与文档。
+- 只有当前代码真的需要时才保留导出 API。
