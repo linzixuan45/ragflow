@@ -45,8 +45,8 @@ class CorpusCursorService:
         self._secret = secret
         self._ttl_seconds = ttl_seconds
 
-    def issue(self, tenant_id: str, dataset_id: str, document_id: str, content_hash: str, offset: int) -> str:
-        payload = {"t": tenant_id, "d": dataset_id, "doc": document_id, "h": content_hash, "o": offset, "e": int(time.time()) + self._ttl_seconds}
+    def issue(self, tenant_id: str, dataset_id: str, document_id: str, content_hash: str, offset: int, *, byte_offset: int = 0) -> str:
+        payload = {"t": tenant_id, "d": dataset_id, "doc": document_id, "h": content_hash, "o": offset, "b": byte_offset, "e": int(time.time()) + self._ttl_seconds}
         encoded = self._encode(payload)
         signature = hmac.new(self._secret, encoded, hashlib.sha256).digest()
         return f"{self._b64(encoded)}.{self._b64(signature)}"
@@ -65,7 +65,10 @@ class CorpusCursorService:
             raise CorpusCursorError("cursor is expired or not valid for this document")
         if not isinstance(payload.get("o"), int) or payload["o"] < 0:
             raise CorpusCursorError("invalid cursor")
-        return {"offset": payload["o"]}
+        byte_offset = payload.get("b", 0)
+        if not isinstance(byte_offset, int) or isinstance(byte_offset, bool) or byte_offset < 0:
+            raise CorpusCursorError("invalid cursor")
+        return {"offset": payload["o"], "byte_offset": byte_offset}
 
     @staticmethod
     def _encode(payload: dict) -> bytes:

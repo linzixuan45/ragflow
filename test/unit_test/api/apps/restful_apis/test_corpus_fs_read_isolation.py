@@ -3,6 +3,28 @@ import threading
 from types import SimpleNamespace
 
 
+def test_image_uses_signed_citation_version_and_reauthorizes_document(monkeypatch):
+    from api.apps.restful_apis import corpus_fs_api
+
+    calls = []
+    target = {"projection_revision": 4, "source_hash": "a" * 64}
+    service = SimpleNamespace(
+        authorize_citation=lambda doc_id: (calls.append(("authorize", doc_id)) or {"id": doc_id}, {"path": "/renamed.docx"}),
+        image_data=lambda doc, ref, **kwargs: (calls.append((doc, ref, kwargs)) or b"image", "image.png"),
+    )
+    monkeypatch.setattr(corpus_fs_api, "request", SimpleNamespace(args={"path": "/old.docx", "image_ref": "a" * 64, "citation_ref": "signed-citation"}))
+    monkeypatch.setattr(corpus_fs_api, "_service", lambda *_args: service)
+    monkeypatch.setattr(corpus_fs_api, "_citation_service", lambda: SimpleNamespace(resolve_locator=lambda ref, tenant, dataset: ("doc-1", target)))
+
+    async def response(_data):
+        return SimpleNamespace(headers={})
+
+    monkeypatch.setattr(corpus_fs_api, "make_response", response)
+    result = asyncio.run(_route(corpus_fs_api, "image")("tenant-1", "dataset-1"))
+    assert calls == [("authorize", "doc-1"), ({"id": "doc-1"}, "a" * 64, {"citation_target": target})]
+    assert result.headers["Cache-Control"] == "private, no-store"
+
+
 class _AwaitableDict(dict):
     def __await__(self):
         async def value():

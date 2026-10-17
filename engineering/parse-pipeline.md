@@ -51,7 +51,7 @@
 **source projection**
 
 - 写入侧门禁**已放开**：`rag/svr/task_executor.py` 与 `rag/svr/task_executor_refactor/chunk_service.py` 都用 `uses_source_projection()`，不再只认 `.pdf`。
-- 读取侧**仍**要求 `document.type == "pdf"`（`api/apps/services/corpus_fs_service.py` 三处：projection 选择、block 读取、`image_data`）。**所以非 PDF 图片走的是 chunk 通道，不依赖 projection 读路径。**
+- 读取侧统一按 `uses_source_projection()` 识别 MinerU 格式，正文、引用上下文与取图都优先使用已有 ACTIVE 投影；非 PDF 同样生效。无可用投影才回落，版本图片定位与 Agent 交付契约见 [corpus-fs.md](corpus-fs.md) §2。
 - 图片对象键为 `<dataset_id>-<object_name>`：`CorpusFsService.image_data()` 只接受以 `f"{self.dataset_id}-"` 开头的 `image_id`，chunk 通道前缀不匹配时直接 `break`。
   - naive 路径用 `image2id(..., bucket=ctx.kb_id)` 满足前缀。
   - **canvas 路径**（`rag/flow/parser/parser.py`）用默认 bucket `imagetemps`，前缀不匹配 → `fs/image` 取不到图。

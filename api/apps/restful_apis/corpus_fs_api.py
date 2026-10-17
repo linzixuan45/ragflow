@@ -566,12 +566,13 @@ def content(tenant_id: str, dataset_id: str):
         content_revision = service.revision(service._dataset())["content_revision"]
         cursor_service = CorpusCursorService(corpus_secret("content-cursor"))
         cursor = request.args.get("cursor")
-        cursor_scope = hashlib.sha256(f"block-pages-v1:{entry['_content_hash']}:{source}:{page}:{','.join(sorted(kinds or []))}".encode()).hexdigest()
-        block_index = cursor_service.parse(cursor, tenant_id, dataset_id, document["id"], cursor_scope)["offset"] if cursor else 0
-        visible_blocks, next_index = service.content_page(blocks, block_index, maximum)
-        next_cursor = cursor_service.issue(tenant_id, dataset_id, document["id"], cursor_scope, next_index) if next_index < len(blocks) else None
+        cursor_scope = hashlib.sha256(f"block-pages-v2:{entry['_content_hash']}:{source}:{page}:{','.join(sorted(kinds or []))}".encode()).hexdigest()
+        position = cursor_service.parse(cursor, tenant_id, dataset_id, document["id"], cursor_scope) if cursor else {"offset": 0, "byte_offset": 0}
+        visible_blocks, next_index, next_byte = service.content_page(blocks, position["offset"], maximum, byte_offset=position["byte_offset"])
+        next_cursor = cursor_service.issue(tenant_id, dataset_id, document["id"], cursor_scope, next_index, byte_offset=next_byte) if next_index < len(blocks) else None
         segment = "\n\n".join(block.get("content", "") for block in visible_blocks)
         image_refs = {block.get("image_ref") for block in visible_blocks if block.get("image_ref")}
+        image_refs.update(image["image_ref"] for block in visible_blocks for image in block.get("images", []) if image.get("image_ref"))
         visible_images = [image for image in images if image.get("image_ref") in image_refs]
         projection_revision = int(source.rsplit(":", 1)[1]) if source.startswith("source_projection:") else None
         range_start = visible_blocks[0]["start"] if visible_blocks else 0
@@ -579,6 +580,8 @@ def content(tenant_id: str, dataset_id: str):
         for block in visible_blocks:
             target = service.citation_target(entry, document, content_revision, block=block, context=citation_context)
             block["citation_ref"] = _issue_citation(service, document, target)
+        image_blocks = {image_ref: block for block in visible_blocks for image_ref in [block.get("image_ref"), *[image.get("image_ref") for image in block.get("images", [])]] if image_ref}
+        visible_images = [{**image, "citation_ref": image_blocks[image["image_ref"]]["citation_ref"], "page": image_blocks[image["image_ref"]].get("page")} for image in visible_images]
         return _success(
             service,
             {
@@ -593,6 +596,7 @@ def content(tenant_id: str, dataset_id: str):
                 "projection_revision": projection_revision,
                 "block_count": len(blocks),
                 "returned_count": len(visible_blocks),
+                "budget": {"max_source_bytes": maximum, "source_bytes": len(segment.encode("utf-8")), "max_blocks": min(64, max(1, maximum // 512)), "image_count": len(visible_images)},
             },
         )
     except CorpusCursorError:
@@ -767,10 +771,15 @@ async def image(tenant_id: str, dataset_id: str):
         service = _service(tenant_id, dataset_id)
         path = request.args.get("path", "")
         image_ref = request.args.get("image_ref", "")
+        citation_ref = request.args.get("citation_ref")
         if not image_ref or len(image_ref) != 64:
             raise CorpusFsError("image_ref is invalid")
 
         def load():
+            if citation_ref:
+                document_id, target = _citation_service().resolve_locator(citation_ref, tenant_id, dataset_id)
+                document, _ = service.authorize_citation(document_id)
+                return service.image_data(document, image_ref, citation_target=target)
             _, document = service.resolve_document(path)
             return service.image_data(document, image_ref)
 
@@ -779,6 +788,8 @@ async def image(tenant_id: str, dataset_id: str):
         response.headers["Content-Type"] = _image_content_type(object_name, data)
         response.headers["Cache-Control"] = "private, no-store"
         return response
+    except CorpusCitationError:
+        return _error(CorpusFsError("invalid citation"))
     except (ValueError, CorpusFsError, CorpusPathError) as error:
         return _error(error)
 
@@ -828,10 +839,9 @@ async def grep(tenant_id: str, dataset_id: str):
                     items.append(
                         {
                             "path": entry["path"],
-                            "snippet": chunk.get("content_with_weight", ""),
+                            **service.search_evidence(document["id"], chunk, citation_target=target, context=citation_context),
                             "citation_ref": _issue_citation(service, document, target),
                             "page": target["page"],
-                            "images": service.search_images(document["id"], chunk),
                         }
                     )
             page = KeywordSearchService.page_state(result, offset=offset, returned_count=len(items), count_only=count_only)

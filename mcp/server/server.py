@@ -14,6 +14,7 @@
 #  limitations under the License.
 #
 
+import base64
 import json
 import logging
 import random
@@ -23,16 +24,19 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from enum import StrEnum
 from functools import wraps
-from typing import Any
+from typing import Any, ClassVar
 
 import click
 import httpx
-import mcp.types as types
 from mcp.server.lowlevel import Server
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Mount, Route
+
+from mcp import types
+
+logger = logging.getLogger(__name__)
 
 
 class LaunchMode(StrEnum):
@@ -56,13 +60,16 @@ JSON_RESPONSE = True
 
 
 class RAGFlowConnector:
+    _MAX_IMAGE_BYTES = 5 * 1024 * 1024
+    _MAX_TOTAL_IMAGE_BYTES = 20 * 1024 * 1024
+    _MAX_IMAGES = 6
     _MAX_DATASET_CACHE = 32
     _CACHE_TTL = 300
     # Keep in sync with api.utils.pagination_utils.REST_API_MAX_PAGE_SIZE.
     _REST_API_MAX_PAGE_SIZE = 100
 
-    _dataset_metadata_cache: OrderedDict[str, tuple[dict, float | int]] = OrderedDict()  # "dataset_id" -> (metadata, expiry_ts)
-    _document_metadata_cache: OrderedDict[str, tuple[list[tuple[str, dict]], float | int]] = OrderedDict()  # "dataset_id" -> ([(document_id, doc_metadata)], expiry_ts)
+    _dataset_metadata_cache: ClassVar[OrderedDict[str, tuple[dict, float | int]]] = OrderedDict()  # "dataset_id" -> (metadata, expiry_ts)
+    _document_metadata_cache: ClassVar[OrderedDict[str, tuple[list[tuple[str, dict]], float | int]]] = OrderedDict()  # "dataset_id" -> ([(document_id, doc_metadata)], expiry_ts)
 
     def __init__(self, base_url: str, version="v1"):
         self.base_url = base_url
@@ -101,10 +108,15 @@ class RAGFlowConnector:
     @staticmethod
     def _response_data(response: Any, operation: str) -> Any:
         if not response or response.status_code != 200:
-            raise Exception([types.TextContent(type="text", text=f"Cannot {operation}.")])
+            status = response.status_code if response is not None else 503
+            try:
+                reason = response.json().get("message") if response is not None else None
+            except (ValueError, AttributeError):
+                reason = None
+            raise ValueError(json.dumps({"error": reason or "CORPUS_UNAVAILABLE", "status": status, "retryable": status >= 500 or status == 429, "operation": operation}, ensure_ascii=False))
         payload = response.json()
         if payload.get("code") != 0:
-            raise Exception([types.TextContent(type="text", text=payload.get("message", f"Cannot {operation}."))])
+            raise RuntimeError([types.TextContent(type="text", text=payload.get("message", f"Cannot {operation}."))])
         return payload.get("data", {})
 
     async def _corpus_get(self, path: str, *, api_key: str, params: dict[str, Any]) -> list[types.TextContent]:
@@ -115,35 +127,119 @@ class RAGFlowConnector:
         response = await self._post(path, json=body, api_key=api_key)
         return self._tool_content(self._response_data(response, "search Corpus FS"))
 
-    async def corpus_tree(self, *, api_key: str, dataset_id: str, path: str = "/", limit: int = 50):
+    async def corpus_tree(self, *, api_key: str, dataset_id: str, path: str = "/", limit: int = 50, cursor: str | None = None):
         return await self._corpus_get(
             f"/datasets/{dataset_id}/fs/tree",
             api_key=api_key,
-            params={"path": path, "limit": limit},
+            params={"path": path, "limit": limit, "cursor": cursor},
         )
 
-    async def corpus_find(self, *, api_key: str, dataset_id: str, name: str, path: str = "/", limit: int = 20):
+    async def corpus_find(self, *, api_key: str, dataset_id: str, name: str, path: str = "/", limit: int = 20, cursor: str | None = None):
         return await self._corpus_get(
             f"/datasets/{dataset_id}/fs/find",
             api_key=api_key,
-            params={"name": name, "path": path, "limit": limit},
+            params={"name": name, "path": path, "limit": limit, "cursor": cursor},
         )
 
-    async def corpus_read(self, *, api_key: str, dataset_id: str, path: str, max_bytes: int = 32768, page: int | None = None):
+    async def corpus_read(
+        self, *, api_key: str, dataset_id: str, path: str, max_bytes: int = 32768, page: int | None = None, cursor: str | None = None, block_types: list[str] | None = None, include_images: bool = True
+    ):
         params = {"path": path, "max_bytes": max_bytes}
         if page is not None:
             params["page"] = page
-        return await self._corpus_get(
-            f"/datasets/{dataset_id}/fs/content",
-            api_key=api_key,
-            params=params,
-        )
+        if cursor:
+            params["cursor"] = cursor
+        if block_types:
+            params["type"] = ",".join(block_types)
+        response = await self._get(f"/datasets/{dataset_id}/fs/content", params=params, api_key=api_key)
+        data = self._response_data(response, "read Corpus FS")
+        return await self._evidence_content(data, api_key=api_key, dataset_id=dataset_id, path=path, include_images=include_images)
 
-    async def corpus_grep(self, *, api_key: str, dataset_id: str, query: str, path: str = "/", limit: int = 20, match: str = "any"):
+    async def _evidence_content(self, data: dict, *, api_key: str, dataset_id: str, path: str, include_images: bool) -> list[types.TextContent | types.ImageContent]:
+        """Deliver native image blocks with explicit per-image outcomes and bounded downloads."""
+        images: list[types.TextContent | types.ImageContent] = []
+        outcomes: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        total_bytes = 0
+        for image in data.get("images") or []:
+            image_ref = image.get("image_ref")
+            if not isinstance(image_ref, str) or image_ref in seen:
+                continue
+            seen.add(image_ref)
+            outcome = {"image_ref": image_ref, "status": "not_loaded"}
+            outcomes.append(outcome)
+            if not include_images:
+                outcome["reason"] = "images_disabled"
+                continue
+            if len(seen) > self._MAX_IMAGES:
+                outcome["reason"] = "image_count_budget"
+                continue
+            try:
+                client = await self._get_client()
+                async with client.stream(
+                    "GET",
+                    self.api_url + f"/datasets/{dataset_id}/fs/image",
+                    params={"path": path, "image_ref": image_ref, **({"citation_ref": image["citation_ref"]} if image.get("citation_ref") else {})},
+                    headers={"Authorization": f"Bearer {api_key}"},
+                ) as response:
+                    if response.status_code != 200:
+                        outcome["reason"] = "image_unavailable"
+                        outcome["http_status"] = response.status_code
+                        continue
+                    chunks = []
+                    size = 0
+                    async for chunk in response.aiter_bytes():
+                        size += len(chunk)
+                        if size > self._MAX_IMAGE_BYTES:
+                            raise ValueError("image_byte_budget")
+                        if total_bytes + size > self._MAX_TOTAL_IMAGE_BYTES:
+                            raise ValueError("total_image_byte_budget")
+                        chunks.append(chunk)
+                    raw = b"".join(chunks)
+                    mime = self._image_media_type(raw, response.headers.get("content-type", ""))
+                    if mime is None:
+                        raise ValueError("unsupported_image_content")
+                total_bytes += len(raw)
+                outcome.update(status="loaded", bytes=len(raw), mime_type=mime)
+                images.extend(
+                    [
+                        types.TextContent(type="text", text=json.dumps({"image_source": {"path": path, **image}}, ensure_ascii=False)),
+                        types.ImageContent(type="image", data=base64.b64encode(raw).decode("ascii"), mimeType=mime),
+                    ]
+                )
+            except (httpx.HTTPError, ValueError) as error:
+                outcome["reason"] = str(error) if isinstance(error, ValueError) else "image_transport_unavailable"
+        payload = {
+            **data,
+            "image_delivery": {
+                "items": outcomes,
+                "loaded_bytes": total_bytes,
+                "max_images": self._MAX_IMAGES,
+                "max_image_bytes": self._MAX_IMAGE_BYTES,
+                "max_total_bytes": self._MAX_TOTAL_IMAGE_BYTES,
+            },
+        }
+        return [*self._tool_content(payload), *images]
+
+    @staticmethod
+    def _image_media_type(raw: bytes, content_type: str) -> str | None:
+        declared = content_type.split(";", 1)[0].strip().lower()
+        detected = None
+        if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+            detected = "image/png"
+        elif raw.startswith(b"\xff\xd8\xff"):
+            detected = "image/jpeg"
+        elif raw.startswith((b"GIF87a", b"GIF89a")):
+            detected = "image/gif"
+        elif raw.startswith(b"RIFF") and raw[8:12] == b"WEBP":
+            detected = "image/webp"
+        return detected if detected and declared in {"", "application/octet-stream", detected} else None
+
+    async def corpus_grep(self, *, api_key: str, dataset_id: str, query: str, path: str = "/", limit: int = 20, match: str = "any", cursor: str | None = None):
         return await self._corpus_post(
             f"/datasets/{dataset_id}/fs/grep",
             api_key=api_key,
-            body={"query": query, "path": path, "limit": limit, "match": match},
+            body={"query": query, "path": path, "limit": limit, "match": match, **({"cursor": cursor} if cursor else {})},
         )
 
     async def corpus_search(
@@ -179,12 +275,16 @@ class RAGFlowConnector:
             params={"path": path},
         )
 
-    async def corpus_citation_preview(self, *, api_key: str, dataset_id: str, citation_ref: str):
-        return await self._corpus_post(
-            f"/datasets/{dataset_id}/fs/citations/preview",
-            api_key=api_key,
-            body={"citation_ref": citation_ref},
-        )
+    async def corpus_citation_preview(self, *, api_key: str, dataset_id: str, citation_ref: str, include_images: bool = True):
+        response = await self._post(f"/datasets/{dataset_id}/fs/citations/preview", api_key=api_key, json={"citation_ref": citation_ref})
+        data = self._response_data(response, "preview cited evidence")
+        preview = data.get("preview") or {}
+        images = [
+            {**image, "page": block.get("page"), "citation_ref": citation_ref}
+            for block in preview.get("blocks", [])
+            for image in (block.get("images") or ([{"image_ref": block["image_ref"]}] if block.get("image_ref") else []))
+        ]
+        return await self._evidence_content({**data, "images": images}, api_key=api_key, dataset_id=dataset_id, path=preview.get("current_path", ""), include_images=include_images)
 
     def _is_cache_valid(self, ts):
         return time.time() < ts
@@ -245,19 +345,19 @@ class RAGFlowConnector:
             if res is not None:
                 try:
                     error_message = res.json().get("message")
-                except Exception:
+                except (ValueError, AttributeError):
                     error_message = None
-            raise Exception([types.TextContent(type="text", text=error_message or "Cannot process this operation.")])
+            raise RuntimeError([types.TextContent(type="text", text=error_message or "Cannot process this operation.")])
 
         res_json = res.json()
         if res_json.get("code") != 0:
-            raise Exception([types.TextContent(type="text", text=res_json.get("message", "Cannot process this operation."))])
+            raise RuntimeError([types.TextContent(type="text", text=res_json.get("message", "Cannot process this operation."))])
 
         return res_json
 
     async def list_chats(self, *, api_key: str, page: int = 1, page_size: int = 30, orderby: str = "create_time", desc: bool = True):
         """Return accessible chat assistants as newline-delimited JSON for MCP tool descriptions."""
-        logging.info("Listing chat assistants via MCP (page=%s, page_size=%s)", page, page_size)
+        logger.info("Listing chat assistants via MCP (page=%s, page_size=%s)", page, page_size)
         params = {"page": page, "page_size": page_size, "orderby": orderby, "desc": json.dumps(desc)}
         res = await self._get("/chats", params, api_key=api_key)
         if not res or res.status_code != 200:
@@ -265,20 +365,20 @@ class RAGFlowConnector:
             if res is not None:
                 try:
                     error_message = res.json().get("message")
-                    logging.warning("list_chats request failed: status=%s message=%s", res.status_code, error_message)
-                except Exception:
+                    logger.warning("list_chats request failed: status=%s message=%s", res.status_code, error_message)
+                except (ValueError, AttributeError):
                     error_message = None
-                    logging.warning("list_chats request failed: status=%s (parse error)", res.status_code)
-            raise Exception([types.TextContent(type="text", text=error_message or "Cannot list chats.")])
+                    logger.warning("list_chats request failed: status=%s (parse error)", res.status_code)
+            raise RuntimeError([types.TextContent(type="text", text=error_message or "Cannot list chats.")])
         res_json = res.json()
         if res_json.get("code") != 0:
-            logging.warning("list_chats API error: code=%s message=%s", res_json.get("code"), res_json.get("message"))
-            raise Exception([types.TextContent(type="text", text=res_json.get("message", "Cannot list chats."))])
+            logger.warning("list_chats API error: code=%s message=%s", res_json.get("code"), res_json.get("message"))
+            raise RuntimeError([types.TextContent(type="text", text=res_json.get("message", "Cannot list chats."))])
         _chats_data = res_json.get("data", [])
         if isinstance(_chats_data, dict):
             _chats_data = _chats_data.get("chats", [])
         chat_count = len(_chats_data)
-        logging.info("list_chats returned %d chat(s)", chat_count)
+        logger.info("list_chats returned %d chat(s)", chat_count)
         result_list = []
         for data in _chats_data:
             d = {"id": data.get("id"), "name": data.get("name"), "description": data.get("description", "")}
@@ -299,7 +399,7 @@ class RAGFlowConnector:
         page = 1
 
         while True:
-            logging.debug("fetching all /datasets page=%s page_size=%s", page, self._REST_API_MAX_PAGE_SIZE)
+            logger.debug("fetching all /datasets page=%s page_size=%s", page, self._REST_API_MAX_PAGE_SIZE)
             res_json = await self._fetch_datasets_page(
                 api_key=api_key,
                 page=page,
@@ -310,7 +410,7 @@ class RAGFlowConnector:
                 name=name,
             )
             page_datasets = res_json.get("data", [])
-            logging.debug("received %s datasets from page=%s", len(page_datasets), page)
+            logger.debug("received %s datasets from page=%s", len(page_datasets), page)
             if not page_datasets:
                 break
 
@@ -340,16 +440,16 @@ class RAGFlowConnector:
 
     async def resolve_dataset_ids(self, *, api_key: str):
         """Resolve all accessible dataset IDs for MCP retrieval fallback."""
-        logging.info("Resolving accessible dataset IDs for MCP retrieval")
+        logger.info("Resolving accessible dataset IDs for MCP retrieval")
         try:
             datasets = await self._fetch_all_datasets(api_key=api_key)
         except Exception as exc:
-            logging.warning("resolve_dataset_ids failed to fetch /datasets error=%s", exc)
+            logger.warning("resolve_dataset_ids failed to fetch /datasets error=%s", exc)
             raise
 
         dataset_ids = [data["id"] for data in datasets if data.get("id")]
         resolved = list(dict.fromkeys(dataset_ids))
-        logging.info("resolve_dataset_ids resolved %s accessible dataset IDs", len(resolved))
+        logger.info("resolve_dataset_ids resolved %s accessible dataset IDs", len(resolved))
         return resolved
 
     async def retrieval(
@@ -372,11 +472,11 @@ class RAGFlowConnector:
             document_ids = []
 
         if not dataset_ids:
-            logging.info("MCP retrieval omitted dataset_ids; resolving accessible datasets")
+            logger.info("MCP retrieval omitted dataset_ids; resolving accessible datasets")
             dataset_ids = await self.resolve_dataset_ids(api_key=api_key)
             if not dataset_ids:
-                logging.info("MCP retrieval found no accessible datasets for current user")
-                raise Exception([types.TextContent(type="text", text="No accessible datasets found.")])
+                logger.info("MCP retrieval found no accessible datasets for current user")
+                raise RuntimeError([types.TextContent(type="text", text="No accessible datasets found.")])
 
         data_json = {
             "page": page,
@@ -393,7 +493,7 @@ class RAGFlowConnector:
         # Send a POST request to the backend service (using requests library as an example, actual implementation may vary)
         res = await self._post("/retrieval", json=data_json, api_key=api_key)
         if not res or res.status_code != 200:
-            raise Exception([types.TextContent(type="text", text="Cannot process this operation.")])
+            raise RuntimeError([types.TextContent(type="text", text="Cannot process this operation.")])
 
         res = res.json()
         if res.get("code") == 0:
@@ -428,7 +528,7 @@ class RAGFlowConnector:
 
             return [types.TextContent(type="text", text=json.dumps(response, ensure_ascii=False))]
 
-        raise Exception([types.TextContent(type="text", text=res.get("message"))])
+        raise RuntimeError([types.TextContent(type="text", text=res.get("message"))])
 
     async def _get_document_metadata_cache(self, dataset_ids, *, api_key: str, force_refresh=False):
         """Cache document metadata for all documents in the specified datasets"""
@@ -500,10 +600,9 @@ class RAGFlowConnector:
                 if docs:
                     document_cache.update(docs)
 
-        except Exception as e:
+        except Exception:
             # Gracefully handle metadata cache failures
-            logging.error(f"Problem building the document metadata cache: {str(e)}")
-            pass
+            logger.exception("Problem building the document metadata cache")
 
         return document_cache, dataset_cache
 
@@ -533,12 +632,12 @@ class RAGFlowCtx:
 async def sse_lifespan(server: Server) -> AsyncIterator[dict]:
     ctx = RAGFlowCtx(RAGFlowConnector(base_url=BASE_URL))
 
-    logging.info("Legacy SSE application started with StreamableHTTP session manager!")
+    logger.info("Legacy SSE application started with StreamableHTTP session manager!")
     try:
         yield {"ragflow_ctx": ctx}
     finally:
         await ctx.conn.close()
-        logging.info("Legacy SSE application shutting down...")
+        logger.info("Legacy SSE application shutting down...")
 
 
 app = Server("ragflow-mcp-server", lifespan=sse_lifespan)
@@ -622,24 +721,25 @@ def _corpus_tools() -> list[types.Tool]:
     dataset_id = {"type": "string", "description": "RAGFlow dataset identifier returned by ragflow_list_datasets."}
     path = {"type": "string", "description": "Root-relative Corpus FS path.", "default": "/"}
     limit = {"type": "integer", "minimum": 1, "maximum": 50, "default": 20}
+    cursor = {"type": "string", "description": "Opaque next_cursor returned by the previous page."}
     return [
         types.Tool(
             name="ragflow_corpus_tree",
             description="Browse one directory in a RAGFlow Corpus FS using readable root-relative paths.",
-            inputSchema={"type": "object", "properties": {"dataset_id": dataset_id, "path": path, "limit": limit}, "required": ["dataset_id"]},
+            inputSchema={"type": "object", "properties": {"dataset_id": dataset_id, "path": path, "limit": limit, "cursor": cursor}, "required": ["dataset_id"]},
         ),
         types.Tool(
             name="ragflow_corpus_find",
             description="Find Corpus FS files by name without exposing document or storage identifiers.",
             inputSchema={
                 "type": "object",
-                "properties": {"dataset_id": dataset_id, "name": {"type": "string"}, "path": path, "limit": limit},
+                "properties": {"dataset_id": dataset_id, "name": {"type": "string"}, "path": path, "limit": limit, "cursor": cursor},
                 "required": ["dataset_id", "name"],
             },
         ),
         types.Tool(
             name="ragflow_corpus_read",
-            description="Read a bounded text projection from a Corpus FS path.",
+            description="Read ordered text and native image evidence from a Corpus FS path. Continue with next_cursor; disable images for text-only callers.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -647,6 +747,9 @@ def _corpus_tools() -> list[types.Tool]:
                     "path": {"type": "string"},
                     "max_bytes": {"type": "integer", "minimum": 1, "maximum": 262144, "default": 32768},
                     "page": {"type": "integer", "minimum": 1},
+                    "cursor": cursor,
+                    "block_types": {"type": "array", "items": {"type": "string", "enum": ["heading", "paragraph", "table", "image", "image_ocr", "image_caption", "header_footer", "other"]}},
+                    "include_images": {"type": "boolean", "default": True, "description": "Return actual image content; set false for text-only models."},
                 },
                 "required": ["dataset_id", "path"],
             },
@@ -662,6 +765,7 @@ def _corpus_tools() -> list[types.Tool]:
                     "path": path,
                     "limit": limit,
                     "match": {"type": "string", "enum": ["any", "all", "phrase"], "default": "any"},
+                    "cursor": cursor,
                 },
                 "required": ["dataset_id", "query"],
             },
@@ -702,7 +806,7 @@ def _corpus_tools() -> list[types.Tool]:
             description="Resolve an opaque Corpus citation to an authenticated source preview.",
             inputSchema={
                 "type": "object",
-                "properties": {"dataset_id": dataset_id, "citation_ref": {"type": "string"}},
+                "properties": {"dataset_id": dataset_id, "citation_ref": {"type": "string"}, "include_images": {"type": "boolean", "default": True}},
                 "required": ["dataset_id", "citation_ref"],
             },
         ),
@@ -865,6 +969,7 @@ async def call_tool(
             dataset_id=arguments["dataset_id"],
             path=arguments.get("path", "/"),
             limit=arguments.get("limit", 20),
+            cursor=arguments.get("cursor"),
         )
 
     if name == "ragflow_corpus_find":
@@ -874,6 +979,7 @@ async def call_tool(
             name=arguments["name"],
             path=arguments.get("path", "/"),
             limit=arguments.get("limit", 20),
+            cursor=arguments.get("cursor"),
         )
 
     if name == "ragflow_corpus_read":
@@ -883,6 +989,9 @@ async def call_tool(
             path=arguments["path"],
             max_bytes=arguments.get("max_bytes", 32768),
             page=arguments.get("page"),
+            cursor=arguments.get("cursor"),
+            block_types=arguments.get("block_types"),
+            include_images=arguments.get("include_images", True),
         )
 
     if name == "ragflow_corpus_grep":
@@ -893,6 +1002,7 @@ async def call_tool(
             path=arguments.get("path", "/"),
             limit=arguments.get("limit", 20),
             match=arguments.get("match", "any"),
+            cursor=arguments.get("cursor"),
         )
 
     if name == "ragflow_corpus_search":
@@ -919,6 +1029,7 @@ async def call_tool(
             api_key=api_key,
             dataset_id=arguments["dataset_id"],
             citation_ref=arguments["citation_ref"],
+            include_images=arguments.get("include_images", True),
         )
 
     if name == "ragflow_list_datasets":
@@ -952,7 +1063,7 @@ def create_starlette_app():
                     return
 
                 path = scope["path"]
-                if path.startswith("/messages/") or path.startswith("/sse") or path.startswith("/mcp"):
+                if path.startswith(("/messages/", "/sse", "/mcp")):
                     headers = dict(scope["headers"])
                     token = _extract_token_from_headers(headers)
 
@@ -1006,11 +1117,11 @@ def create_starlette_app():
         @asynccontextmanager
         async def streamablehttp_lifespan(app: Starlette) -> AsyncIterator[None]:
             async with session_manager.run():
-                logging.info("StreamableHTTP application started with StreamableHTTP session manager!")
+                logger.info("StreamableHTTP application started with StreamableHTTP session manager!")
                 try:
                     yield
                 finally:
-                    logging.info("StreamableHTTP application shutting down...")
+                    logger.info("StreamableHTTP application shutting down...")
 
         routes.extend(
             [

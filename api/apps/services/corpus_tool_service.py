@@ -82,9 +82,9 @@ class CorpusToolService:
         self._citation_service = citation_service or CorpusCitationService(corpus_secret("citation"))
 
     @staticmethod
-    async def _run_sync_io(operation: Callable[..., Any], *args: Any) -> Any:
+    async def _run_sync_io(operation: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         try:
-            return await asyncio.to_thread(operation, *args)
+            return await asyncio.to_thread(operation, *args, **kwargs)
         except Exception as exc:
             if is_unavailable_io(exc):
                 raise CorpusSearchUnavailableError(str(exc)) from exc
@@ -212,6 +212,7 @@ class CorpusToolService:
                 continue
             citation_key = (context["dataset_id"], document_id)
             page = service.chunk_page(chunk)
+            target = None
             if (document.get("type") or "").lower() == "pdf":
                 citation_context = citation_contexts.get(citation_key)
                 if citation_context is None:
@@ -232,8 +233,6 @@ class CorpusToolService:
             score = _finite_float(chunk.get("score"))
             if score is None:
                 score = _finite_float(chunk.get("similarity"))
-            with stage("citation.images"):
-                images = service.search_images(document_id, chunk)
             evidence = {
                 "scope": context["scope"],
                 "path": entry["path"],
@@ -244,7 +243,7 @@ class CorpusToolService:
                 "score": score,
                 "vector_similarity": _finite_float(chunk.get("vector_similarity")),
                 "term_similarity": _finite_float(chunk.get("term_similarity")),
-                "images": images,
+                "images": [],
             }
             ranked.append(
                 (
@@ -253,7 +252,7 @@ class CorpusToolService:
                     context["scope_index"],
                     source_rank,
                     document_id,
-                    {"chunk": chunk, "context": context, "entry": entry, "document": document, "document_id": document_id},
+                    {"chunk": chunk, "context": context, "entry": entry, "document": document, "document_id": document_id, "citation_target": target},
                 )
             )
 
@@ -329,11 +328,10 @@ class CorpusToolService:
         sources: list[dict[str, Any]],
         citation_contexts: dict[tuple[str, str], Any],
     ) -> None:
-        """Resolve citation_ref/page for the returned items only.
+        """Issue citations, reusing PDF targets already needed for page dedup.
 
-        ``ranked`` is built with the page each chunk states about itself, so the
-        source object is read here -- for at most ``limit`` documents instead of
-        every candidate.
+        Other sources are resolved only for surviving items, so discarded
+        non-PDF candidates still avoid whole-object reads and hashing.
         """
         for item, source in zip(items, sources):
             context = source["context"]
@@ -341,20 +339,31 @@ class CorpusToolService:
             document_id = source["document_id"]
             citation_key = (context["dataset_id"], document_id)
             citation_context = citation_contexts.get(citation_key)
-            if citation_context is None:
-                with stage("citation.context"):
-                    citation_context = citation_contexts[citation_key] = await self._run_sync_io(
-                        context["service"].citation_context,
+            target = source.get("citation_target")
+            if target is None:
+                if citation_context is None:
+                    with stage("citation.context"):
+                        citation_context = citation_contexts[citation_key] = await self._run_sync_io(
+                            context["service"].citation_context,
+                            document,
+                        )
+                with stage("citation.target"):
+                    target = context["service"].citation_target(
+                        source["entry"],
                         document,
+                        context["content_revision"],
+                        chunk=source["chunk"],
+                        context=citation_context,
                     )
-            with stage("citation.target"):
-                target = context["service"].citation_target(
-                    source["entry"],
-                    document,
-                    context["content_revision"],
-                    chunk=source["chunk"],
+            with stage("citation.images"):
+                evidence = await self._run_sync_io(
+                    context["service"].search_evidence,
+                    document_id,
+                    source["chunk"],
+                    citation_target=target,
                     context=citation_context,
                 )
+                item.update(evidence)
             with stage("citation.issue"):
                 item["citation_ref"] = self._citation_service.issue(
                     self.tenant_id,

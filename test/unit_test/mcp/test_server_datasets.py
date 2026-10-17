@@ -14,10 +14,12 @@
 #  limitations under the License.
 #
 
+import base64
 import importlib.util
 import json
 from pathlib import Path
 
+import httpx
 import pytest
 
 
@@ -86,6 +88,114 @@ def test_corpus_toolbox_exposes_read_only_path_tools(mcp_server):
         "ragflow_corpus_stat",
         "ragflow_corpus_citation_preview",
     }
+
+
+@pytest.mark.asyncio
+async def test_corpus_read_forwards_continuation_and_block_filter(monkeypatch, mcp_server):
+    connector = mcp_server.RAGFlowConnector(base_url=mcp_server.BASE_URL)
+    calls = []
+
+    async def get(path, params=None, api_key=""):
+        calls.append((path, params, api_key))
+        return _FakeResponse({"code": 0, "data": {"content": "next", "images": [], "next_cursor": "third"}})
+
+    monkeypatch.setattr(connector, "_get", get)
+    result = await connector.corpus_read(api_key="unit-key", dataset_id="dataset-1", path="/manual.docx", cursor="second", block_types=["image"])
+    assert calls[0][1]["cursor"] == "second"
+    assert calls[0][1]["type"] == "image"
+    assert json.loads(result[0].text)["next_cursor"] == "third"
+    for tool in mcp_server._corpus_tools():
+        if tool.name in {"ragflow_corpus_tree", "ragflow_corpus_find", "ragflow_corpus_read", "ragflow_corpus_grep"}:
+            assert "cursor" in tool.inputSchema["properties"]
+
+
+@pytest.mark.asyncio
+async def test_corpus_read_delivers_native_image_with_version_and_authorization(mcp_server):
+    raw = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=")
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        if request.url.path.endswith("/content"):
+            return httpx.Response(200, json={"code": 0, "data": {"content": "figure", "images": [{"image_ref": "a" * 64, "citation_ref": "cit1.version4"}]}})
+        return httpx.Response(200, content=raw, headers={"Content-Type": "image/png"})
+
+    connector = mcp_server.RAGFlowConnector(base_url="http://corpus.test")
+    connector._async_client = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    try:
+        result = await connector.corpus_read(api_key="unit-key", dataset_id="dataset-1", path="/manual.docx")
+        pixels = [item for item in result if item.type == "image"]
+        assert len(pixels) == 1
+        assert base64.b64decode(pixels[0].data) == raw
+        assert pixels[0].mimeType == "image/png"
+        assert requests[1].url.params["citation_ref"] == "cit1.version4"
+        assert requests[1].headers["authorization"] == "Bearer unit-key"
+        assert json.loads(result[0].text)["image_delivery"]["items"][0]["status"] == "loaded"
+        requests.clear()
+        result = await connector.corpus_read(api_key="unit-key", dataset_id="dataset-1", path="/manual.docx", include_images=False)
+        assert len(requests) == 1
+        assert all(item.type == "text" for item in result)
+        assert json.loads(result[0].text)["image_delivery"]["items"][0]["reason"] == "images_disabled"
+    finally:
+        await connector.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status,limit,reason", [(404, 1024, "image_unavailable"), (200, 4, "image_byte_budget"), (200, 1024, "unsupported_image_content")])
+async def test_image_delivery_reports_missing_oversized_or_invalid_content(mcp_server, status, limit, reason):
+    connector = mcp_server.RAGFlowConnector(base_url="http://corpus.test")
+    connector._MAX_IMAGE_BYTES = limit
+    connector._async_client = httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(status, content=b"not-a-valid-image")))
+    try:
+        result = await connector._evidence_content({"images": [{"image_ref": "a" * 64}]}, api_key="unit-key", dataset_id="dataset-1", path="/manual.docx", include_images=True)
+        assert len(result) == 1
+        assert json.loads(result[0].text)["image_delivery"]["items"][0]["reason"] == reason
+    finally:
+        await connector.close()
+
+
+@pytest.mark.asyncio
+async def test_citation_preview_delivers_all_block_images_from_the_cited_version(mcp_server):
+    requests = []
+    raw = b"\x89PNG\r\n\x1a\nimage"
+
+    def handle(request):
+        requests.append(request)
+        if request.url.path.endswith("/preview"):
+            return httpx.Response(200, json={"code": 0, "data": {"preview": {"current_path": "/renamed.md", "blocks": [{"images": [{"image_ref": "a" * 64}, {"image_ref": "b" * 64}]}]}}})
+        return httpx.Response(200, content=raw, headers={"Content-Type": "image/png"})
+
+    connector = mcp_server.RAGFlowConnector(base_url="http://corpus.test")
+    connector._async_client = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    try:
+        result = await connector.corpus_citation_preview(api_key="unit-key", dataset_id="dataset-1", citation_ref="cit1.version4")
+        assert len([item for item in result if item.type == "image"]) == 2
+        assert all(request.url.params["path"] == "/renamed.md" and request.url.params["citation_ref"] == "cit1.version4" for request in requests[1:])
+    finally:
+        await connector.close()
+
+
+@pytest.mark.asyncio
+async def test_image_delivery_enforces_total_and_count_budgets(mcp_server):
+    raw = b"\x89PNG\r\n\x1a\nimage"
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        return httpx.Response(200, content=raw, headers={"Content-Type": "image/png"})
+
+    connector = mcp_server.RAGFlowConnector(base_url="http://corpus.test")
+    connector._MAX_IMAGES = 2
+    connector._MAX_TOTAL_IMAGE_BYTES = len(raw) + 1
+    connector._async_client = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    try:
+        result = await connector._evidence_content({"images": [{"image_ref": char * 64} for char in "abc"]}, api_key="unit-key", dataset_id="dataset-1", path="/guide.pdf", include_images=True)
+        delivery = json.loads(result[0].text)["image_delivery"]
+        assert delivery["loaded_bytes"] == len(raw)
+        assert [item.get("reason", item["status"]) for item in delivery["items"]] == ["loaded", "total_image_byte_budget", "image_count_budget"]
+        assert len(requests) == 2
+    finally:
+        await connector.close()
 
 
 @pytest.mark.asyncio

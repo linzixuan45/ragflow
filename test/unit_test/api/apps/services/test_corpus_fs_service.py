@@ -415,17 +415,19 @@ def test_search_mode_controls_vector_weight():
     assert CorpusFsService.search_vector_weight("hybrid", 0.3) == 0.3
 
 
-def test_search_images_project_internal_image_id_to_opaque_reference():
+def test_search_evidence_projects_internal_image_id_to_opaque_reference():
     service = CorpusFsService("tenant-1", "dataset-1", "actor")
 
-    images = service.search_images(
+    images = service.search_evidence(
         "document-1",
         {
             "image_id": "dataset-1-source-projections/document-1/3/images/0.png",
         },
+        citation_target={},
+        context=({}, None),
     )
 
-    assert images == [
+    assert images["images"] == [
         {
             "image_ref": service._image_ref(
                 "document-1",
@@ -434,7 +436,7 @@ def test_search_images_project_internal_image_id_to_opaque_reference():
         }
     ]
     assert "source-projections" not in str(images)
-    assert service.search_images("document-1", {"image_id": ""}) == []
+    assert service.search_evidence("document-1", {"image_id": ""}, citation_target={}, context=({}, None))["images"] == []
 
 
 def test_parsed_content_projects_opaque_image_reference_without_image_id(monkeypatch):
@@ -563,6 +565,49 @@ def test_pdf_content_exposes_source_projection_heading_level(monkeypatch):
     assert blocks[0]["level"] == 2
 
 
+@pytest.mark.parametrize("filename", ["manual.docx", "slides.pptx", "book.xlsx", "scan.png"])
+def test_mineru_formats_read_and_download_the_same_source_projection(monkeypatch, filename):
+    service = CorpusFsService("tenant-1", "dataset-1", "actor")
+    image_id = "dataset-1-source-projections/document-1/4/images/1.png"
+    projection = (
+        {"projection_revision": 4, "source_sha256": "a" * 64},
+        [
+            {"block_ref": "0", "kind": "paragraph", "page": 1, "text": "other page"},
+            {"block_ref": "1", "kind": "image", "page": 2, "text": "", "image_id": image_id},
+        ],
+    )
+    monkeypatch.setattr(SourceProjectionService, "active", classmethod(lambda _cls, _doc: projection))
+    monkeypatch.setattr(service, "_chunk_fields", lambda _id: pytest.fail("existing projection was bypassed"))
+    monkeypatch.setattr(settings, "STORAGE_IMPL", SimpleNamespace(get=lambda *_args: b"image-bytes"))
+    document = {"id": "document-1", "name": filename, "type": "doc", "run": TaskStatus.RUNNING.value}
+
+    context = service.citation_context(document)
+    content, source, images, blocks = service.content_text(document, page=2, kinds={"image"}, citation_context=context)
+
+    assert content == ""
+    assert source == "source_projection:4"
+    assert len(blocks) == len(images) == 1
+    assert blocks[0]["page"] == 2
+    assert service.image_data(document, images[0]["image_ref"]) == (b"image-bytes", image_id[len("dataset-1-") :])
+
+
+def test_chunk_fallback_applies_page_and_kind_filters(monkeypatch):
+    service = CorpusFsService("tenant-1", "dataset-1", "actor")
+    monkeypatch.setattr(
+        service,
+        "_chunk_fields",
+        lambda _id: {
+            "first": {"content_with_weight": "page one", "page_num_int": [1]},
+            "second": {"content_with_weight": "caption", "page_num_int": [2], "img_id": "dataset-1-img.png", "doc_type_kwd": "image"},
+            "third": {"content_with_weight": "page two text", "page_num_int": [2]},
+        },
+    )
+    content, source, images, blocks = service.content_text({"id": "doc-1", "type": "doc", "run": TaskStatus.DONE.value}, page=2, kinds={"image"})
+    assert (content, source) == ("caption", "parsed_chunks")
+    assert len(blocks) == len(images) == 1
+    assert blocks[0]["page"] == 2
+
+
 def test_content_page_keeps_blocks_whole_across_byte_limit():
     blocks = [
         {"block_ref": "a", "content": "a" * 20, "start": 0, "end": 20},
@@ -570,8 +615,8 @@ def test_content_page_keeps_blocks_whole_across_byte_limit():
         {"block_ref": "c", "content": "c" * 20, "start": 40, "end": 60},
     ]
 
-    first, next_index = CorpusFsService.content_page(blocks, 0, 32)
-    second, final_index = CorpusFsService.content_page(blocks, next_index, 32)
+    first, next_index, _ = CorpusFsService.content_page(blocks, 0, 32)
+    second, final_index, _ = CorpusFsService.content_page(blocks, next_index, 32)
 
     assert [block["block_ref"] for block in first] == ["a"]
     assert [block["block_ref"] for block in second] == ["b"]
@@ -579,13 +624,34 @@ def test_content_page_keeps_blocks_whole_across_byte_limit():
     assert first[0]["content"] == "a" * 20
 
 
-def test_content_page_returns_oversized_first_block_without_splitting():
-    blocks = [{"block_ref": "a", "content": "内容" * 20, "start": 0, "end": 120}]
+def test_content_page_continues_inside_oversized_utf8_block_without_loss():
+    text = "内容" * 20
+    blocks = [{"block_ref": "a", "content": text, "start": 0, "end": 120}]
+    index = offset = 0
+    fragments = []
+    while index < len(blocks):
+        page, index, offset = CorpusFsService.content_page(blocks, index, 8, byte_offset=offset)
+        assert len(page[0]["content"].encode()) <= 8
+        fragments.append(page[0]["content"])
+    assert "".join(fragments) == text
 
-    page, next_index = CorpusFsService.content_page(blocks, 0, 8)
 
-    assert page == blocks
-    assert next_index == 1
+def test_content_page_bounds_empty_image_blocks_and_continues():
+    blocks = [{"block_ref": str(i), "content": "", "image_ref": "a" * 64} for i in range(200)]
+    page, index, offset = CorpusFsService.content_page(blocks, 0, 1)
+    assert len(page) == index == 1
+    assert offset == 0
+
+
+def test_split_block_citation_range_keeps_original_utf8_coordinates():
+    service = CorpusFsService("tenant-1", "dataset-1", "actor")
+    original = {"block_ref": "0", "content": "前言正文", "start": 0, "end": 12}
+    _, index, offset = service.content_page([original], 0, 6)
+    visible, _, _ = service.content_page([original], index, 6, byte_offset=offset)
+    target = service.citation_target({"path": "/guide.pdf"}, {"id": "doc-1"}, 1, block=visible[0], context=({"projection_revision": 4, "source_sha256": "a" * 64}, []))
+    assert visible[0]["content"] == "正文"
+    assert target["block_ref"] == "0"
+    assert target["range"] == {"start": 6, "end": 12}
 
 
 def test_content_text_reuses_the_citation_projection_snapshot(monkeypatch):
@@ -1090,7 +1156,8 @@ class _InlineStorage:
         return (dataset_id, object_name) in self.objects
 
 
-def test_parsed_content_materializes_inline_images_with_consistent_offsets(monkeypatch):
+@pytest.mark.parametrize("document_type", ["pdf", "md"])
+def test_parsed_content_materializes_inline_images_with_consistent_offsets(monkeypatch, document_type):
     payload = b"\x89PNG-inline"
     encoded = base64.b64encode(payload).decode("ascii")
 
@@ -1103,30 +1170,36 @@ def test_parsed_content_materializes_inline_images_with_consistent_offsets(monke
         def get_fields(*_args, **_kwargs):
             return {"chunk-1": {"content_with_weight": f'前<img src="data:image/png;base64,{encoded}">后'}}
 
-    storage = _InlineStorage()
+    raw_text = f'前<img src="data:image/png;base64,{encoded}">后'
+    storage = _InlineStorage({("bucket", "notes.md"): raw_text.encode()})
+    monkeypatch.setattr("api.apps.services.corpus_fs_service.File2DocumentService.get_storage_address", classmethod(lambda _cls, **_kwargs: ("bucket", "notes.md")))
     monkeypatch.setattr(settings, "docStoreConn", DocStore())
     monkeypatch.setattr(settings, "STORAGE_IMPL", storage)
     service = CorpusFsService("tenant-1", "dataset-1", "actor")
     monkeypatch.setattr(service, "_document_fs_path", lambda _document_id: "/notes.md")
 
-    content, source, _images, blocks = service.content_text({"id": "document-1", "run": TaskStatus.DONE.value, "type": "pdf"})
+    content, source, images, blocks = service.content_text({"id": "document-1", "run": TaskStatus.DONE.value, "type": document_type})
 
     object_name = f"inline/{hashlib.sha256(payload).hexdigest()}.png"
     image_id = f"dataset-1-{object_name}"
-    assert source == "parsed_chunks"
+    assert source == ("raw_text" if document_type == "md" else "parsed_chunks")
     assert "data:image" not in content
     assert f"[[image:dataset/dataset-1/notes.md|image_ref={service._image_ref('document-1', image_id)}]]" in content
     assert storage.objects[("dataset-1", object_name)] == payload
     block = blocks[0]
     assert content.encode("utf-8")[block["start"] : block["end"]] == block["content"].encode("utf-8")
+    assert images == [{"image_ref": service._image_ref("document-1", image_id), "offset": block["end"]}]
+    assert block["image_ref"] == images[0]["image_ref"]
+    assert service.image_data({"id": "document-1"}, images[0]["image_ref"]) == (payload, object_name)
 
 
-def test_chunk_citation_preview_materializes_before_the_byte_slice(monkeypatch):
+@pytest.mark.parametrize("raw_source", [False, True])
+def test_chunk_citation_preview_materializes_before_the_byte_slice(monkeypatch, raw_source):
     payload = b"preview-bytes"
     encoded = base64.b64encode(payload).decode("ascii")
     image_tag = f'<img src="data:image/png;base64,{encoded}">'
     chunk_text = "X" + image_tag + "Y"
-    source = b"stored-source-object"
+    source = chunk_text.encode() if raw_source else b"stored-source-object"
     storage = _InlineStorage({("bucket", "note.txt"): source})
 
     class DocStore:
@@ -1154,7 +1227,7 @@ def test_chunk_citation_preview_materializes_before_the_byte_slice(monkeypatch):
         "content_revision": 2,
         "projection_revision": None,
         "page": None,
-        "block_ref": service._chunk_ref("doc-1", "chunk-1"),
+        "block_ref": "raw:0" if raw_source else service._chunk_ref("doc-1", "chunk-1"),
         # 区间由 citation_target 在 content_text 的产物（已资产化）上算出。
         "range": {"start": 0, "end": len(materialized.encode())},
         "source_hash": hashlib.sha256(source).hexdigest(),
@@ -1163,6 +1236,7 @@ def test_chunk_citation_preview_materializes_before_the_byte_slice(monkeypatch):
     preview = service.citation_preview("doc-1", target)
 
     assert preview["content"] == materialized
+    assert preview["blocks"][0]["image_ref"] == service._image_ref("doc-1", image_id)
 
 
 def test_image_data_resolves_inline_manifest_assets(monkeypatch):
@@ -1191,3 +1265,36 @@ def test_image_data_resolves_inline_manifest_assets(monkeypatch):
     service = CorpusFsService("tenant-1", "dataset-1", "actor")
 
     assert service.image_data({"id": "document-1"}, service._image_ref("document-1", image_id)) == (payload, object_name)
+
+
+def test_versioned_image_read_uses_cited_projection_and_never_current_fallback(monkeypatch):
+    from api.apps.services.corpus_errors import ImageNotFoundError
+
+    service = CorpusFsService("tenant-1", "dataset-1", "actor")
+    image_id = "dataset-1-source-projections/document-1/4/images/0.png"
+    target = {"projection_revision": 4, "source_hash": "a" * 64, "block_ref": "0"}
+    document = {"id": "document-1", "name": "manual.docx"}
+    monkeypatch.setattr(SourceProjectionService, "active", classmethod(lambda *_args: pytest.fail("must not read latest version")))
+    monkeypatch.setattr(
+        SourceProjectionService,
+        "revision",
+        classmethod(lambda _cls, doc, revision, digest: ({"projection_revision": 4}, [{"block_ref": "0", "image_id": image_id}]) if (doc, revision, digest) == ("document-1", 4, "a" * 64) else None),
+    )
+    monkeypatch.setattr(service, "_chunk_fields", lambda _id: pytest.fail("must not mix current chunks into old evidence"))
+    monkeypatch.setattr(settings, "STORAGE_IMPL", SimpleNamespace(get=lambda *_args: b"old-image"))
+
+    assert service.image_data(document, service._image_ref("document-1", image_id), citation_target=target)[0] == b"old-image"
+    with pytest.raises(ImageNotFoundError):
+        service.image_data(document, service._image_ref("another-document", image_id), citation_target=target)
+
+
+def test_citation_preview_preserves_image_reference_from_retired_projection(monkeypatch):
+    service = CorpusFsService("tenant-1", "dataset-1", "actor")
+    image_id = "dataset-1-source-projections/doc-1/4/images/0.png"
+    monkeypatch.setattr(service, "authorize_citation", lambda _id: ({"id": "doc-1"}, {"path": "/renamed.docx"}))
+    monkeypatch.setattr(SourceProjectionService, "revision", classmethod(lambda *_args: ({}, [{"block_ref": "0", "kind": "image", "text": "", "image_id": image_id}])))
+
+    preview = service.citation_preview("doc-1", {"projection_revision": 4, "source_hash": "a" * 64, "block_ref": "0"})
+
+    assert preview["current_path"] == "/renamed.docx"
+    assert preview["blocks"][0]["image_ref"] == service._image_ref("doc-1", image_id)

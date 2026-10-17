@@ -43,6 +43,7 @@ from api.db.services.task_service import TaskService, cancel_all_task_of
 from common import settings
 from common.constants import TaskStatus
 from common.doc_store.doc_store_base import OrderByExpr
+from common.mineru_formats import uses_source_projection
 from common.misc_utils import get_uuid
 from rag.nlp import search
 
@@ -719,11 +720,24 @@ class CorpusFsService:
         value = f"{self.tenant_id}:{self.dataset_id}:{document_id}:{image_id}".encode()
         return hmac.new(self._image_ref_secret(), value, hashlib.sha256).hexdigest()
 
-    def search_images(self, document_id: str, chunk: dict) -> list[dict[str, str]]:
-        image_id = chunk.get("image_id") or chunk.get("img_id")
-        if not isinstance(image_id, str) or not image_id:
-            return []
-        return [{"image_ref": self._image_ref(document_id, image_id)}]
+    def search_evidence(self, document_id: str, chunk: dict, *, citation_target: dict, context: tuple[dict, list[dict] | None]) -> dict:
+        """Keep returned text and media in the version selected by the citation."""
+        snippet = str(chunk.get("content_with_weight") or chunk.get("snippet") or "")
+        if citation_target.get("projection_revision") is not None:
+            blocks = context[1] or []
+            selected = next((block for block in blocks if str(block.get("block_ref")) == citation_target.get("block_ref")), None)
+            if selected is None:
+                return {"snippet": snippet, "images": []}
+            text, image_ids = self._projection_block_content(document_id, selected, fs_path=citation_target["path"])
+            if "data:image" in snippet:
+                snippet = text
+        else:
+            image_id = chunk.get("image_id") or chunk.get("img_id")
+            image_ids = [image_id] if isinstance(image_id, str) and image_id else []
+            if "data:image" in snippet:
+                snippet, inline_ids = self._materialize_inline_images({"id": document_id}, snippet, fs_path=citation_target["path"])
+                image_ids.extend(inline_ids)
+        return {"snippet": snippet, "images": [{"image_ref": self._image_ref(document_id, image_id)} for image_id in dict.fromkeys(image_ids)]}
 
     def _chunk_ref(self, document_id: str, chunk_id: str) -> str:
         value = f"chunk:{self.tenant_id}:{self.dataset_id}:{document_id}:{chunk_id}".encode()
@@ -731,7 +745,7 @@ class CorpusFsService:
 
     def _chunk_fields(self, document_id: str) -> dict[str, dict]:
         rows = settings.docStoreConn.search(
-            ["content_with_weight", "chunk_order_int", "page_num_int", "position_int", "top_int", "img_id"],
+            ["content_with_weight", "chunk_order_int", "page_num_int", "position_int", "top_int", "img_id", "doc_type_kwd"],
             [],
             {"doc_id": document_id},
             [],
@@ -741,7 +755,7 @@ class CorpusFsService:
             search.index_name(self.tenant_id),
             [self.dataset_id],
         )
-        return settings.docStoreConn.get_fields(rows, ["content_with_weight", "chunk_order_int", "page_num_int", "position_int", "top_int", "img_id"])
+        return settings.docStoreConn.get_fields(rows, ["content_with_weight", "chunk_order_int", "page_num_int", "position_int", "top_int", "img_id", "doc_type_kwd"])
 
     @staticmethod
     def _chunk_position_key(chunk_id: str, chunk: dict) -> tuple:
@@ -761,15 +775,15 @@ class CorpusFsService:
             return (2, order, 0, 0, chunk_id)
         return (3, 0, 0, 0, chunk_id)
 
-    def _materialize_inline_images(self, document: dict, text: str, *, fs_path: str | None = None) -> str:
-        """Swap chunk data URLs for corpus image placeholders; best-effort, never raises."""
+    def _materialize_inline_images(self, document: dict, text: str, *, fs_path: str | None = None) -> tuple[str, list[str]]:
+        """Swap inline data URLs and return this text's stored image IDs."""
         if fs_path is None:
             # 契约：资产化失败一律退化为原样返回，不因它破坏读路径。
             try:
                 fs_path = self._document_fs_path(document["id"])
             except Exception:  # noqa: BLE001
-                return text
-        materialized, _ = materialize_inline_images(
+                return text, []
+        materialized, manifest = materialize_inline_images(
             text,
             dataset_id=self.dataset_id,
             document_id=document["id"],
@@ -779,7 +793,31 @@ class CorpusFsService:
             exists=lambda bucket, object_name: settings.STORAGE_IMPL.obj_exist(bucket, object_name),
             get=lambda bucket, object_name: settings.STORAGE_IMPL.get(bucket, object_name),
         )
-        return materialized
+        return materialized, manifest.get("materialized_image_ids", [])
+
+    def _projection_block_content(self, document_id: str, block: dict, *, fs_path: str | None) -> tuple[str, list[str]]:
+        """Derive public text and media from this immutable block only."""
+        text = block.get("text") or ""
+        image_ids = [block["image_id"]] if block.get("image_id") else []
+        if fs_path is not None and "data:image" in text:
+            text, inline_ids = self._materialize_inline_images({"id": document_id}, text, fs_path=fs_path)
+            image_ids.extend(inline_ids)
+        return text, list(dict.fromkeys(image_ids))
+
+    @staticmethod
+    def _chunk_kind(chunk: dict) -> str:
+        kind = chunk.get("doc_type_kwd")
+        return "paragraph" if kind == "text" else kind or ("image" if chunk.get("img_id") else "paragraph")
+
+    @staticmethod
+    def _active_projection(document: dict) -> tuple[dict, list[dict]] | None:
+        filename = document.get("name") or f"document.{document.get('type', '')}"
+        if not uses_source_projection(filename):
+            return None
+        try:
+            return SourceProjectionService.active(document)
+        except (OperationalError, ProgrammingError):
+            return None
 
     def content_text(
         self,
@@ -789,54 +827,71 @@ class CorpusFsService:
         *,
         citation_context: tuple[dict, list[dict] | None] | None = None,
     ) -> tuple[str, str, list[dict], list[dict]]:
-        if document.get("type", "").lower() == "pdf":
-            if citation_context is not None:
-                manifest, projection_blocks = citation_context
-                projection = (manifest, projection_blocks) if projection_blocks is not None else None
-            else:
+        if citation_context is not None:
+            manifest, projection_blocks = citation_context
+            projection = (manifest, projection_blocks) if projection_blocks is not None else None
+        else:
+            projection = self._active_projection(document)
+        if projection:
+            manifest, projection_blocks = projection
+            selected = [block for block in projection_blocks if (page is None or block.get("page") == page) and (not kinds or block.get("kind") in kinds)]
+            inline_fs_path = None
+            if any("data:image" in (block.get("text") or "") for block in selected):
                 try:
-                    projection = SourceProjectionService.active(document)
-                except (OperationalError, ProgrammingError):
-                    projection = None
-            if projection:
-                manifest, projection_blocks = projection
-                selected = [block for block in projection_blocks if (page is None or block.get("page") == page) and (not kinds or block.get("kind") in kinds)]
-                blocks: list[dict] = []
-                images: list[dict] = []
-                content_parts: list[str] = []
-                offset = 0
-                for index, block in enumerate(selected):
-                    prefix = "\n\n" if index else ""
-                    content = block.get("text", "")
-                    content_part = prefix + content
-                    start = offset + len(prefix.encode("utf-8"))
-                    offset += len(content_part.encode("utf-8"))
-                    public_block = {key: block.get(key) for key in ("block_ref", "ordinal", "kind", "page", "positions", "parent_block_ref")}
-                    if "level" in block:
-                        public_block["level"] = block["level"]
-                    public_block.update({"content": content, "start": start, "end": offset})
-                    image_id = block.get("image_id")
-                    if image_id:
-                        image_ref = self._image_ref(document["id"], image_id)
-                        public_block["image_ref"] = image_ref
-                        images.append({"image_ref": image_ref, "offset": offset})
-                    blocks.append(public_block)
-                    content_parts.append(content_part)
-                content = "".join(content_parts)
-                if blocks:
-                    return content, f"source_projection:{manifest['projection_revision']}", images, blocks
-                raise UnsupportedContentError("projection has no readable text for the selected filter")
+                    inline_fs_path = self._document_fs_path(document["id"])
+                except Exception:  # noqa: BLE001
+                    inline_fs_path = None
+            blocks: list[dict] = []
+            images: list[dict] = []
+            content_parts: list[str] = []
+            offset = 0
+            for index, block in enumerate(selected):
+                prefix = "\n\n" if index else ""
+                content, image_ids = self._projection_block_content(document["id"], block, fs_path=inline_fs_path)
+                refs = [self._image_ref(document["id"], image_id) for image_id in image_ids]
+                content_part = prefix + content
+                start = offset + len(prefix.encode("utf-8"))
+                offset += len(content_part.encode("utf-8"))
+                public_block = {key: block.get(key) for key in ("block_ref", "ordinal", "kind", "page", "positions", "parent_block_ref")}
+                if "level" in block:
+                    public_block["level"] = block["level"]
+                public_block.update({"content": content, "start": start, "end": offset})
+                if refs:
+                    public_block["image_ref"] = refs[0]
+                    public_block["images"] = [{"image_ref": ref} for ref in refs]
+                    images.extend({"image_ref": ref, "offset": offset} for ref in refs)
+                blocks.append(public_block)
+                content_parts.append(content_part)
+            content = "".join(content_parts)
+            if blocks:
+                return content, f"source_projection:{manifest['projection_revision']}", images, blocks
+            raise UnsupportedContentError("projection has no readable text for the selected filter")
         if document.get("run") != TaskStatus.DONE.value:
             raise DocumentNotReadyError("document is not ready")
         if document.get("type", "").lower() in {"txt", "md", "markdown"}:
+            if page is not None:
+                raise UnsupportedContentError("source page metadata is unavailable")
+            if kinds and "paragraph" not in kinds:
+                raise UnsupportedContentError("raw text has no blocks of the selected type")
             try:
                 bucket, object_name = File2DocumentService.get_storage_address(doc_id=document["id"])
                 text = settings.STORAGE_IMPL.get(bucket, object_name).decode("utf-8")
-                return text, "raw_text", [], [{"content": text, "start": 0, "end": len(text.encode("utf-8"))}]
+                refs: list[str] = []
+                if "data:image" in text:
+                    text, image_ids = self._materialize_inline_images(document, text)
+                    refs = [self._image_ref(document["id"], image_id) for image_id in image_ids]
+                block = {"content": text, "start": 0, "end": len(text.encode("utf-8"))}
+                if refs:
+                    block["image_ref"] = refs[0]
+                    block["images"] = [{"image_ref": ref} for ref in refs]
+                return text, "raw_text", [{"image_ref": ref, "offset": block["end"]} for ref in refs], [block]
             except (UnicodeDecodeError, OSError, AttributeError, TypeError):
                 pass
         fields = self._chunk_fields(document["id"])
         chunks = sorted(fields.items(), key=lambda item: self._chunk_position_key(*item))
+        if page is not None and not any(self.chunk_page(chunk) is not None for _, chunk in chunks):
+            raise UnsupportedContentError("source page metadata is unavailable")
+        chunks = [(chunk_id, chunk) for chunk_id, chunk in chunks if (page is None or self.chunk_page(chunk) == page) and (not kinds or self._chunk_kind(chunk) in kinds)]
         # 只有确实存在内联图时才解析 fs 路径：该解析要构建一次投影，按 chunk 反复做会成倍放大读路径开销。
         inline_fs_path: str | None = None
         if any("data:image" in (chunk.get("content_with_weight") or "") for _, chunk in chunks):
@@ -852,22 +907,33 @@ class CorpusFsService:
         for index, (chunk_id, chunk) in enumerate(chunks):
             prefix = "\n\n" if index else ""
             chunk_content = chunk.get("content_with_weight") or ""
+            refs: list[str] = []
             # 偏移必须基于替换后的文本，否则分块游标会与返回正文错位。
             if inline_fs_path is not None and "data:image" in chunk_content:
-                chunk_content = self._materialize_inline_images(document, chunk_content, fs_path=inline_fs_path)
+                chunk_content, inline_ids = self._materialize_inline_images(document, chunk_content, fs_path=inline_fs_path)
+                refs = [self._image_ref(document["id"], image_id) for image_id in inline_ids]
             content_part = prefix + chunk_content
             start = offset + len(prefix.encode("utf-8"))
             content_parts.append(content_part)
             offset += len(content_part.encode("utf-8"))
             image_id = chunk.get("img_id") or ""
             block = {"block_ref": self._chunk_ref(document["id"], chunk_id), "content": chunk_content, "start": start, "end": offset}
+            chunk_page = self.chunk_page(chunk)
+            if chunk_page is not None:
+                block["page"] = chunk_page
+            if kinds or chunk.get("doc_type_kwd"):
+                block["kind"] = self._chunk_kind(chunk)
             if image_id:
-                image_ref = self._image_ref(document["id"], image_id)
-                block["image_ref"] = image_ref
-                images.append({"image_ref": image_ref, "offset": offset})
+                refs.insert(0, self._image_ref(document["id"], image_id))
+            refs = list(dict.fromkeys(refs))
+            if refs:
+                block["image_ref"] = refs[0]
+                if len(refs) > 1:
+                    block["images"] = [{"image_ref": ref} for ref in refs]
+                images.extend({"image_ref": ref, "offset": offset} for ref in refs)
             blocks.append(block)
         content = "".join(content_parts)
-        if not content:
+        if not content and not images:
             raise UnsupportedContentError("document has no readable text projection")
         return content, "parsed_chunks", images, blocks
 
@@ -902,14 +968,10 @@ class CorpusFsService:
         return CorpusFsService._first_page(chunk.get("page_num_int")) or CorpusFsService._first_page(positions[0] if positions else None)
 
     def citation_context(self, document: dict) -> tuple[dict, list[dict] | None]:
-        if document.get("type", "").lower() == "pdf":
-            try:
-                with stage("citation.projection"):
-                    projection = SourceProjectionService.active(document)
-            except (OperationalError, ProgrammingError):
-                projection = None
-            if projection:
-                return projection
+        with stage("citation.projection"):
+            projection = self._active_projection(document)
+        if projection:
+            return projection
         with stage("citation.manifest"):
             return self._storage_citation_context(document)
 
@@ -968,11 +1030,14 @@ class CorpusFsService:
                     None,
                 )
 
-        content = str((selected or {}).get("content", (selected or {}).get("text", "")))
+        if selected is not None and projection_blocks and "content" not in selected and "data:image" in (selected.get("text") or ""):
+            content, _ = self._projection_block_content(document["id"], selected, fs_path=entry["path"])
+        else:
+            content = str((selected or {}).get("content", (selected or {}).get("text", "")))
         snippet = str((chunk or {}).get("content_with_weight") or "")
         start = content.find(snippet) if content and snippet else 0
         start = max(start, 0)
-        start_bytes = len(content[:start].encode())
+        start_bytes = int((selected or {}).get("block_byte_start", 0)) + len(content[:start].encode())
         cited_text = snippet if snippet and content[start : start + len(snippet)] == snippet else content
         block_ref = (selected or {}).get("block_ref")
         if block_ref is None and chunk is not None:
@@ -1024,7 +1089,11 @@ class CorpusFsService:
                 public = {key: block.get(key) for key in ("block_ref", "ordinal", "kind", "page", "positions", "parent_block_ref")}
                 if "level" in block:
                     public["level"] = block["level"]
-                public["content"] = block.get("text", "")
+                public["content"], image_ids = self._projection_block_content(document_id, block, fs_path=target.get("path", entry["path"]))
+                refs = [self._image_ref(document_id, image_id) for image_id in image_ids]
+                if refs:
+                    public["image_ref"] = refs[0]
+                    public["images"] = [{"image_ref": ref} for ref in refs]
                 blocks.append(public)
             content = "\n\n".join(block["content"] for block in blocks)
         else:
@@ -1032,6 +1101,7 @@ class CorpusFsService:
             if manifest["source_sha256"] != target["source_hash"]:
                 raise NotFoundError("citation source version not found")
             block_ref = target.get("block_ref")
+            refs: list[str] = []
             if block_ref == "raw:0":
                 bucket, object_name = File2DocumentService.get_storage_address(doc_id=document_id)
                 source = settings.STORAGE_IMPL.get(bucket, object_name)
@@ -1047,11 +1117,16 @@ class CorpusFsService:
                 if chunk is None:
                     raise NotFoundError("citation block not found")
                 content = chunk.get("content_with_weight") or ""
-                # 引用区间是在 content_text 的产物（已资产化）上算出的，故这里也必须先替换再切片，
-                # 否则会在原始文本上切到半个 data URL、既匹配不上正则、也把区间算错。
-                if "data:image" in content:
-                    content = self._materialize_inline_images(document, content, fs_path=entry["path"])
+                if chunk.get("img_id"):
+                    refs.append(self._image_ref(document_id, chunk["img_id"]))
+            # Citation ranges use the materialized text for both raw text and chunks.
+            if "data:image" in content:
+                content, inline_ids = self._materialize_inline_images(document, content, fs_path=entry["path"])
+                refs.extend(self._image_ref(document_id, image_id) for image_id in inline_ids)
             blocks = [{"block_ref": target.get("block_ref"), "page": target.get("page"), "content": content}]
+            if refs:
+                blocks[0]["image_ref"] = refs[0]
+                blocks[0]["images"] = [{"image_ref": ref} for ref in dict.fromkeys(refs)]
 
         byte_range = target.get("range")
         if byte_range is not None and len(blocks) == 1:
@@ -1059,41 +1134,77 @@ class CorpusFsService:
         return {"current_path": entry["path"], "content": content, "blocks": blocks}
 
     @staticmethod
-    def content_page(blocks: list[dict], start_index: int, maximum_bytes: int) -> tuple[list[dict], int]:
-        """Return complete blocks bounded by the byte budget whenever possible."""
-        if start_index < 0 or start_index > len(blocks):
+    def content_page(blocks: list[dict], start_index: int, maximum_bytes: int, *, byte_offset: int = 0) -> tuple[list[dict], int, int]:
+        """Bound source bytes and block count, continuing within oversized blocks."""
+        if start_index < 0 or start_index > len(blocks) or byte_offset < 0 or maximum_bytes < 1:
             raise CorpusFsError("invalid content cursor")
         page: list[dict] = []
         size = 0
         index = start_index
-        while index < len(blocks):
-            block_size = len(str(blocks[index].get("content") or "").encode("utf-8"))
-            if page and size + block_size > maximum_bytes:
+        maximum_blocks = min(64, max(1, maximum_bytes // 512))
+        while index < len(blocks) and len(page) < maximum_blocks:
+            original = blocks[index]
+            raw = str(original.get("content") or "").encode("utf-8")
+            if byte_offset > len(raw):
+                raise CorpusFsError("invalid content cursor")
+            remaining = maximum_bytes - size - (2 if page else 0)
+            if remaining < 1 and raw[byte_offset:]:
                 break
-            page.append(blocks[index])
-            size += block_size
+            if page and len(raw) - byte_offset > remaining:
+                break
+            text = raw[byte_offset : byte_offset + max(remaining, 0)].decode("utf-8", errors="ignore")
+            used = len(text.encode("utf-8"))
+            if not used and raw[byte_offset:]:
+                raise CorpusFsError("max_bytes is too small for the next UTF-8 character")
+            if byte_offset or used < len(raw):
+                block = {**original, "content": text, "block_byte_start": byte_offset}
+                block["start"] = int(original.get("start", 0)) + byte_offset
+                block["end"] = block["start"] + used
+            else:
+                block = original.copy()
+            page.append(block)
+            size += used + (2 if len(page) > 1 else 0)
+            byte_offset += used
+            if byte_offset < len(raw):
+                return page, index, byte_offset
             index += 1
+            byte_offset = 0
             if size >= maximum_bytes:
                 break
-        return page, index
+        if index == len(blocks) and byte_offset:
+            raise CorpusFsError("invalid content cursor")
+        return page, index, byte_offset
 
-    def image_data(self, document: dict, image_ref: str) -> tuple[bytes, str]:
-        try:
-            projection = SourceProjectionService.active(document) if document.get("type", "").lower() == "pdf" else None
-        except (OperationalError, ProgrammingError):
-            projection = None
+    def image_data(self, document: dict, image_ref: str, *, citation_target: dict | None = None) -> tuple[bytes, str]:
+        if citation_target is not None and citation_target.get("projection_revision") is not None:
+            projection = SourceProjectionService.revision(document["id"], citation_target["projection_revision"], citation_target["source_hash"])
+            if projection is None:
+                raise ImageNotFoundError("citation projection not found")
+        else:
+            if citation_target is not None and self._storage_citation_context(document)[0]["source_sha256"] != citation_target["source_hash"]:
+                raise ImageNotFoundError("citation source version not found")
+            projection = self._active_projection(document) if citation_target is None else None
         if projection:
             _, blocks = projection
+            inline_fs_path = (citation_target or {}).get("path")
+            if inline_fs_path is None and any("data:image" in (block.get("text") or "") for block in blocks):
+                try:
+                    inline_fs_path = self._document_fs_path(document["id"])
+                except Exception:  # noqa: BLE001
+                    inline_fs_path = None
             for block in blocks:
-                image_id = block.get("image_id") or ""
-                if image_id and hmac.compare_digest(image_ref, self._image_ref(document["id"], image_id)):
+                # Inline media are authorized by membership in the requested
+                # snapshot, never by the document's aggregate inline manifest.
+                _, image_ids = self._projection_block_content(document["id"], block, fs_path=inline_fs_path)
+                for image_id in image_ids:
                     prefix = f"{self.dataset_id}-"
-                    if image_id.startswith(prefix):
+                    if image_id.startswith(prefix) and hmac.compare_digest(image_ref, self._image_ref(document["id"], image_id)):
                         object_name = image_id[len(prefix) :]
                         data = settings.STORAGE_IMPL.get(self.dataset_id, object_name)
                         if data:
                             return data, object_name
-                    break
+        if citation_target is not None and citation_target.get("projection_revision") is not None:
+            raise ImageNotFoundError("image not found in cited projection")
         for chunk in self._chunk_fields(document["id"]).values():
             image_id = chunk.get("img_id") or ""
             if image_id and hmac.compare_digest(image_ref, self._image_ref(document["id"], image_id)):

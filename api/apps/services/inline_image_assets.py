@@ -69,7 +69,7 @@ def _read_manifest_ids(dataset_id: str, document_id: str, get: Callable[[str, st
         ids = payload.get("image_ids") if isinstance(payload, dict) else None
         if isinstance(ids, list):
             return [item for item in ids if isinstance(item, str)]
-    except Exception:
+    except Exception:  # noqa: BLE001 - Missing or unreadable optional storage must not break document reads.
         return []
     return []
 
@@ -97,7 +97,7 @@ def _register_images(
             if _safe_object_name(object_name):
                 put(dataset_id, object_name, json.dumps({"image_ids": merged}).encode("utf-8"))
         return {"image_ids": merged}
-    except Exception:
+    except Exception:  # noqa: BLE001 - Manifest registration is a best-effort storage boundary.
         return {}
 
 
@@ -139,6 +139,8 @@ def materialize_inline_images(
         )
 
     manifest = _register_images(dataset_id=dataset_id, document_id=document_id, image_ids=registered, get=get, put=put)
+    if manifest:
+        manifest["materialized_image_ids"] = list(dict.fromkeys(registered))
     return text, manifest
 
 
@@ -185,7 +187,7 @@ def _substitute_images(
             # 路径归一化为单前导斜杠：投影里的 entry 路径可能是 `//name`，而取图路由拒绝双斜杠。
             marker_path = "/" + fs_path.lstrip("/")
             replacement = f"[[image:dataset/{dataset_id}{marker_path}|image_ref={image_ref}]]"
-        except Exception:
+        except Exception:  # noqa: BLE001 - Preserve the original image when any injected storage operation fails.
             replacement = match.group(0)
         parts.append(replacement)
     parts.append(text[cursor:])

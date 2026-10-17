@@ -52,8 +52,8 @@ class _CorpusService:
             "source_hash": None,
         }
 
-    def search_images(self, document_id, chunk):
-        return []
+    def search_evidence(self, document_id, chunk, *, citation_target, context):
+        return {"snippet": chunk.get("content_with_weight", ""), "images": []}
 
 
 class _ThreadTrackingCorpusService(_CorpusService):
@@ -285,8 +285,8 @@ class _ScopedCorpusService:
     def citation_target(self, entry, document, content_revision, *, chunk, context):
         return {"path": entry["path"], "page": (chunk.get("page_num_int") or [None])[0], "source_hash": None}
 
-    def search_images(self, document_id, chunk):
-        return []
+    def search_evidence(self, document_id, chunk, *, citation_target, context):
+        return {"snippet": chunk.get("content_with_weight", ""), "images": []}
 
 
 class _DisabledCorpusService(_ScopedCorpusService):
@@ -483,3 +483,87 @@ async def test_citation_sources_are_only_read_for_returned_items():
     assert len(result["items"]) == 2
     assert len(reads) == 2
     assert all(item["citation_ref"] for item in result["items"])
+
+
+class _ProjectedPdfService(_ScopedCorpusService):
+    """Use the real projection matcher; only I/O is replaced."""
+
+    _first_page = staticmethod(CorpusFsService._first_page)
+    _position_overlap = staticmethod(CorpusFsService._position_overlap)
+
+    def __init__(self):
+        super().__init__("dataset-1", {"/": [_entry("doc-pdf", "/source.pdf")]})
+        self.targets = []
+        self.context_reads = 0
+        self.revision = 4
+        self.source_hash = "a" * 64
+
+    def search_context(self, path):
+        entries, documents, revision = super().search_context(path)
+        documents["doc-pdf"]["type"] = "PDF"
+        return entries, documents, revision
+
+    def citation_context(self, document):
+        self.context_reads += 1
+        return {"projection_revision": self.revision, "source_sha256": self.source_hash}, [
+            {"block_ref": "block-7", "page": 7, "text": "前缀 same 尾", "block_byte_start": 100, "positions": [[1, 0, 10, 0, 10]]},
+            {"block_ref": "block-8", "page": 8, "text": "other", "block_byte_start": 200, "positions": [[2, 0, 10, 0, 10]]},
+            {"block_ref": "block-9", "page": 9, "text": "dropped", "block_byte_start": 300, "positions": [[3, 0, 10, 0, 10]]},
+        ]
+
+    def citation_target(self, *args, **kwargs):
+        target = CorpusFsService.citation_target(self, *args, **kwargs)
+        self.targets.append(target)
+        return target
+
+
+def _projected_pdf_search():
+    from api.apps.services.corpus_citation_service import CorpusCitationService
+
+    corpus = _ProjectedPdfService()
+    citations = CorpusCitationService(b"pdf-reuse-test-secret")
+    chunks = [
+        {"chunk_id": "a", "doc_id": "doc-pdf", "content_with_weight": "same", "page_num_int": [1], "position_int": [[1, 0, 10, 0, 10]], "similarity": 0.99},
+        {"chunk_id": "duplicate", "doc_id": "doc-pdf", "content_with_weight": "same", "page_num_int": [2], "position_int": [[1, 0, 10, 0, 10]], "similarity": 0.98},
+        {"chunk_id": "b", "doc_id": "doc-pdf", "content_with_weight": "other", "page_num_int": [2], "position_int": [[2, 0, 10, 0, 10]], "similarity": 0.97},
+        {"chunk_id": "c", "doc_id": "doc-pdf", "content_with_weight": "dropped", "page_num_int": [3], "position_int": [[3, 0, 10, 0, 10]], "similarity": 0.96},
+    ]
+    tool = CorpusToolService("tenant-1", service_factory=lambda _: corpus, recall=_Recall(lambda *_: chunks), citation_service=citations)
+    return corpus, citations, tool
+
+
+@pytest.mark.asyncio
+async def test_pdf_targets_are_computed_once_and_preserve_corrected_dedup_and_signed_fields():
+    corpus, citations, tool = _projected_pdf_search()
+    result = await tool.search(scopes=[{"scope": "root", "dataset_id": "dataset-1", "path": "/"}], query="same", limit=2)
+    print(f"pdf_candidates=4 returned=2 target_calls={len(corpus.targets)} context_reads={corpus.context_reads}")
+    assert [item["page"] for item in result["items"]] == [7, 8]
+    assert result["search_meta"]["deduplicated_count"] == 3
+    assert len(corpus.targets) == 4
+    assert corpus.context_reads == 1
+    for item, page, block, byte_start, byte_end in zip(result["items"], [7, 8], ["block-7", "block-8"], [107, 200], [111, 205]):
+        document_id, target = citations.resolve_locator(item["citation_ref"], "tenant-1", "dataset-1")
+        assert document_id == "doc-pdf"
+        assert target == {
+            "path": "/source.pdf",
+            "content_revision": 11,
+            "projection_revision": 4,
+            "page": page,
+            "block_ref": block,
+            "range": {"start": byte_start, "end": byte_end},
+            "source_hash": "a" * 64,
+        }
+    assert all("target" not in item for item in result["items"])
+
+
+@pytest.mark.asyncio
+async def test_pdf_target_reuse_is_request_local_and_observes_new_projection_version():
+    corpus, citations, tool = _projected_pdf_search()
+    params = {"scopes": [{"scope": "root", "dataset_id": "dataset-1", "path": "/"}], "query": "same", "limit": 2}
+    old = await tool.search(**params)
+    corpus.revision, corpus.source_hash = 5, "b" * 64
+    new = await tool.search(**params)
+    assert len(corpus.targets) == 8 and corpus.context_reads == 2
+    assert citations.resolve_locator(old["items"][0]["citation_ref"], "tenant-1", "dataset-1")[1]["source_hash"] == "a" * 64
+    target = citations.resolve_locator(new["items"][0]["citation_ref"], "tenant-1", "dataset-1")[1]
+    assert target["projection_revision"] == 5 and target["source_hash"] == "b" * 64

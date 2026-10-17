@@ -39,11 +39,11 @@ class _GrepService:
     def citation_target(self, _entry, _document, _revision, *, chunk, context):
         return {"page": (chunk.get("page_num_int") or [None])[0]}
 
-    def search_images(self, document_id, chunk):
+    def search_evidence(self, document_id, chunk, *, citation_target, context):
         self.image_calls.append((document_id, chunk.get("img_id")))
         if not chunk.get("img_id"):
-            return []
-        return [{"image_ref": "a" * 64}]
+            return {"snippet": chunk.get("content_with_weight", ""), "images": []}
+        return {"snippet": chunk.get("content_with_weight", ""), "images": [{"image_ref": "a" * 64}]}
 
 
 def _route(module, name):

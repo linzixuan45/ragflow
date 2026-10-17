@@ -130,7 +130,7 @@ bash build.sh --all
 `MINERU_SUFFIXES`（PDF + 8 种图片 + docx/pptx/xlsx）一律经 MinerU 解析；PDF 与 office 分支的产物形态不同。
 
 - `uses_source_projection()` 是「是否需要 source projection」的唯一谓词，与 `is_mineru_file()` 同值。
-- 写侧 projection 门禁已放开到所有 MinerU 格式；**读侧仍要求 `document.type == "pdf"`** → 非 PDF 图片走 chunk 通道。
+- projection 写侧与读侧都按 `uses_source_projection()` 识别 MinerU 格式；已有 ACTIVE 投影优先，无投影时才走原文或 chunk 通道。
 - office 分支**不返回任何图片描述**；恢复 docx 图片不需要视觉模型。
 - 关键文件：`common/mineru_formats.py`、`deepdoc/parser/mineru_parser.py`、`rag/app/naive.py`、`api/apps/services/corpus_fs_service.py`
 - 回归测试：`test/unit_test/deepdoc/parser/test_mineru_parser.py`、`test/unit_test/common/test_mineru_formats.py`、`test/unit_test/rag/app/test_naive_mineru_images.py`
@@ -145,7 +145,9 @@ bash build.sh --all
 - 请求不带 `rerank_id` 时回落到系统默认 rerank 模型；候选窗口必须是 `page_size` 的整数倍，否则深分页静默丢结果。
 - 中文判定两侧不一致：Python 按汉字字符占比 > 0.2，Go 按字段占比 ≥ 0.7。
 - `image_ref` 是 HMAC 摘要；只看 `image_id` 以 `<dataset_id>-` 开头的图片，canvas 路径用默认 bucket 取不到图。
-- Corpus 根密钥是 Redis 里保存的随机值，**无法用环境变量固定**；flush Redis 会让已签发的引用、引用签名与分页游标全部失效。
+- 图片可携带 `citation_ref` 定位原投影版本，仍须重新授权；MCP 负责原生图像交付，正文预算与媒体预算分别约束。
+- Corpus 根密钥可由 `RAGFLOW_CORPUS_SECRET` 固定，否则回落 Redis；变更根密钥或丢失 Redis 回落值会使已签发引用与游标失效，优化任务不得静默更换密钥来源。
+- PDF 排序前定位修正页码；入选签发复用本次已算 target，非 PDF 保持入选后读取。细节与验证见主题文档。
 - 关键文件：`api/apps/services/corpus_fs_service.py`、`corpus_secret_service.py`、`corpus_recall_service.py`、`rag/nlp/search.py`
 - 回归测试：`test/unit_test/api/apps/services/test_dataset_api_service.py`、`test/unit_test/api/apps/restful_apis/test_corpus_search.py`
 - 正文：[engineering/corpus-fs.md](engineering/corpus-fs.md)
@@ -212,7 +214,7 @@ Corpus 多库检索的性能实验数据与逐版本记录在 `engineering/exper
 | 10 | 远程 MinerU 健康判定用 `/v1/health` + `/v1/usage`；4.0.8 起旧 `/health`、`/file_parse`、`/tasks` 已失效 | [ARCHITECTURE.md](ARCHITECTURE.md) §6.2.3 |
 | 11 | 检索过滤键必须 opt-in；`get_filters()` / `retrieval()` 是全检索路径共用 | [engineering/corpus-fs.md](engineering/corpus-fs.md) §1.3 |
 | 12 | `image_id` 必须以 `<dataset_id>-` 为前缀才可取图；canvas 路径的默认 bucket 不满足 | [engineering/corpus-fs.md](engineering/corpus-fs.md) §2 |
-| 13 | Corpus 根密钥由 Redis 保存，不得用环境变量假定可固定；不得随意 flush Redis | [engineering/corpus-fs.md](engineering/corpus-fs.md) §3 |
+| 13 | Corpus 根密钥优先显式覆盖、否则依赖 Redis；不得静默换源或随意 flush Redis | [engineering/corpus-fs.md](engineering/corpus-fs.md) §3 |
 | 14 | 引用签发语义（`source_hash`）不得改；「同库文件名不跨库去重」是有意契约 | `test_same_file_name_in_two_datasets_is_not_cross_deduplicated` |
 | 15 | 单文档解析的关键路径门槛（indexing ≤ 12s / TOC ≤ 30s / 总 ≤ 60s）尚未达标，改动后需同文档复测 | [engineering/parse-pipeline.md](engineering/parse-pipeline.md) §4 |
 | 16 | `_rerank_window` 必须是 `page_size` 的整数倍（block 与 page 共用该模数，破坏即深分页静默丢结果） | [engineering/corpus-fs.md](engineering/corpus-fs.md) §5 |

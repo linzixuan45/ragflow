@@ -1,4 +1,4 @@
-cd 
+cd
 
 ---
 title: Corpus FS API
@@ -34,6 +34,34 @@ authenticated caller with access to the dataset.
 snapshot used to render that response. A projection published concurrently with
 the read can therefore become the next active revision without invalidating the
 citations already returned by the in-flight request.
+
+PDF, Office, and image documents prefer an existing active source projection,
+including while a reparse is running. Without one, reads fall back to UTF-8 source
+text or parsed chunks. Page and block-type filters apply to that fallback too;
+missing page metadata produces an explicit unsupported-content error.
+
+### Content pagination and media
+
+`max_bytes` limits UTF-8 source text, not the entire JSON response or image bytes.
+An oversized block is split at a character boundary; `next_cursor` preserves both
+the block and its byte position. Continue with the same path and filters. A split
+block retains its `block_ref`, and `block_byte_start` records the offset within
+the original block. Citations retain the original block-relative byte range.
+The response also reports `budget` with `max_source_bytes`, `source_bytes`,
+`max_blocks`, and `image_count`. Even empty image blocks count toward the block
+limit (at most 64, reduced for small text budgets).
+
+Each returned image carries its own `citation_ref` and page when available.
+Pass that reference as an optional query parameter to `GET /image` to read the
+image from the cited projection revision. Access is checked again against the
+current document, including after a rename. Missing historical objects return
+`IMAGE_NOT_FOUND`; the server does not substitute a current-version image.
+
+The MCP read and citation-preview tools return native image content by default,
+with per-image outcomes in `image_delivery`. Set `include_images=false` for
+text-only callers. Media limits are separate: six images, 5 MiB each, 20 MiB total;
+missing, invalid, or oversized images leave the text response available. The MCP
+tree, find, read, and grep tools expose the server's continuation cursor.
 
 `/blob` and `/content` are intentionally different. `/blob` returns the exact
 uploaded object. `/content` returns readable parsed blocks and is not a raw
@@ -123,7 +151,7 @@ coordinate. Non-projection chunk references are opaque and never expose an
 index row ID.
 
 `POST /citations/preview` accepts the same body and returns both `citation` and
-`preview`. For PDF source projections it reads the exact cited revision,
+`preview`. For source projections it reads the exact cited revision,
 including a retired revision after a later successful reparse. The encrypted
 citation carries a private stable document locator, so preview still works
 after a path rename and reports the new path as `preview.current_path`.
