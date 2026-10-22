@@ -13,6 +13,7 @@ from api.apps.services.corpus_errors import (
     EntryConflictError,
     MoveCycleError,
     NotFoundError,
+    PageOutOfRangeError,
     PreconditionRequiredError,
     RevisionConflictError,
     VersionNotFoundError,
@@ -1298,3 +1299,68 @@ def test_citation_preview_preserves_image_reference_from_retired_projection(monk
 
     assert preview["current_path"] == "/renamed.docx"
     assert preview["blocks"][0]["image_ref"] == service._image_ref("doc-1", image_id)
+
+
+def test_page_outside_the_projection_reports_the_real_page_count(monkeypatch):
+    """越界页是「读完了」：必须带出真实页数，而不是退化成 415 空过滤。"""
+
+    def block(block_ref: str, ordinal: int, page: int, text: str) -> dict:
+        return {
+            "block_ref": block_ref,
+            "ordinal": ordinal,
+            "kind": "paragraph",
+            "page": page,
+            "positions": [[page, 1, 2, 3, 4]],
+            "text": text,
+            "parent_block_ref": None,
+            "image_id": None,
+        }
+
+    monkeypatch.setattr(
+        SourceProjectionService,
+        "active",
+        classmethod(lambda _cls, _document: ({"projection_revision": 9}, [block("0", 0, 1, "封面"), block("1", 1, 12, "末页")])),
+    )
+    service = CorpusFsService("tenant-1", "dataset-1", "actor")
+    stats: dict = {}
+
+    with pytest.raises(PageOutOfRangeError) as excinfo:
+        service.content_text({"id": "document-1", "run": TaskStatus.DONE.value, "type": "pdf"}, page=13, stats=stats)
+
+    assert excinfo.value.page_count == 12
+    assert excinfo.value.block_count == 2
+    assert stats == {"page_count": 12, "block_count": 2}
+
+
+def test_page_inside_the_projection_but_empty_for_the_filter_stays_unsupported(monkeypatch):
+    """页存在、只是该类型没有块 —— 仍然按空过滤处理，别改成「越界」。"""
+
+    monkeypatch.setattr(
+        SourceProjectionService,
+        "active",
+        classmethod(
+            lambda _cls, _document: (
+                {"projection_revision": 9},
+                [{"block_ref": "0", "ordinal": 0, "kind": "paragraph", "page": 3, "positions": [[3, 1, 2, 3, 4]], "text": "正文", "parent_block_ref": None, "image_id": None}],
+            )
+        ),
+    )
+    service = CorpusFsService("tenant-1", "dataset-1", "actor")
+
+    with pytest.raises(Exception) as excinfo:
+        service.content_text({"id": "document-1", "run": TaskStatus.DONE.value, "type": "pdf"}, page=3, kinds={"table"})
+
+    assert type(excinfo.value).__name__ == "UnsupportedContentError"
+
+
+def test_content_page_scales_the_block_cap_with_the_byte_budget():
+    """大字节预算必须能带回超过 64 个块，否则 6 万字符的读预算永远用不满。"""
+    blocks = [{"content": "x" * 20, "start": i * 20, "end": (i + 1) * 20} for i in range(300)]
+
+    page, index, byte_offset = CorpusFsService.content_page(blocks, 0, 173856)
+
+    assert len(page) == 300
+    assert (index, byte_offset) == (300, 0)
+    # 32768 字节的老请求仍然只拿 64 块，行为不变。
+    small, _, _ = CorpusFsService.content_page(blocks, 0, 32768)
+    assert len(small) == 64

@@ -32,6 +32,22 @@ class UnsupportedContentError(CorpusFsError):
     status = 415
 
 
+class PageOutOfRangeError(UnsupportedContentError):
+    """The requested page is outside the document's source projection.
+
+    Walking past the last page is a normal end-of-document signal, not broken
+    content: callers must be able to tell "this page does not exist" apart from
+    "this document has no readable text at all". Collapsing both into 415 makes
+    a page-by-page reader mistake the page boundary for the end of the content.
+    """
+
+    def __init__(self, page: int, page_count: int | None, block_count: int = 0):
+        super().__init__(f"page {page} is outside the projection (1..{page_count})")
+        self.page = page
+        self.page_count = page_count
+        self.block_count = block_count
+
+
 class ImageNotFoundError(CorpusFsError):
     code = "IMAGE_NOT_FOUND"
     status = 404

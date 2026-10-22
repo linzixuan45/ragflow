@@ -21,6 +21,7 @@ from api.apps.services.corpus_errors import (
     ImageNotFoundError,
     MoveCycleError,
     NotFoundError,
+    PageOutOfRangeError,
     PreconditionRequiredError,
     RevisionConflictError,
     UnsupportedContentError,
@@ -826,6 +827,7 @@ class CorpusFsService:
         kinds: set[str] | None = None,
         *,
         citation_context: tuple[dict, list[dict] | None] | None = None,
+        stats: dict[str, Any] | None = None,
     ) -> tuple[str, str, list[dict], list[dict]]:
         if citation_context is not None:
             manifest, projection_blocks = citation_context
@@ -834,6 +836,11 @@ class CorpusFsService:
             projection = self._active_projection(document)
         if projection:
             manifest, projection_blocks = projection
+            pages = {block["page"] for block in projection_blocks if isinstance(block.get("page"), int)}
+            page_count = max(pages) if pages else None
+            if stats is not None:
+                stats["page_count"] = page_count
+                stats["block_count"] = len(projection_blocks)
             selected = [block for block in projection_blocks if (page is None or block.get("page") == page) and (not kinds or block.get("kind") in kinds)]
             inline_fs_path = None
             if any("data:image" in (block.get("text") or "") for block in selected):
@@ -865,6 +872,10 @@ class CorpusFsService:
             content = "".join(content_parts)
             if blocks:
                 return content, f"source_projection:{manifest['projection_revision']}", images, blocks
+            if page is not None and pages and page not in pages:
+                # 页不存在 ≠ 内容不受支持：让调用方拿到 page_count 与明确的越界信号，
+                # 而不是一个只能猜成「这页没有块」的 415。
+                raise PageOutOfRangeError(page, page_count, len(projection_blocks))
             raise UnsupportedContentError("projection has no readable text for the selected filter")
         if document.get("run") != TaskStatus.DONE.value:
             raise DocumentNotReadyError("document is not ready")
@@ -1141,7 +1152,7 @@ class CorpusFsService:
         page: list[dict] = []
         size = 0
         index = start_index
-        maximum_blocks = min(64, max(1, maximum_bytes // 512))
+        maximum_blocks = min(512, max(1, maximum_bytes // 512))
         while index < len(blocks) and len(page) < maximum_blocks:
             original = blocks[index]
             raw = str(original.get("content") or "").encode("utf-8")

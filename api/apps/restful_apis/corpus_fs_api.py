@@ -20,7 +20,7 @@ from api.apps import login_required
 from api.apps.services.corpus_citation_service import CorpusCitationError, CorpusCitationService
 from api.apps.services.corpus_cursor_service import CorpusCursorError, CorpusCursorService, CorpusPageCursorService
 from api.apps.services.corpus_delegation_service import CorpusDelegationError, CorpusDelegationService
-from api.apps.services.corpus_errors import CorpusFsError, CorpusUnavailableError, InvalidConfirmationError, PreconditionRequiredError, is_unavailable_io
+from api.apps.services.corpus_errors import CorpusFsError, CorpusUnavailableError, InvalidConfirmationError, PageOutOfRangeError, PreconditionRequiredError, is_unavailable_io
 from api.apps.services.corpus_fs_service import CorpusFsService
 from api.apps.services.corpus_path_service import AmbiguousPathError, CorpusPathError
 from api.apps.services.corpus_search_diagnostics import collect as collect_search_diagnostics
@@ -557,12 +557,38 @@ def content(tenant_id: str, dataset_id: str):
         if kinds and not kinds <= {"heading", "paragraph", "table", "image", "image_ocr", "image_caption", "header_footer", "other"}:
             raise CorpusFsError("type is invalid")
         citation_context = service.citation_context(document)
-        _, source, images, blocks = service.content_text(
-            document,
-            page,
-            kinds,
-            citation_context=citation_context,
-        )
+        content_stats: dict[str, Any] = {}
+        try:
+            _, source, images, blocks = service.content_text(
+                document,
+                page,
+                kinds,
+                citation_context=citation_context,
+                stats=content_stats,
+            )
+        except PageOutOfRangeError as error:
+            # 越界翻页是「读完了」，不是「读不了」：200 + page_count 让调用方
+            # 能自己停下，而不是把 415 当成内容缺失。
+            return _success(
+                service,
+                {
+                    "path": entry["path"],
+                    "content": "",
+                    "content_source": "source_projection",
+                    "ranges": [],
+                    "blocks": [],
+                    "images": [],
+                    "citation_ref": "",
+                    "next_cursor": None,
+                    "projection_revision": None,
+                    "block_count": error.block_count,
+                    "returned_count": 0,
+                    "budget": {"max_source_bytes": maximum, "source_bytes": 0, "max_blocks": 0, "image_count": 0},
+                    "page": page,
+                    "page_count": error.page_count,
+                    "page_out_of_range": True,
+                },
+            )
         content_revision = service.revision(service._dataset())["content_revision"]
         cursor_service = CorpusCursorService(corpus_secret("content-cursor"))
         cursor = request.args.get("cursor")
@@ -596,7 +622,10 @@ def content(tenant_id: str, dataset_id: str):
                 "projection_revision": projection_revision,
                 "block_count": len(blocks),
                 "returned_count": len(visible_blocks),
-                "budget": {"max_source_bytes": maximum, "source_bytes": len(segment.encode("utf-8")), "max_blocks": min(64, max(1, maximum // 512)), "image_count": len(visible_images)},
+                "page": page,
+                "page_count": content_stats.get("page_count"),
+                "page_out_of_range": False,
+                "budget": {"max_source_bytes": maximum, "source_bytes": len(segment.encode("utf-8")), "max_blocks": min(512, max(1, maximum // 512)), "image_count": len(visible_images)},
             },
         )
     except CorpusCursorError:

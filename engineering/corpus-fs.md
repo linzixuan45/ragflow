@@ -126,6 +126,7 @@ ES 中只有 `*_vec` 是 `dense_vector`，没有任何 img / image 向量字段�
 
 - `/fs/content` 的 `max_bytes` 硬限制返回正文的 UTF-8 字节；优先保留完整块，超大首块按完整 UTF-8 字符切片。签名 cursor 保存块索引与块内字节位置，续读保持原 `block_ref`，引用 range 计入 `block_byte_start`。不足容纳下一个字符时明确报错，不静默丢内容。
 - 单次块数上限为 `min(64, max(1, max_bytes // 512))`，纯图空块也受限。`budget` 报告正文实际字节、正文上限、块上限与图片数；它不是整个 JSON、token 或像素预算。
+- `/fs/content` 的分页语义：响应始终带 `page_count`（投影的最大页号）。请求页**不在投影页集合里**时返回 200 + `page_out_of_range: true` + 空 `blocks`，不再报 415——越界翻页是「读完了」，不是「内容读不了」；页存在但被 `type` 过滤空仍是 415 `UNSUPPORTED_CONTENT`（空过滤）。调用方据此在末页收口，不必再探一次越界页。投影的 `page` 来自解析产物：一份 37 页的 docx 可能只有 12 个页号，且单页可远超一次响应的字符预算（实测 247 块 / 2.4 万字符），按页读取必须允许页内用块序号续读。
 - MCP tree/find/read/grep 暴露 cursor；read 可按页与块类型过滤。read / citation preview 默认从授权接口下载并返回原生图片块，可用 `include_images=false` 禁用；`image_delivery` 逐图报告状态与失败原因，最多 6 图、单图 5 MiB、合计 20 MiB，只接受签名与 MIME 一致的 PNG/JPEG/GIF/WebP。
 - DeerFlow 批量 `kb_cat` 的续读位置属于各文件；本地裁剪时从该文件本次输入 cursor 重试并缩小范围，不能用上游下一页位置跳过尚未交付正文。
 - `/fs/grep`：cursor 按**本页实际消费的 ES hit 数**（`consumed_count`）推进，而不是映射成功的条数；响应带 `returned_count` / `consumed_count` / `total` / `truncated`。
@@ -216,6 +217,7 @@ ES 中只有 `*_vec` 是 `dense_vector`，没有任何 img / image 向量字段�
 | MCP 工具清单 | `test/unit_test/mcp/test_server_datasets.py` |
 | source projection | `test/unit_test/api/apps/services/test_source_projection_service.py` |
 | 多格式阅读、旧图定位、UTF-8 分片引用、内嵌图片 | `test/unit_test/api/apps/services/test_corpus_fs_service.py` |
+| 越界页 vs 空过滤的分页语义 | `test/unit_test/api/apps/services/test_corpus_fs_service.py::test_page_outside_the_projection_reports_the_real_page_count`、`::test_page_inside_the_projection_but_empty_for_the_filter_stays_unsupported` |
 | 取图重新授权、读路径线程隔离 | `test/unit_test/api/apps/restful_apis/test_corpus_fs_read_isolation.py` |
 | 签名游标与引用 | `test/unit_test/api/apps/services/test_corpus_cursor_service.py`、`test/unit_test/api/apps/services/test_corpus_citation_service.py` |
 | 内嵌图片资产化 | `test/unit_test/api/apps/services/test_inline_image_assets.py` |
