@@ -74,13 +74,13 @@ user_default_llm:
       name: '${LOCAL_EMBEDDING_MODEL:-Qwen3-Embedding-4B}'
       factory: 'VLLM'
       api_key: '${LOCAL_EMBEDDING_API_KEY:-x}'
-      base_url: '${LOCAL_EMBEDDING_BASE_URL:-http://10.100.15.70:8000/v1}'
+      base_url: '${LOCAL_EMBEDDING_BASE_URL:-http://10.100.15.27:8000/v1}'
       max_model_len: ${LOCAL_EMBEDDING_MAX_MODEL_LEN:-2048}
     rerank_model:
       name: '${LOCAL_RERANK_MODEL:-Qwen3-Reranker-4B}'
       factory: 'VLLM'
       api_key: '${LOCAL_RERANK_API_KEY:-x}'
-      base_url: '${LOCAL_RERANK_BASE_URL:-http://10.100.15.70:8001/v1}'
+      base_url: '${LOCAL_RERANK_BASE_URL:-http://10.100.15.27:8001/v1}'
       max_model_len: ${LOCAL_RERANK_MAX_MODEL_LEN:-2048}
 # postgres:
 #   name: '${POSTGRES_DBNAME:-rag_flow}'
